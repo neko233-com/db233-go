@@ -72,8 +72,8 @@ func TestPackageScanner_ScanTypes(t *testing.T) {
 	scanner.RegisterType(userType)
 	scanner.RegisterType(productType)
 
-	// 扫描当前包 - 使用实际的包名
-	currentPackage := "db233" // reflect.TypeOf返回的包名
+	// 扫描当前包 - 使用实际的包名 (tests包)
+	currentPackage := "tests" // 测试文件在tests包中
 	results := scanner.ScanTypes(currentPackage)
 
 	if len(results) != 2 {
@@ -186,7 +186,7 @@ func TestPackageScanner_GetPackageName(t *testing.T) {
 	testType := reflect.TypeOf(TestType{})
 
 	packageName := scanner.GetPackageName(testType)
-	expected := "db233"
+	expected := "tests" // 测试文件在tests包中
 
 	if packageName != expected {
 		t.Errorf("Expected package name %s, got %s", expected, packageName)
