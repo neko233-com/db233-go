@@ -74,11 +74,13 @@ if (-not $newVersion) {
 Write-Host ""
 Write-Host "验证版本号格式..." -ForegroundColor Yellow
 if ($newVersion -notmatch "^v\d+\.\d+\.\d+$") {
-    Write-Host "警告: 版本号格式不标准 (建议使用 v1.0.0 格式)" -ForegroundColor Red
-    $confirm = Read-Host "是否继续? (y/N)"
-    if ($confirm -ne "y" -and $confirm -ne "Y") {
-        Write-Host "发布已取消" -ForegroundColor Red
+    if ($newVersion -notmatch "^\d+\.\d+\.\d+$") {
+        Write-Host "错误: 版本号格式无效 (支持格式: v1.0.0 或 1.0.0)" -ForegroundColor Red
         exit 1
+    } else {
+        Write-Host "检测到不带v前缀的版本号，将自动添加v前缀" -ForegroundColor Yellow
+        $newVersion = "v$newVersion"
+        Write-Host "版本号已更新为: $newVersion" -ForegroundColor Green
     }
 }
 
