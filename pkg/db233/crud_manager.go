@@ -95,7 +95,7 @@ func (cm *CrudManager) AutoLazyInitOrThrowError(obj interface{}) error {
 		return NewDb233Exception("对象类型错误，不能是接口")
 	}
 
-	if cm.isContainsEntity(obj) {
+	if cm.IsContainsEntity(obj) {
 		return nil
 	}
 
@@ -109,7 +109,7 @@ func (cm *CrudManager) configClassLazy(obj interface{}) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if cm.isContainsEntity(obj) {
+	if cm.IsContainsEntity(obj) {
 		return nil
 	}
 
@@ -126,13 +126,14 @@ func (cm *CrudManager) configClassLazy(obj interface{}) error {
  * 是否不包含实体
  */
 func (cm *CrudManager) IsNotContainsEntity(obj interface{}) bool {
-	return !cm.isContainsEntity(obj)
+	return !cm.IsContainsEntity(obj)
 }
 
 /**
  * 是否包含实体
  */
-func (cm *CrudManager) isContainsEntity(obj interface{}) bool {
+// IsContainsEntity 检查是否包含实体
+func (cm *CrudManager) IsContainsEntity(obj interface{}) bool {
 	t := reflect.TypeOf(obj)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -145,13 +146,13 @@ func (cm *CrudManager) isContainsEntity(obj interface{}) bool {
  */
 func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type) {
 	for _, t := range entityTypes {
-		tableName := cm.getTableName(t)
+		tableName := cm.GetTableName(t)
 
 		colList := make([]string, 0)
 
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
-			colName := cm.getColumnName(field)
+			colName := cm.GetColumnName(field)
 			colList = append(colList, colName)
 		}
 
@@ -164,14 +165,14 @@ func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type
  */
 func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.Type) {
 	for _, t := range entityTypes {
-		tableName := cm.getTableName(t)
+		tableName := cm.GetTableName(t)
 
 		pkList := make([]string, 0)
 
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
-			if cm.isPrimaryKey(field) {
-				colName := cm.getColumnName(field)
+			if cm.IsPrimaryKey(field) {
+				colName := cm.GetColumnName(field)
 				pkList = append(pkList, colName)
 			}
 		}
@@ -185,7 +186,7 @@ func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.
 /**
  * 获取表名
  */
-func (cm *CrudManager) getTableName(t reflect.Type) string {
+func (cm *CrudManager) GetTableName(t reflect.Type) string {
 	// 检查是否有 table tag
 	if t.Kind() == reflect.Struct {
 		if tableTag := t.Field(0).Tag.Get("table"); tableTag != "" {
@@ -199,7 +200,7 @@ func (cm *CrudManager) getTableName(t reflect.Type) string {
 /**
  * 获取列名
  */
-func (cm *CrudManager) getColumnName(field reflect.StructField) string {
+func (cm *CrudManager) GetColumnName(field reflect.StructField) string {
 	if colTag := field.Tag.Get("column"); colTag != "" {
 		return colTag
 	}
@@ -212,7 +213,7 @@ func (cm *CrudManager) getColumnName(field reflect.StructField) string {
 /**
  * 是否为主键
  */
-func (cm *CrudManager) isPrimaryKey(field reflect.StructField) bool {
+func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
 	return strings.Contains(field.Tag.Get("db"), "primary_key") ||
 		field.Name == "ID" || field.Name == "Id"
 }

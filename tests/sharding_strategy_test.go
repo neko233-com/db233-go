@@ -1,7 +1,9 @@
-package db233
+package tests
 
 import (
 	"testing"
+
+	"github.com/SolarisNeko/db233-go/pkg/db233"
 )
 
 /**
@@ -11,7 +13,7 @@ import (
  * @since 2025-12-28
  */
 func TestShardingDbStrategyByNoUse_CalculateDbId(t *testing.T) {
-	strategy := ShardingDbStrategyByNoUseInstance
+	strategy := db233.ShardingDbStrategyByNoUseInstance
 
 	// 测试各种分片 ID
 	testCases := []int64{0, 1, 100, 1000, -1, 999999}
@@ -25,7 +27,7 @@ func TestShardingDbStrategyByNoUse_CalculateDbId(t *testing.T) {
 }
 
 func TestShardingDbStrategy100w_CalculateDbId(t *testing.T) {
-	strategy := ShardingDbStrategy100wInstance
+	strategy := db233.ShardingDbStrategy100wInstance
 
 	testCases := []struct {
 		shardingId int64
@@ -49,8 +51,8 @@ func TestShardingDbStrategy100w_CalculateDbId(t *testing.T) {
 }
 
 func TestShardingDbStrategy100w_Singleton(t *testing.T) {
-	instance1 := ShardingDbStrategy100wInstance
-	instance2 := ShardingDbStrategy100wInstance
+	instance1 := db233.ShardingDbStrategy100wInstance
+	instance2 := db233.ShardingDbStrategy100wInstance
 
 	if instance1 != instance2 {
 		t.Error("单例实例应该相同")

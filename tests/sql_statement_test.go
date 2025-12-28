@@ -1,7 +1,9 @@
-package db233
+package tests
 
 import (
 	"testing"
+
+	"github.com/SolarisNeko/db233-go/pkg/db233"
 )
 
 /**
@@ -11,7 +13,7 @@ import (
  * @since 2025-12-28
  */
 func TestNewQueryStatement(t *testing.T) {
-	stmt := NewQueryStatement("SELECT * FROM user", "User")
+	stmt := db233.NewQueryStatement("SELECT * FROM user", "User")
 
 	if !stmt.IsQuery {
 		t.Error("查询语句的 IsQuery 应该为 true")
@@ -32,7 +34,7 @@ func TestNewQueryStatement(t *testing.T) {
 
 func TestNewQueryStatements(t *testing.T) {
 	sqlList := []string{"SELECT * FROM user", "SELECT * FROM order"}
-	stmt := NewQueryStatements(sqlList, "User")
+	stmt := db233.NewQueryStatements(sqlList, "User")
 
 	if !stmt.IsQuery {
 		t.Error("查询语句的 IsQuery 应该为 true")
@@ -48,7 +50,7 @@ func TestNewQueryStatements(t *testing.T) {
 }
 
 func TestNewUpdateStatement(t *testing.T) {
-	stmt := NewUpdateStatement("UPDATE user SET name = ?")
+	stmt := db233.NewUpdateStatement("UPDATE user SET name = ?")
 
 	if stmt.IsQuery {
 		t.Error("更新语句的 IsQuery 应该为 false")
@@ -69,7 +71,7 @@ func TestNewUpdateStatement(t *testing.T) {
 
 func TestNewUpdateStatements(t *testing.T) {
 	sqlList := []string{"UPDATE user SET name = ?", "DELETE FROM user WHERE id = ?"}
-	stmt := NewUpdateStatements(sqlList)
+	stmt := db233.NewUpdateStatements(sqlList)
 
 	if stmt.IsQuery {
 		t.Error("更新语句的 IsQuery 应该为 false")

@@ -3,6 +3,7 @@ package db233
 import (
 	"database/sql"
 	"reflect"
+	"strings"
 )
 
 /**
@@ -119,8 +120,53 @@ func (r *BaseCrudRepository) Save(entity interface{}) error {
 
 	sql := "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 
-	r.db.ExecuteOriginalUpdate(sql, [][]interface{}{values})
+	result, err := r.db.DataSource.Exec(sql, values...)
+	if err != nil {
+		return err
+	}
+
+	// 处理自增主键
+	lastInsertId, err := result.LastInsertId()
+	if err == nil {
+		r.setPrimaryKeyValue(entity, lastInsertId)
+	}
+
 	return nil
+}
+
+/**
+ * 设置主键值
+ */
+func (r *BaseCrudRepository) setPrimaryKeyValue(entity interface{}, id int64) {
+	v := reflect.ValueOf(entity)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("db")
+		if tag != "" {
+			tagParts := strings.Split(tag, ",")
+			for _, part := range tagParts {
+				part = strings.TrimSpace(part)
+				if part == "primary_key" || part == "auto_increment" {
+					// 设置主键值
+					fieldValue := v.Field(i)
+					if fieldValue.CanSet() {
+						switch fieldValue.Kind() {
+						case reflect.Int, reflect.Int64:
+							fieldValue.SetInt(id)
+						case reflect.Int32:
+							fieldValue.SetInt(id)
+						}
+					}
+					return
+				}
+			}
+		}
+	}
 }
 
 /**
@@ -149,9 +195,21 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
-		fieldName := StringUtilsInstance.CamelToSnake(field.Name)
 		fieldValue := v.Field(i).Interface()
-		fields[fieldName] = fieldValue
+
+		// 解析 db 标签
+		tag := field.Tag.Get("db")
+		var columnName string
+		if tag != "" {
+			// 解析标签，获取列名（标签格式：column_name,options...）
+			tagParts := strings.Split(tag, ",")
+			columnName = strings.TrimSpace(tagParts[0])
+		} else {
+			// 如果没有标签，使用驼峰转下划线
+			columnName = StringUtilsInstance.CamelToSnake(field.Name)
+		}
+
+		fields[columnName] = fieldValue
 	}
 
 	return fields
@@ -181,7 +239,16 @@ func (r *BaseCrudRepository) FindById(id interface{}, entityType interface{}) (i
 	sql := "SELECT * FROM " + tableName + " WHERE id = ?"
 	results := r.db.ExecuteQuery(sql, [][]interface{}{{id}}, entityType)
 	if len(results) > 0 {
-		return results[0], nil
+		// 返回指针类型
+		result := results[0]
+		v := reflect.ValueOf(result)
+		if v.Kind() != reflect.Ptr {
+			// 如果不是指针，创建一个指针
+			ptr := reflect.New(v.Type())
+			ptr.Elem().Set(v)
+			return ptr.Interface(), nil
+		}
+		return result, nil
 	}
 	return nil, nil
 }
@@ -221,8 +288,8 @@ func (r *BaseCrudRepository) Update(entity interface{}) error {
 	values = append(values, id)
 
 	sql := "UPDATE " + tableName + " SET " + StringUtilsInstance.Join(setParts, ", ") + " WHERE id = ?"
-	r.db.ExecuteOriginalUpdate(sql, [][]interface{}{values})
-	return nil
+	_, err := r.db.DataSource.Exec(sql, values...)
+	return err
 }
 
 func (r *BaseCrudRepository) UpdateBatch(entities []interface{}) error {
@@ -237,11 +304,12 @@ func (r *BaseCrudRepository) UpdateBatch(entities []interface{}) error {
 func (r *BaseCrudRepository) Count(entityType interface{}) (int64, error) {
 	tableName := r.getTableName(entityType)
 	sql := "SELECT COUNT(*) FROM " + tableName
-	results := r.db.ExecuteQuery(sql, [][]interface{}{}, 0)
-	if len(results) > 0 {
-		if count, ok := results[0].(int64); ok {
-			return count, nil
-		}
+
+	var count int64
+	err := r.db.DataSource.QueryRow(sql).Scan(&count)
+	if err != nil {
+		return 0, err
 	}
-	return 0, nil
+
+	return count, nil
 }

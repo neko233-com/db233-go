@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"reflect"
+	"strings"
 )
 
 /**
@@ -61,11 +62,54 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interfac
 
 		// 映射到结构体字段
 		for i, col := range columns {
+			// 首先尝试直接匹配字段名
 			field := newInstance.FieldByName(col)
+			if !field.IsValid() || !field.CanSet() {
+				// 尝试通过标签匹配
+				for j := 0; j < structType.NumField(); j++ {
+					structField := structType.Field(j)
+					tag := structField.Tag.Get("db")
+					if tag != "" {
+						// 解析标签，获取列名（标签格式：column_name,options...）
+						tagParts := strings.Split(tag, ",")
+						columnName := strings.TrimSpace(tagParts[0])
+						if columnName == col {
+							field = newInstance.Field(j)
+							break
+						}
+					}
+				}
+			}
+
 			if field.IsValid() && field.CanSet() {
 				val := reflect.ValueOf(scanTargets[i]).Elem()
 				if val.IsValid() {
-					field.Set(val)
+					// 处理类型转换
+					targetVal := val
+					targetType := field.Type()
+
+					// 如果类型不匹配，尝试转换
+					if val.Type() != targetType {
+						if val.CanConvert(targetType) {
+							targetVal = val.Convert(targetType)
+						} else {
+							// 特殊处理：interface{} 转换为具体类型
+							if val.Kind() == reflect.Interface && !val.IsNil() {
+								innerVal := val.Elem()
+								if innerVal.CanConvert(targetType) {
+									targetVal = innerVal.Convert(targetType)
+								} else {
+									log.Printf("无法转换类型: %s -> %s", innerVal.Type(), targetType)
+									continue
+								}
+							} else {
+								log.Printf("无法转换类型: %s -> %s", val.Type(), targetType)
+								continue
+							}
+						}
+					}
+
+					field.Set(targetVal)
 				}
 			}
 		}

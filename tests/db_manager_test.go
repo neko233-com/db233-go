@@ -1,7 +1,9 @@
-package db233
+package tests
 
 import (
 	"testing"
+
+	"github.com/SolarisNeko/db233-go/pkg/db233"
 )
 
 /**
@@ -11,8 +13,8 @@ import (
  * @since 2025-12-28
  */
 func TestDbManager_GetInstance(t *testing.T) {
-	manager1 := GetInstance()
-	manager2 := GetInstance()
+	manager1 := db233.GetInstance()
+	manager2 := db233.GetInstance()
 
 	if manager1 != manager2 {
 		t.Error("GetInstance 应该返回单例实例")
@@ -20,15 +22,15 @@ func TestDbManager_GetInstance(t *testing.T) {
 }
 
 func TestDbManager_AddDbGroup(t *testing.T) {
-	manager := GetInstance()
+	manager := db233.GetInstance()
 
 	// 创建模拟配置
-	config := &DbGroupConfig{
+	config := &db233.DbGroupConfig{
 		GroupName:       "test_group",
 		DbConfigFetcher: &MockDbConfigFetcher{},
 	}
 
-	dbGroup, err := NewDbGroup(config)
+	dbGroup, err := db233.NewDbGroup(config)
 	if err != nil {
 		t.Fatalf("创建 DbGroup 失败: %v", err)
 	}
@@ -49,14 +51,14 @@ func TestDbManager_AddDbGroup(t *testing.T) {
 }
 
 func TestDbManager_RemoveDbGroup(t *testing.T) {
-	manager := GetInstance()
+	manager := db233.GetInstance()
 
-	config := &DbGroupConfig{
+	config := &db233.DbGroupConfig{
 		GroupName:       "test_group_remove",
 		DbConfigFetcher: &MockDbConfigFetcher{},
 	}
 
-	dbGroup, _ := NewDbGroup(config)
+	dbGroup, _ := db233.NewDbGroup(config)
 	manager.AddDbGroup(dbGroup)
 
 	manager.RemoveDbGroup("test_group_remove")
@@ -70,7 +72,7 @@ func TestDbManager_RemoveDbGroup(t *testing.T) {
 // MockDbConfigFetcher 模拟数据库配置获取器
 type MockDbConfigFetcher struct{}
 
-func (m *MockDbConfigFetcher) Fetch(groupName string) ([]*DbConfig, error) {
+func (m *MockDbConfigFetcher) Fetch(groupName string) ([]*db233.DbConfig, error) {
 	// 返回空列表，避免实际创建数据库连接
-	return []*DbConfig{}, nil
+	return []*db233.DbConfig{}, nil
 }
