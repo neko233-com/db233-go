@@ -147,7 +147,12 @@ func (mc *MetricsCollector) Start() {
  * 停止数据收集
  */
 func (mc *MetricsCollector) Stop() {
-	mc.stopChan <- true
+	select {
+	case mc.stopChan <- true:
+		// 成功发送停止信号
+	default:
+		// channel已满或没有接收者，忽略
+	}
 }
 
 /**

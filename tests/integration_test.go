@@ -120,3 +120,64 @@ func TestCrudOperationsIntegration(t *testing.T) {
 
 	t.Logf("集成测试通过: 成功执行完整的 CRUD 操作")
 }
+
+// TestAutoCreateTableIntegration 集成测试：自动建表功能
+func TestAutoCreateTableIntegration(t *testing.T) {
+	db := CreateTestDb(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	// 清理测试表（如果存在）
+	CleanupTestTables(db)
+
+	cm := db233.GetCrudManagerInstance()
+	cm.AutoInitEntity(&TestUser{})
+
+	// 自动创建表
+	err := cm.AutoCreateTable(db, &TestUser{})
+	if err != nil {
+		t.Fatalf("自动创建表失败: %v", err)
+	}
+
+	// 验证表是否创建成功（通过尝试查询）
+	repo := db233.NewBaseCrudRepository(db)
+	var count int64
+	count, err = repo.Count(&TestUser{})
+	if err != nil {
+		t.Fatalf("查询自动创建的表失败: %v", err)
+	}
+
+	// 表存在，计数应该为0（空表）
+	if count != 0 {
+		t.Errorf("新创建的表应该为空，计数为 %d", count)
+	}
+
+	// 测试插入数据
+	user := &TestUser{
+		Username: "auto_create_test",
+		Email:    "auto@example.com",
+		Age:      25,
+	}
+
+	err = repo.Save(user)
+	if err != nil {
+		t.Errorf("保存到自动创建的表失败: %v", err)
+	}
+
+	// 验证数据
+	found, err := repo.FindById(user.ID, &TestUser{})
+	if err != nil {
+		t.Errorf("从自动创建的表查找数据失败: %v", err)
+	}
+
+	if found == nil {
+		t.Error("应该找到插入的数据")
+	}
+
+	// 清理
+	CleanupTestTables(db)
+
+	t.Logf("自动建表集成测试通过: 成功创建表并执行 CRUD 操作")
+}

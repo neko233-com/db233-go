@@ -122,6 +122,7 @@ type AlertReport struct {
 	Name      string    `json:"name"`
 	Severity  string    `json:"severity"`
 	Status    string    `json:"status"`
+	Database  string    `json:"database"`
 	Metric    string    `json:"metric"`
 	Value     string    `json:"value"`
 	Threshold string    `json:"threshold"`
@@ -468,6 +469,7 @@ func (rg *MonitoringReportGenerator) generateAlertReports() []AlertReport {
 				Name:      alert.Name,
 				Severity:  rg.alertSeverityToString(alert.Severity),
 				Status:    rg.alertStatusToString(alert.Status),
+				Database:  managerName, // 使用managerName
 				Metric:    alert.Metric,
 				Value:     fmt.Sprintf("%v", alert.Value),
 				Threshold: fmt.Sprintf("%v", alert.Threshold),
@@ -601,7 +603,7 @@ func (rg *MonitoringReportGenerator) generatePerformanceChart() map[string]inter
 
 	// 为每个数据库创建系列
 	for name, collector := range rg.metricsCollectors {
-		if perfMonitor, exists := rg.performanceMonitors[name]; exists {
+		if perfMonitor, exists := rg.performanceMonitors[name]; exists && perfMonitor != nil { // 使用perfMonitor进行检查
 			series := map[string]interface{}{
 				"name": fmt.Sprintf("%s - 查询数", name),
 				"data": make([]map[string]interface{}, 0),

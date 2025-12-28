@@ -279,7 +279,12 @@ func (md *MonitoringDashboard) Start() {
  * 停止仪表板
  */
 func (md *MonitoringDashboard) Stop() {
-	md.stopChan <- true
+	select {
+	case md.stopChan <- true:
+		// 成功发送停止信号
+	default:
+		// channel已满或没有接收者，忽略
+	}
 }
 
 /**

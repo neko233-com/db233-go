@@ -75,7 +75,7 @@ func main() {
 		Severity:    db233.Error,
 		Condition: func(metrics map[string]interface{}) bool {
 			if avgTime, ok := metrics["avg_response_time"].(time.Duration); ok {
-				return avgTime > time.Second * 2
+				return avgTime > time.Second*2
 			}
 			return false
 		},

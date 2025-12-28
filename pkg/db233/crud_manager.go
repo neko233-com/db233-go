@@ -1,9 +1,12 @@
 package db233
 
 import (
+	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 /**
@@ -233,20 +236,149 @@ func (cm *CrudManager) GetTableToPkColListMap() map[string][]string {
 }
 
 /**
- * 获取表到主键到列值的映射
+ * 自动创建表
  */
-func (cm *CrudManager) GetTableToPkToColValueMap() map[string]map[interface{}]map[string]interface{} {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	result := make(map[string]map[interface{}]map[string]interface{})
-	for k, v := range cm.tableToPkToColValueMap {
-		result[k] = make(map[interface{}]map[string]interface{})
-		for k2, v2 := range v {
-			result[k][k2] = make(map[string]interface{})
-			for k3, v3 := range v2 {
-				result[k][k2][k3] = v3
-			}
+func (cm *CrudManager) AutoCreateTable(db *Db, entityType interface{}) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	t := reflect.TypeOf(entityType)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	tableName := cm.GetTableName(t)
+	if tableName == "" {
+		return NewDb233Exception("无法获取表名")
+	}
+
+	// 检查表是否已存在
+	exists, err := cm.tableExists(db, tableName)
+	if err != nil {
+		return err
+	}
+	if exists {
+		LogInfo("表已存在，跳过创建: %s", tableName)
+		return nil
+	}
+
+	// 生成建表SQL
+	createSQL, err := cm.generateCreateTableSQL(t)
+	if err != nil {
+		return err
+	}
+
+	// 执行建表
+	_, err = db.DataSource.Exec(createSQL)
+	if err != nil {
+		return NewQueryExceptionWithCause(err, "创建表失败: "+tableName)
+	}
+
+	LogInfo("表创建成功: %s", tableName)
+	return nil
+}
+
+/**
+ * 检查表是否存在
+ */
+func (cm *CrudManager) tableExists(db *Db, tableName string) (bool, error) {
+	query := "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?"
+	row := db.DataSource.QueryRow(query, tableName)
+
+	var count int
+	err := row.Scan(&count)
+	if err != nil {
+		return false, NewQueryExceptionWithCause(err, "检查表存在性失败")
+	}
+
+	return count > 0, nil
+}
+
+/**
+ * 生成建表SQL
+ */
+func (cm *CrudManager) generateCreateTableSQL(t reflect.Type) (string, error) {
+	tableName := cm.GetTableName(t)
+	if tableName == "" {
+		return "", NewDb233Exception("无法获取表名")
+	}
+
+	var columns []string
+	var primaryKeys []string
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		colName := cm.GetColumnName(field)
+		colType := cm.getSQLType(field)
+		colDef := fmt.Sprintf("`%s` %s", colName, colType)
+
+		// 检查是否自增
+		if strings.Contains(field.Tag.Get("db"), "auto_increment") {
+			colDef += " AUTO_INCREMENT"
+		}
+
+		// 检查是否可空
+		if !strings.Contains(field.Tag.Get("db"), "not_null") && !cm.IsPrimaryKey(field) {
+			colDef += " NULL"
+		} else {
+			colDef += " NOT NULL"
+		}
+
+		columns = append(columns, colDef)
+
+		if cm.IsPrimaryKey(field) {
+			primaryKeys = append(primaryKeys, fmt.Sprintf("`%s`", colName))
 		}
 	}
-	return result
+
+	if len(primaryKeys) > 0 {
+		columns = append(columns, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
+	}
+
+	createSQL := fmt.Sprintf("CREATE TABLE `%s` (\n\t%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", tableName, strings.Join(columns, ",\n\t"))
+
+	return createSQL, nil
+}
+
+/**
+ * 获取SQL类型
+ */
+func (cm *CrudManager) getSQLType(field reflect.StructField) string {
+	fieldType := field.Type
+
+	// 检查tag中的类型定义
+	if typeTag := field.Tag.Get("type"); typeTag != "" {
+		return typeTag
+	}
+
+	switch fieldType.Kind() {
+	case reflect.Int, reflect.Int32:
+		return "INT"
+	case reflect.Int64:
+		return "BIGINT"
+	case reflect.Float32:
+		return "FLOAT"
+	case reflect.Float64:
+		return "DOUBLE"
+	case reflect.String:
+		size := 255
+		if sizeTag := field.Tag.Get("size"); sizeTag != "" {
+			if s, err := strconv.Atoi(sizeTag); err == nil {
+				size = s
+			}
+		}
+		return fmt.Sprintf("VARCHAR(%d)", size)
+	case reflect.Bool:
+		return "TINYINT(1)"
+	case reflect.Struct:
+		if fieldType == reflect.TypeOf(time.Time{}) {
+			return "TIMESTAMP"
+		}
+	}
+
+	return "VARCHAR(255)"
 }
