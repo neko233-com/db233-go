@@ -71,6 +71,17 @@ func (s *StringUtilsForDb233) SnakeToCamel(str string) string {
 }
 
 /**
+ * 连接字符串数组
+ *
+ * @param elements 字符串数组
+ * @param separator 分隔符
+ * @return string 连接后的字符串
+ */
+func (s *StringUtilsForDb233) Join(elements []string, separator string) string {
+	return strings.Join(elements, separator)
+}
+
+/**
  * 单例实例
  */
 var StringUtilsInstance = &StringUtilsForDb233{}
