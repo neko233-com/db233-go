@@ -31,21 +31,22 @@ type CrudManager struct {
 	mu sync.RWMutex
 }
 
+var crudManagerInstance *CrudManager
+var crudManagerOnce sync.Once
+
 /**
  * 获取单例实例
  */
 func GetCrudManagerInstance() *CrudManager {
-	once := sync.Once{}
-	var instance *CrudManager
-	once.Do(func() {
-		instance = &CrudManager{
+	crudManagerOnce.Do(func() {
+		crudManagerInstance = &CrudManager{
 			tableNamePkColNameListMap: make(map[string][]string),
 			tableNameToColNameMap:     make(map[string][]string),
 			tableToPkToColValueMap:    make(map[string]map[interface{}]map[string]interface{}),
 			metadataClassSet:          make(map[reflect.Type]bool),
 		}
 	})
-	return instance
+	return crudManagerInstance
 }
 
 /**
