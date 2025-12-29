@@ -13,7 +13,7 @@ import (
  * 对应 Java 版本的 OrmHandler
  * 使用反射将数据库结果映射到结构体
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type OrmHandler struct{}

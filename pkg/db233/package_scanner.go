@@ -13,7 +13,7 @@ import (
  * 对应 Kotlin 版本的 PackageScanner.java
  * 由于 Go 的运行时特性，使用类型注册的方式实现包扫描
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type PackageScanner struct {

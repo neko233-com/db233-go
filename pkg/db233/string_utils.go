@@ -10,7 +10,7 @@ import (
  *
  * 对应 Kotlin 版本的 StringUtilsForDb233
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type StringUtilsForDb233 struct{}

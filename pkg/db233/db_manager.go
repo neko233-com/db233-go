@@ -17,7 +17,7 @@ import (
  *
  * 该类为项目中的全局入口，用于在应用启动阶段汇总并初始化所有数据源分组。
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type DbManager struct {

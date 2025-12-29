@@ -14,7 +14,7 @@ import (
  *
  * 管理实体类的元数据，包括表结构、列信息、主键等
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type CrudManager struct {

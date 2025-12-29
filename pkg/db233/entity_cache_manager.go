@@ -12,7 +12,7 @@ import (
  * 对应 Kotlin 版本的 EntityCacheManager
  * 缓存实体的元数据信息，如列名、SQL等
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type EntityCacheManager struct {

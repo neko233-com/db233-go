@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 /**
  * 插件系统单元测试
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 

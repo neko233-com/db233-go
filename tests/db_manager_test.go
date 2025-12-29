@@ -3,13 +3,13 @@ package tests
 import (
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 /**
  * DbManager 单元测试
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 func TestDbManager_GetInstance(t *testing.T) {

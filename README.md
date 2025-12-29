@@ -21,7 +21,7 @@ db233-go 是 db233 的 Go 语言版本，一个功能强大的数据库操作库
 ## 安装
 
 ```bash
-go get github.com/SolarisNeko/db233-go
+go get github.com/neko233-com/db233-go
 ```
 
 ## 快速开始
@@ -32,7 +32,7 @@ go get github.com/SolarisNeko/db233-go
 package main
 
 import (
-    "github.com/SolarisNeko/db233-go/pkg/db233"
+    "github.com/neko233-com/db233-go/pkg/db233"
 )
 
 func main() {

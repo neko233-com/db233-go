@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 func TestBaseCrudRepository_Save(t *testing.T) {

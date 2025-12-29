@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/your-org/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 /**

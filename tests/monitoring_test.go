@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 // 测试性能监控器

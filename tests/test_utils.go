@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 // CreateTestDb 创建测试数据库连接

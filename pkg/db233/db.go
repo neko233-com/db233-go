@@ -10,7 +10,7 @@ import (
  *
  * 定义数据库操作的统一抽象
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type DbApi interface {
@@ -70,7 +70,7 @@ type DbApi interface {
  *
  * 对应 Kotlin 版本的 Db 类
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type Db struct {

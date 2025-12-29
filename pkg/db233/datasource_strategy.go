@@ -14,7 +14,7 @@ import (
  * 对应 Kotlin 版本的 DruidDataSourceCreateStrategy
  * 使用 Go 标准库 sql.DB
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type SimpleDataSourceCreateStrategy struct{}

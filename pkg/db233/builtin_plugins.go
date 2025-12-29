@@ -10,7 +10,7 @@ import (
  *
  * 记录 SQL 执行的详细信息
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type LoggingPlugin struct {
@@ -57,7 +57,7 @@ func (p *LoggingPlugin) PostExecuteSql(context *ExecuteSqlContext) {
  *
  * 监控 SQL 执行性能，记录慢查询
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type PerformanceMonitorPlugin struct {
@@ -97,7 +97,7 @@ func (p *PerformanceMonitorPlugin) PostExecuteSql(context *ExecuteSqlContext) {
  *
  * 收集 SQL 执行的各项指标
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type MetricsPlugin struct {

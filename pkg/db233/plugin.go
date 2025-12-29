@@ -5,7 +5,7 @@ package db233
  *
  * 对应 Kotlin 版本的 AbstractDb233Plugin
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type Db233Plugin interface {

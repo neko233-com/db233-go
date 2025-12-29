@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 /**
  * 实体缓存管理器单元测试
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 

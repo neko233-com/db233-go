@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 // 测试配置管理器

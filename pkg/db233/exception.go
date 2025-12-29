@@ -7,7 +7,7 @@ import "fmt"
  *
  * 对应 Kotlin/Java 版本的 Db233Exception
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type Db233Exception struct {

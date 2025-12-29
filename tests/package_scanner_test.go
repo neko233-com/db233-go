@@ -4,13 +4,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 /**
  * PackageScanner 单元测试
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 
@@ -91,7 +91,7 @@ func TestPackageScanner_ScanStructTypes(t *testing.T) {
 	scanner.RegisterType(reflect.TypeOf(StructType{}))
 	scanner.RegisterType(interfaceType)
 
-	currentPackage := "github.com/SolarisNeko/db233-go/pkg/db233"
+	currentPackage := "github.com/neko233-com/db233-go/pkg/db233"
 	structTypes := scanner.ScanStructTypes(currentPackage)
 
 	// 应该只返回结构体类型
@@ -121,7 +121,7 @@ func TestPackageScanner_ScanSubTypes(t *testing.T) {
 	scanner.RegisterType(userRepoType)
 	scanner.RegisterType(productRepoType)
 
-	currentPackage := "github.com/SolarisNeko/db233-go/pkg/db233"
+	currentPackage := "github.com/neko233-com/db233-go/pkg/db233"
 	subTypes := scanner.ScanSubTypes(currentPackage, repoInterface)
 
 	// 注意：这个测试可能不准确，因为我们没有实际实现接口

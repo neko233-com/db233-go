@@ -1,4 +1,4 @@
-module github.com/SolarisNeko/db233-go
+module github.com/neko233-com/db233-go
 
 go 1.21
 

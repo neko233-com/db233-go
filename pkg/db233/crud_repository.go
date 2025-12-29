@@ -11,7 +11,7 @@ import (
  *
  * 提供基本的 CRUD 操作
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type CrudRepository interface {

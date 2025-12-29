@@ -19,7 +19,7 @@ package db233
  * stmt := NewUpdateStatement("UPDATE user SET name = ?")
  * ```
  *
- * @author SolarisNeko
+ * @author neko233-com
  * @since 2025-12-28
  */
 type SqlStatement struct {

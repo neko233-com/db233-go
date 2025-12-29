@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/SolarisNeko/db233-go/pkg/db233"
+	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
 // TestCrudOperationsIntegration 集成测试：完整的 CRUD 操作
