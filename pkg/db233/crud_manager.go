@@ -156,6 +156,10 @@ func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type
 
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
+			dbTag := field.Tag.Get("db")
+			if dbTag == "" || dbTag == "-" {
+				continue
+			}
 			colName := cm.GetColumnName(field)
 			colList = append(colList, colName)
 		}
@@ -175,6 +179,10 @@ func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.
 
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
+			dbTag := field.Tag.Get("db")
+			if dbTag == "" || dbTag == "-" {
+				continue
+			}
 			if cm.IsPrimaryKey(field) {
 				colName := cm.GetColumnName(field)
 				pkList = append(pkList, colName)
@@ -311,6 +319,10 @@ func (cm *CrudManager) generateCreateTableSQL(t reflect.Type) (string, error) {
 		if !field.IsExported() {
 			continue
 		}
+		dbTag := field.Tag.Get("db")
+		if dbTag == "" || dbTag == "-" {
+			continue
+		}
 
 		colName := cm.GetColumnName(field)
 		colType := cm.getSQLType(field)
@@ -381,4 +393,128 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 	}
 
 	return "VARCHAR(255)"
+}
+
+/**
+ * 自动迁移表（创建或修改表结构）
+ */
+func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	t := reflect.TypeOf(entityType)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	tableName := cm.GetTableName(t)
+	if tableName == "" {
+		return NewDb233Exception("无法获取表名")
+	}
+
+	// 检查表是否已存在
+	exists, err := cm.tableExists(db, tableName)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		// 表不存在，创建表
+		return cm.AutoCreateTable(db, entityType)
+	}
+
+	// 表存在，检查并添加缺失的列
+	return cm.alterTableAddMissingColumns(db, t)
+}
+
+/**
+ * 修改表添加缺失的列
+ */
+func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error {
+	tableName := cm.GetTableName(t)
+	if tableName == "" {
+		return NewDb233Exception("无法获取表名")
+	}
+
+	// 获取现有列
+	existingColumns, err := cm.getExistingColumns(db, tableName)
+	if err != nil {
+		return err
+	}
+
+	// 获取实体定义的列
+	entityColumns := make(map[string]reflect.StructField)
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		dbTag := field.Tag.Get("db")
+		if dbTag == "" || dbTag == "-" {
+			continue
+		}
+		colName := cm.GetColumnName(field)
+		entityColumns[colName] = field
+	}
+
+	// 找出缺失的列
+	var alterStatements []string
+	for colName, field := range entityColumns {
+		if _, exists := existingColumns[colName]; !exists {
+			colType := cm.getSQLType(field)
+			colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
+
+			// 检查是否自增
+			if strings.Contains(field.Tag.Get("db"), "auto_increment") {
+				colDef += " AUTO_INCREMENT"
+			}
+
+			// 检查是否可空
+			if !strings.Contains(field.Tag.Get("db"), "not_null") && !cm.IsPrimaryKey(field) {
+				colDef += " NULL"
+			} else {
+				colDef += " NOT NULL"
+			}
+
+			alterStatements = append(alterStatements, colDef)
+		}
+	}
+
+	if len(alterStatements) == 0 {
+		LogInfo("表结构已是最新: %s", tableName)
+		return nil
+	}
+
+	// 执行ALTER TABLE
+	alterSQL := fmt.Sprintf("ALTER TABLE `%s` %s", tableName, strings.Join(alterStatements, ", "))
+	_, err = db.DataSource.Exec(alterSQL)
+	if err != nil {
+		return NewQueryExceptionWithCause(err, "修改表结构失败: "+tableName)
+	}
+
+	LogInfo("表结构更新成功: %s", tableName)
+	return nil
+}
+
+/**
+ * 获取现有表的列信息
+ */
+func (cm *CrudManager) getExistingColumns(db *Db, tableName string) (map[string]bool, error) {
+	query := "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+	rows, err := db.DataSource.Query(query, tableName)
+	if err != nil {
+		return nil, NewQueryExceptionWithCause(err, "获取表列信息失败")
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var colName string
+		if err := rows.Scan(&colName); err != nil {
+			return nil, NewQueryExceptionWithCause(err, "扫描列名失败")
+		}
+		columns[colName] = true
+	}
+
+	return columns, nil
 }
