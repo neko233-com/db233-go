@@ -82,3 +82,23 @@ type TestUser struct {
 	Email    string `db:"email"`
 	Age      int    `db:"age"`
 }
+
+// TableName 实现 IDbEntity 接口 - 获取表名
+func (u *TestUser) TableName() string {
+	return "test_user"
+}
+
+// GetDbUid 实现 IDbEntity 接口 - 获取唯一ID列名
+func (u *TestUser) GetDbUid() string {
+	return "id" // 使用默认的 id 列
+}
+
+// SerializeBeforeSaveDb 实现 IDbEntity 接口 - 保存前的序列化钩子
+func (u *TestUser) SerializeBeforeSaveDb() {
+	// 测试中不需要特殊处理，留空即可
+}
+
+// DeserializeAfterLoadDb 实现 IDbEntity 接口 - 加载后的反序列化钩子
+func (u *TestUser) DeserializeAfterLoadDb() {
+	// 测试中不需要特殊处理，留空即可
+}

@@ -93,14 +93,11 @@ func TestBaseCrudRepository_FindById(t *testing.T) {
 		return
 	}
 
-	// 类型断言
+	// 类型断言（由于方法使用指针接收者，只能是指针类型）
 	var foundUser *TestUser
-	switch v := found.(type) {
-	case TestUser:
-		foundUser = &v
-	case *TestUser:
+	if v, ok := found.(*TestUser); ok {
 		foundUser = v
-	default:
+	} else {
 		t.Errorf("意外的返回类型: %T", found)
 		return
 	}
@@ -171,14 +168,11 @@ func TestBaseCrudRepository_Update(t *testing.T) {
 		return
 	}
 
-	// 类型断言
+	// 类型断言（由于方法使用指针接收者，只能是指针类型）
 	var foundUser *TestUser
-	switch v := found.(type) {
-	case TestUser:
-		foundUser = &v
-	case *TestUser:
+	if v, ok := found.(*TestUser); ok {
 		foundUser = v
-	default:
+	} else {
 		t.Errorf("意外的返回类型: %T", found)
 		return
 	}
