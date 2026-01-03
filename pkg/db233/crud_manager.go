@@ -10,6 +10,45 @@ import (
 )
 
 /**
+ * IDbEntity - 数据库实体接口
+ *
+ * 所有数据库实体必须实现此接口，提供自定义表名
+ *
+ * @author neko233-com
+ * @since 2025-12-28
+ */
+type IDbEntity interface {
+	/**
+	 * 获取表名
+	 *
+	 * @return string 表名
+	 */
+	TableName() string
+
+	/**
+	 * 获取数据库唯一ID列名
+	 * 如果返回空字符串，则使用默认主键列（通常是 "id"）
+	 *
+	 * @return string 唯一ID列名，如果为空则使用默认主键
+	 */
+	GetDbUid() string
+
+	/**
+	 * 保存到数据库前的序列化钩子
+	 * 在数据保存到数据库之前调用，可以用于数据转换、加密等操作
+	 * 此方法在 Save 和 Update 操作前调用
+	 */
+	SerializeBeforeSaveDb()
+
+	/**
+	 * 从数据库加载后的反序列化钩子
+	 * 在数据从数据库加载后调用，可以用于数据转换、解密等操作
+	 * 此方法在 FindById、FindAll、FindByCondition 等查询操作后调用
+	 */
+	DeserializeAfterLoadDb()
+}
+
+/**
  * CrudManager - CRUD 管理器
  *
  * 管理实体类的元数据，包括表结构、列信息、主键等
@@ -196,16 +235,50 @@ func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.
 }
 
 /**
- * 获取表名
+ * 获取表名（从 IDbEntity 接口）
+ *
+ * @param entity 实现了 IDbEntity 接口的实体
+ * @return string 表名
+ */
+func (cm *CrudManager) GetTableNameFromEntity(entity IDbEntity) string {
+	return entity.TableName()
+}
+
+/**
+ * 获取表名（从 reflect.Type，内部会尝试创建实例并检查 IDbEntity 接口）
+ *
+ * @param t 实体类型
+ * @return string 表名
  */
 func (cm *CrudManager) GetTableName(t reflect.Type) string {
-	// 检查是否有 table tag
+	// 尝试创建实例并检查是否实现了 IDbEntity 接口
 	if t.Kind() == reflect.Struct {
-		if tableTag := t.Field(0).Tag.Get("table"); tableTag != "" {
-			return tableTag
+		// 创建指针实例
+		instancePtr := reflect.New(t).Interface()
+		if entity, ok := instancePtr.(IDbEntity); ok {
+			tableName := entity.TableName()
+			if tableName != "" {
+				return tableName
+			}
+		}
+		
+		// 如果指针类型不实现，尝试值类型
+		instanceValue := reflect.New(t).Elem().Interface()
+		if entity, ok := instanceValue.(IDbEntity); ok {
+			tableName := entity.TableName()
+			if tableName != "" {
+				return tableName
+			}
+		}
+		
+		// 检查是否有 table tag（向后兼容）
+		if t.NumField() > 0 {
+			if tableTag := t.Field(0).Tag.Get("table"); tableTag != "" {
+				return tableTag
+			}
 		}
 	}
-	// 默认使用类型名转换为 snake_case
+	// 默认使用类型名转换为 snake_case（向后兼容）
 	return StringUtilsInstance.CamelToSnake(t.Name())
 }
 
