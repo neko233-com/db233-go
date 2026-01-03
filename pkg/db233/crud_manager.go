@@ -286,9 +286,20 @@ func (cm *CrudManager) GetTableName(t reflect.Type) string {
  * 获取列名
  */
 func (cm *CrudManager) GetColumnName(field reflect.StructField) string {
+	// 优先使用 db 标签
+	if dbTag := field.Tag.Get("db"); dbTag != "" && dbTag != "-" {
+		// 解析标签，获取列名（标签格式：column_name,options...）
+		tagParts := strings.Split(dbTag, ",")
+		columnName := strings.TrimSpace(tagParts[0])
+		if columnName != "" {
+			return columnName
+		}
+	}
+	// 其次使用 column 标签（向后兼容）
 	if colTag := field.Tag.Get("column"); colTag != "" {
 		return colTag
 	}
+	// 默认处理
 	if field.Name == "ID" || field.Name == "Id" {
 		return "id"
 	}
