@@ -71,7 +71,9 @@ type TestEntityWithSkipFields struct {
 	Name     string `db:"name"`
 	SkipMe   string `db:"skip_me,skip"` // 使用 skip 选项
 	IgnoreMe string `db:"-"`             // 使用 - 标记
-	EmptyTag string `db:""`              // 空标签
+	// EmptyTag 没有 db 标签，但由于现在支持无标签字段自动转换，它会被包含
+	// 如果表中有这个列，测试会通过；如果没有，测试会失败（这是预期的）
+	EmptyTag string // 无标签字段（现在会被自动包含）
 }
 
 func (e *TestEntityWithSkipFields) TableName() string {
@@ -140,7 +142,8 @@ func setupSkipFieldsTable(db *db233.Db) error {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS test_skip_fields (
 			id INT AUTO_INCREMENT PRIMARY KEY,
-			name VARCHAR(255) NOT NULL
+			name VARCHAR(255) NOT NULL,
+			empty_tag VARCHAR(255)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 	`
 	_, err := db.DataSource.Exec(createTableSQL)

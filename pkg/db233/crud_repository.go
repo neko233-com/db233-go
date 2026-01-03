@@ -148,15 +148,16 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 			}
 		}
 		
-		// 检查值是否为 nil（额外检查）
-		if value == nil {
-			LogDebug("跳过 nil 值字段: 表=%s, 字段=%s", tableName, name)
-			continue
+		// 对于非主键字段，即使值为空也要包含（让数据库处理 NOT NULL 约束）
+		// 如果值为 nil 或零值，提供默认值
+		finalValue := r.getDefaultValueIfEmpty(value, name)
+		if finalValue != value {
+			LogDebug("为字段提供默认值: 表=%s, 字段=%s, 原值=%v, 默认值=%v", tableName, name, value, finalValue)
 		}
 
 		columns = append(columns, name)
 		placeholders = append(placeholders, "?")
-		values = append(values, value)
+		values = append(values, finalValue)
 	}
 
 	if len(columns) == 0 {
@@ -282,7 +283,7 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 			columnName = strings.TrimSpace(tagParts[0])
 			if columnName == "" {
 				// 如果 db 标签为空（如 db:""），跳过该字段
-				LogDebug("跳过字段（db标签为空）: 实体=%s, 字段=%s", entityTypeName, field.Name)
+				LogDebug("跳过字段（db标签为空字符串）: 实体=%s, 字段=%s", entityTypeName, field.Name)
 				continue
 			}
 			// 检查是否有 skip 选项
@@ -293,9 +294,10 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 				}
 			}
 		} else {
-			// 如果没有标签（tag == ""），也跳过该字段（只有明确指定 db 标签的字段才会被处理）
-			LogDebug("跳过字段（无db标签）: 实体=%s, 字段=%s", entityTypeName, field.Name)
-			continue
+			// 如果没有 db 标签（tag == ""），使用字段名的驼峰转下划线作为列名（向后兼容）
+			// 这样可以支持没有明确标记 db 标签的字段（如 ModulesData）
+			columnName = StringUtilsInstance.CamelToSnake(field.Name)
+			LogDebug("字段无db标签，使用字段名转换: 实体=%s, 字段=%s, 列名=%s", entityTypeName, field.Name, columnName)
 		}
 
 		if shouldSkip {
@@ -385,6 +387,74 @@ func (r *BaseCrudRepository) serializeComplexType(value interface{}, fieldType r
 	}
 
 	return string(jsonBytes), nil
+}
+
+/**
+ * 获取默认值（如果值为空）
+ * 对于空值字段，根据类型提供合理的默认值，确保数据库 INSERT 不会因为缺少字段而失败
+ */
+func (r *BaseCrudRepository) getDefaultValueIfEmpty(value interface{}, fieldName string) interface{} {
+	if value == nil {
+		// nil 值，返回空字符串（数据库可以处理）
+		LogDebug("字段值为 nil，使用空字符串作为默认值: 字段=%s", fieldName)
+		return ""
+	}
+
+	v := reflect.ValueOf(value)
+	
+	// 处理指针类型
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			// nil 指针，返回空字符串
+			LogDebug("字段值为 nil 指针，使用空字符串作为默认值: 字段=%s", fieldName)
+			return ""
+		}
+		// 解引用指针，检查指向的值
+		v = v.Elem()
+		value = v.Interface()
+	}
+
+	// 检查是否为零值
+	if !r.isZeroValue(value) {
+		// 不是零值，直接返回原值
+		return value
+	}
+
+	// 是零值，根据类型提供默认值
+	switch v.Kind() {
+	case reflect.String:
+		// 字符串类型，空字符串已经是默认值，直接返回
+		return ""
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		// 整数类型，0 已经是默认值，直接返回
+		return int64(0)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		// 无符号整数类型，0 已经是默认值，直接返回
+		return uint64(0)
+	case reflect.Float32, reflect.Float64:
+		// 浮点数类型，0.0 已经是默认值，直接返回
+		return 0.0
+	case reflect.Bool:
+		// 布尔类型，false 已经是默认值，直接返回
+		return false
+	case reflect.Slice, reflect.Array:
+		// 切片和数组，空值返回空 JSON 数组
+		if v.IsNil() || v.Len() == 0 {
+			LogDebug("字段值为空切片/数组，使用空 JSON 数组作为默认值: 字段=%s", fieldName)
+			return "[]"
+		}
+		return value
+	case reflect.Map:
+		// Map 类型，空值返回空 JSON 对象
+		if v.IsNil() || v.Len() == 0 {
+			LogDebug("字段值为空 Map，使用空 JSON 对象作为默认值: 字段=%s", fieldName)
+			return "{}"
+		}
+		return value
+	default:
+		// 其他类型，返回原值（让数据库处理）
+		return value
+	}
 }
 
 /**

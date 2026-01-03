@@ -395,38 +395,71 @@ func (cm *CrudManager) generateCreateTableSQL(t reflect.Type) (string, error) {
 		return "", NewDb233Exception("无法获取表名")
 	}
 
+	// 尝试获取 IDbEntity 实例以获取主键列名
+	var uidColumn string
+	if t.Kind() == reflect.Struct {
+		instancePtr := reflect.New(t).Interface()
+		if entity, ok := instancePtr.(IDbEntity); ok {
+			uidColumn = entity.GetDbUid()
+		}
+	}
+
 	var columns []string
 	var primaryKeys []string
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() {
-			continue
-		}
-		dbTag := field.Tag.Get("db")
-		if dbTag == "" || dbTag == "-" {
+			LogDebug("跳过未导出字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
 		}
 
+		dbTag := field.Tag.Get("db")
+		// 跳过明确标记为忽略的字段
+		if dbTag == "-" {
+			LogDebug("跳过标记为忽略的字段: 表=%s, 字段=%s", tableName, field.Name)
+			continue
+		}
+		// 跳过明确标记为 skip 的字段
+		if strings.Contains(dbTag, "skip") {
+			LogDebug("跳过标记为 skip 的字段: 表=%s, 字段=%s", tableName, field.Name)
+			continue
+		}
+
+		// 获取列名（支持没有 db 标签的字段）
 		colName := cm.GetColumnName(field)
+		if colName == "" {
+			LogDebug("跳过无法确定列名的字段: 表=%s, 字段=%s", tableName, field.Name)
+			continue
+		}
+
+		// 获取 SQL 类型
 		colType := cm.getSQLType(field)
 		colDef := fmt.Sprintf("`%s` %s", colName, colType)
 
 		// 检查是否自增
-		if strings.Contains(field.Tag.Get("db"), "auto_increment") {
+		if strings.Contains(dbTag, "auto_increment") {
 			colDef += " AUTO_INCREMENT"
 		}
 
-		// 检查是否可空
-		if !strings.Contains(field.Tag.Get("db"), "not_null") && !cm.IsPrimaryKey(field) {
-			colDef += " NULL"
-		} else {
+		// 判断是否为主键
+		isPrimaryKey := cm.IsPrimaryKey(field)
+		// 如果指定了 uidColumn，且当前字段名匹配，也认为是主键
+		if uidColumn != "" && colName == uidColumn {
+			isPrimaryKey = true
+		}
+
+		// 默认允许为 NULL，除非明确标记为 not_null 或是主键
+		// 主键必须为 NOT NULL（数据库要求）
+		if strings.Contains(dbTag, "not_null") || isPrimaryKey {
 			colDef += " NOT NULL"
+		} else {
+			colDef += " NULL"
 		}
 
 		columns = append(columns, colDef)
 
-		if cm.IsPrimaryKey(field) {
+		if isPrimaryKey {
 			primaryKeys = append(primaryKeys, fmt.Sprintf("`%s`", colName))
 		}
 	}
@@ -435,8 +468,13 @@ func (cm *CrudManager) generateCreateTableSQL(t reflect.Type) (string, error) {
 		columns = append(columns, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
 	}
 
+	if len(columns) == 0 {
+		return "", NewDb233Exception(fmt.Sprintf("表 %s 没有可用的列", tableName))
+	}
+
 	createSQL := fmt.Sprintf("CREATE TABLE `%s` (\n\t%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", tableName, strings.Join(columns, ",\n\t"))
 
+	LogDebug("生成建表SQL: 表=%s, SQL=%s", tableName, createSQL)
 	return createSQL, nil
 }
 
@@ -446,16 +484,46 @@ func (cm *CrudManager) generateCreateTableSQL(t reflect.Type) (string, error) {
 func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 	fieldType := field.Type
 
-	// 检查tag中的类型定义
+	// 优先检查 db_type tag（用于指定数据库类型，如 TEXT）
+	if dbTypeTag := field.Tag.Get("db_type"); dbTypeTag != "" {
+		return dbTypeTag
+	}
+
+	// 其次检查 type tag（向后兼容）
 	if typeTag := field.Tag.Get("type"); typeTag != "" {
 		return typeTag
 	}
 
-	switch fieldType.Kind() {
+	// 处理指针类型
+	kind := fieldType.Kind()
+	if kind == reflect.Ptr {
+		fieldType = fieldType.Elem()
+		kind = fieldType.Kind()
+	}
+
+	// 检查是否为复杂类型（map, slice, array），需要序列化为 JSON，使用 TEXT 类型
+	if cm.isComplexTypeForSQL(kind, fieldType) {
+		LogDebug("检测到复杂类型字段，使用 TEXT 类型: 字段=%s, 类型=%s", field.Name, fieldType.String())
+		return "TEXT"
+	}
+
+	switch kind {
 	case reflect.Int, reflect.Int32:
 		return "INT"
+	case reflect.Int8:
+		return "TINYINT"
+	case reflect.Int16:
+		return "SMALLINT"
 	case reflect.Int64:
 		return "BIGINT"
+	case reflect.Uint, reflect.Uint32:
+		return "INT UNSIGNED"
+	case reflect.Uint8:
+		return "TINYINT UNSIGNED"
+	case reflect.Uint16:
+		return "SMALLINT UNSIGNED"
+	case reflect.Uint64:
+		return "BIGINT UNSIGNED"
 	case reflect.Float32:
 		return "FLOAT"
 	case reflect.Float64:
@@ -467,6 +535,10 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 				size = s
 			}
 		}
+		// 如果 size 很大，使用 TEXT
+		if size > 65535 {
+			return "TEXT"
+		}
 		return fmt.Sprintf("VARCHAR(%d)", size)
 	case reflect.Bool:
 		return "TINYINT(1)"
@@ -474,9 +546,31 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 		if fieldType == reflect.TypeOf(time.Time{}) {
 			return "TIMESTAMP"
 		}
+		// 其他结构体类型，使用 TEXT（需要序列化）
+		LogDebug("检测到结构体类型字段，使用 TEXT 类型: 字段=%s, 类型=%s", field.Name, fieldType.String())
+		return "TEXT"
 	}
 
 	return "VARCHAR(255)"
+}
+
+/**
+ * 判断是否为复杂类型（用于 SQL 类型判断）
+ */
+func (cm *CrudManager) isComplexTypeForSQL(kind reflect.Kind, fieldType reflect.Type) bool {
+	switch kind {
+	case reflect.Map, reflect.Slice, reflect.Array:
+		return true
+	case reflect.Struct:
+		// time.Time 是数据库原生支持的类型，不需要序列化
+		if fieldType == reflect.TypeOf(time.Time{}) {
+			return false
+		}
+		// 其他结构体需要序列化
+		return true
+	default:
+		return false
+	}
 }
 
 /**
@@ -526,18 +620,39 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 		return err
 	}
 
-	// 获取实体定义的列
+	// 尝试获取 IDbEntity 实例以获取主键列名
+	var uidColumn string
+	if t.Kind() == reflect.Struct {
+		instancePtr := reflect.New(t).Interface()
+		if entity, ok := instancePtr.(IDbEntity); ok {
+			uidColumn = entity.GetDbUid()
+		}
+	}
+
+	// 获取实体定义的列（处理没有 db 标签的字段）
 	entityColumns := make(map[string]reflect.StructField)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() {
+			LogDebug("跳过未导出字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
 		}
 		dbTag := field.Tag.Get("db")
-		if dbTag == "" || dbTag == "-" {
+		// 跳过明确标记为忽略的字段
+		if dbTag == "-" {
+			LogDebug("跳过标记为忽略的字段: 表=%s, 字段=%s", tableName, field.Name)
+			continue
+		}
+		// 跳过明确标记为 skip 的字段
+		if strings.Contains(dbTag, "skip") {
+			LogDebug("跳过标记为 skip 的字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
 		}
 		colName := cm.GetColumnName(field)
+		if colName == "" {
+			LogDebug("跳过无法确定列名的字段: 表=%s, 字段=%s", tableName, field.Name)
+			continue
+		}
 		entityColumns[colName] = field
 	}
 
@@ -548,19 +663,29 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 			colType := cm.getSQLType(field)
 			colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
 
+			dbTag := field.Tag.Get("db")
 			// 检查是否自增
-			if strings.Contains(field.Tag.Get("db"), "auto_increment") {
+			if strings.Contains(dbTag, "auto_increment") {
 				colDef += " AUTO_INCREMENT"
 			}
 
-			// 检查是否可空
-			if !strings.Contains(field.Tag.Get("db"), "not_null") && !cm.IsPrimaryKey(field) {
-				colDef += " NULL"
-			} else {
+			// 判断是否为主键
+			isPrimaryKey := cm.IsPrimaryKey(field)
+			// 如果指定了 uidColumn，且当前字段名匹配，也认为是主键
+			if uidColumn != "" && colName == uidColumn {
+				isPrimaryKey = true
+			}
+
+			// 默认允许为 NULL，除非明确标记为 not_null 或是主键
+			// 主键必须为 NOT NULL（数据库要求）
+			if strings.Contains(dbTag, "not_null") || isPrimaryKey {
 				colDef += " NOT NULL"
+			} else {
+				colDef += " NULL"
 			}
 
 			alterStatements = append(alterStatements, colDef)
+			LogDebug("准备添加缺失的列: 表=%s, 列=%s, 定义=%s", tableName, colName, colDef)
 		}
 	}
 
