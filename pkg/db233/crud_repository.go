@@ -281,7 +281,7 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 			tagParts := strings.Split(tag, ",")
 			columnName = strings.TrimSpace(tagParts[0])
 			if columnName == "" {
-				// 如果 db 标签为空，跳过该字段
+				// 如果 db 标签为空（如 db:""），跳过该字段
 				LogDebug("跳过字段（db标签为空）: 实体=%s, 字段=%s", entityTypeName, field.Name)
 				continue
 			}
@@ -293,8 +293,9 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 				}
 			}
 		} else {
-			// 如果没有标签，使用驼峰转下划线
-			columnName = StringUtilsInstance.CamelToSnake(field.Name)
+			// 如果没有标签（tag == ""），也跳过该字段（只有明确指定 db 标签的字段才会被处理）
+			LogDebug("跳过字段（无db标签）: 实体=%s, 字段=%s", entityTypeName, field.Name)
+			continue
 		}
 
 		if shouldSkip {
@@ -341,8 +342,8 @@ func (r *BaseCrudRepository) isComplexType(kind reflect.Kind, fieldType reflect.
 		if fieldType == reflect.TypeOf(time.Time{}) {
 			return false
 		}
-		// 其他结构体暂时不序列化，需要用户自己在 SerializeBeforeSaveDb 中处理
-		return false
+		// 其他结构体需要序列化
+		return true
 	case reflect.Ptr:
 		// 指针类型需要进一步检查指向的类型
 		elemType := fieldType.Elem()
@@ -353,7 +354,10 @@ func (r *BaseCrudRepository) isComplexType(kind reflect.Kind, fieldType reflect.
 		if elemKind == reflect.Map || elemKind == reflect.Slice || elemKind == reflect.Array {
 			return true
 		}
-		// 指针指向结构体，不序列化（需要用户自己处理）
+		// 指针指向结构体，也需要序列化
+		if elemKind == reflect.Struct {
+			return true
+		}
 		return false
 	default:
 		return false
