@@ -164,11 +164,48 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		return NewValidationException(fmt.Sprintf("表 %s 没有可插入的字段（所有字段都为空或已跳过）", tableName))
 	}
 
-	sql := "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
+	// 检查主键是否在 columns 中（用于判断是否需要 upsert）
+	hasPrimaryKey := false
+	for _, col := range columns {
+		if col == uidColumn {
+			hasPrimaryKey = true
+			break
+		}
+	}
 
-	LogDebug("执行 INSERT: 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
+	// 构建 INSERT ... ON DUPLICATE KEY UPDATE SQL（MySQL 的 upsert 语法）
+	var sql string
+	var finalValues []interface{}
 
-	result, err := r.db.DataSource.Exec(sql, values...)
+	if hasPrimaryKey {
+		// 有主键值，使用 INSERT ... ON DUPLICATE KEY UPDATE
+		updateParts := make([]string, 0)
+		for _, col := range columns {
+			if col != uidColumn {
+				// 只更新非主键字段
+				updateParts = append(updateParts, col+" = VALUES("+col+")")
+			}
+		}
+
+		if len(updateParts) > 0 {
+			// 使用 ON DUPLICATE KEY UPDATE
+			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ") ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
+			finalValues = values
+			LogDebug("执行 INSERT ... ON DUPLICATE KEY UPDATE (upsert): 表=%s, 主键列=%s, 字段数=%d, SQL=%s", tableName, uidColumn, len(columns), sql)
+		} else {
+			// 只有主键字段，使用普通 INSERT
+			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
+			finalValues = values
+			LogDebug("执行 INSERT: 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
+		}
+	} else {
+		// 没有主键值（自增主键），使用普通 INSERT
+		sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
+		finalValues = values
+		LogDebug("执行 INSERT: 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
+	}
+
+	result, err := r.db.DataSource.Exec(sql, finalValues...)
 	if err != nil {
 		LogError("保存实体失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
 		return NewQueryExceptionWithCause(err, fmt.Sprintf("保存实体到表 %s 失败", tableName))
@@ -182,7 +219,13 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	LogDebug("保存成功: 表=%s, 影响行数=%d", tableName, rowsAffected)
+	if rowsAffected == 1 {
+		LogDebug("保存成功 (INSERT): 表=%s, 影响行数=%d", tableName, rowsAffected)
+	} else if rowsAffected == 2 {
+		LogDebug("保存成功 (UPDATE): 表=%s, 影响行数=%d (主键冲突，已更新)", tableName, rowsAffected)
+	} else {
+		LogDebug("保存完成: 表=%s, 影响行数=%d", tableName, rowsAffected)
+	}
 
 	return nil
 }
