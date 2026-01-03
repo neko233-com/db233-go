@@ -501,6 +501,10 @@ func (r *BaseCrudRepository) isZeroValue(value interface{}) bool {
 		// 对于结构体，检查所有字段是否为零值
 		for i := 0; i < v.NumField(); i++ {
 			fieldValue := v.Field(i)
+			// 跳过未导出的字段（无法调用 Interface()）
+			if !fieldValue.CanInterface() {
+				continue
+			}
 			if !r.isZeroValue(fieldValue.Interface()) {
 				return false
 			}

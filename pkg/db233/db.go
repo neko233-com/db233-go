@@ -77,6 +77,7 @@ type Db struct {
 	DataSource *sql.DB
 	DbId       int
 	DbGroup    *DbGroup
+	DatabaseType DatabaseType // 数据库类型，默认为 MySQL
 }
 
 /**
@@ -92,6 +93,28 @@ func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
 		DataSource: dataSource,
 		DbId:       dbId,
 		DbGroup:    dbGroup,
+		DatabaseType: DatabaseTypeMySQL, // 默认 MySQL
+	}
+}
+
+/**
+ * 创建指定数据库类型的 Db 实例
+ *
+ * @param dataSource 数据源
+ * @param dbId 数据库 ID
+ * @param dbGroup 所属数据库组
+ * @param dbType 数据库类型
+ * @return *Db 实例
+ */
+func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType DatabaseType) *Db {
+	if dbType == "" || !dbType.IsValid() {
+		dbType = DatabaseTypeMySQL
+	}
+	return &Db{
+		DataSource: dataSource,
+		DbId:       dbId,
+		DbGroup:    dbGroup,
+		DatabaseType: dbType,
 	}
 }
 
