@@ -18,10 +18,6 @@ func (e *TestUpsertEntity) TableName() string {
 	return "test_upsert"
 }
 
-func (e *TestUpsertEntity) GetDbUid() string {
-	return "accountId"
-}
-
 func (e *TestUpsertEntity) SerializeBeforeSaveDb() {}
 
 func (e *TestUpsertEntity) DeserializeAfterLoadDb() {}
@@ -86,7 +82,7 @@ func TestUpsertSave(t *testing.T) {
 
 	// 第二次保存相同的主键（应该 UPDATE 而不是报错）
 	entity2 := &TestUpsertEntity{
-		AccountID: "test_account_001", // 相同的主键
+		AccountID: "test_account_001",  // 相同的主键
 		PlayerID:  "player_002",        // 不同的值
 		Password:  "newpassword",       // 不同的值
 		Email:     "test2@example.com", // 不同的值
@@ -131,10 +127,6 @@ type TestAutoIncrementEntity struct {
 
 func (e *TestAutoIncrementEntity) TableName() string {
 	return "test_upsert_auto"
-}
-
-func (e *TestAutoIncrementEntity) GetDbUid() string {
-	return "id"
 }
 
 func (e *TestAutoIncrementEntity) SerializeBeforeSaveDb() {}
@@ -203,4 +195,3 @@ func TestUpsertWithAutoIncrement(t *testing.T) {
 
 	t.Logf("自增主键 upsert 测试通过: 第一次 ID=%d, 第二次 ID=%d", originalID, entity2.ID)
 }
-

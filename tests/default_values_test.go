@@ -8,23 +8,19 @@ import (
 
 // TestEntityWithDefaults 测试默认值处理
 type TestEntityWithDefaults struct {
-	ID          int    `db:"id,primary_key,auto_increment"`
-	Name        string `db:"name"`
-	EmptyString string `db:"empty_string"`        // 空字符串字段
-	ZeroInt     int    `db:"zero_int"`            // 零值整数
-	ZeroFloat   float64 `db:"zero_float"`         // 零值浮点数
-	FalseBool   bool   `db:"false_bool"`          // false 布尔值
-	EmptySlice  []string `db:"empty_slice"`       // 空切片
-	EmptyMap    map[string]interface{} `db:"empty_map"` // 空 map
-	TextField   string `db:"text_field"`         // TEXT 类型字段
+	ID          int                    `db:"id,primary_key,auto_increment"`
+	Name        string                 `db:"name"`
+	EmptyString string                 `db:"empty_string"` // 空字符串字段
+	ZeroInt     int                    `db:"zero_int"`     // 零值整数
+	ZeroFloat   float64                `db:"zero_float"`   // 零值浮点数
+	FalseBool   bool                   `db:"false_bool"`   // false 布尔值
+	EmptySlice  []string               `db:"empty_slice"`  // 空切片
+	EmptyMap    map[string]interface{} `db:"empty_map"`    // 空 map
+	TextField   string                 `db:"text_field"`   // TEXT 类型字段
 }
 
 func (e *TestEntityWithDefaults) TableName() string {
 	return "test_defaults"
-}
-
-func (e *TestEntityWithDefaults) GetDbUid() string {
-	return "id"
 }
 
 func (e *TestEntityWithDefaults) SerializeBeforeSaveDb() {
@@ -102,7 +98,7 @@ func TestDefaultValues(t *testing.T) {
 	}
 
 	foundEntity := found.(*TestEntityWithDefaults)
-	
+
 	// 验证默认值
 	if foundEntity.EmptyString != "" {
 		t.Errorf("EmptyString 应该是空字符串，得到: %s", foundEntity.EmptyString)
@@ -130,10 +126,6 @@ type TestRequiredEntity struct {
 
 func (e *TestRequiredEntity) TableName() string {
 	return "test_required_defaults"
-}
-
-func (e *TestRequiredEntity) GetDbUid() string {
-	return "player_id"
 }
 
 func (e *TestRequiredEntity) SerializeBeforeSaveDb() {
@@ -193,4 +185,3 @@ func TestRequiredFieldsWithDefaults(t *testing.T) {
 
 	t.Logf("成功保存必填字段使用默认值的实体: PlayerID=%s", entity.PlayerID)
 }
-

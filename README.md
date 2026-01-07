@@ -63,12 +63,28 @@ func main() {
 
 ```go
 type User struct {
-    ID       int    `db:"id,primary_key"`
-    Username string `db:"username"`
+    ID       int    `db:"id,primary_key,auto_increment"`
+    Username string `db:"username,not_null"`
     Email    string `db:"email"`
     Age      int    `db:"age"`
+    Internal string `db:"-"` // 忽略此字段，不会生成数据库列
+    // NoTag  string            // 没有 db 标签的字段也会被忽略
 }
 ```
+
+**重要说明：**
+- 字段必须有 `db` 标签才会被处理和映射到数据库列
+- 使用 `db:"-"` 可以明确忽略字段，不会在数据库中创建对应的列
+- 没有 `db` 标签的字段会被自动忽略
+- `db` 标签格式：`db:"列名,选项1,选项2"`
+  - 列名：数据库列名
+  - 选项：`primary_key`（主键）、`auto_increment`（自增）、`not_null`（非空）、`skip`（跳过）
+- 支持的 db 标签：
+  - `db:"column_name"` - 指定列名
+  - `db:"column_name,primary_key"` - 主键
+  - `db:"column_name,auto_increment"` - 自增主键
+  - `db:"column_name,not_null"` - 非空约束
+  - `db:"-"` - 忽略字段
 
 ### 3. 使用 CRUD 操作
 
@@ -100,7 +116,100 @@ if err != nil {
 }
 ```
 
-### 4. 使用事务管理
+**UPSERT 功能（INSERT ... ON DUPLICATE KEY UPDATE）：**
+
+Save 方法会自动处理主键冲突：
+- 如果主键不存在，执行 INSERT 操作
+- 如果主键已存在，执行 UPDATE 操作（更新除主键外的所有字段）
+
+```go
+// 首次保存 - 执行 INSERT
+user := &User{
+    ID:       1000022,
+    Username: "john_doe",
+    Email:    "john@example.com",
+    Age:      30,
+}
+err := repo.Save(user) // INSERT INTO users ...
+
+// 再次保存相同主键 - 执行 UPDATE
+user.Age = 31
+err = repo.Save(user) // INSERT ... ON DUPLICATE KEY UPDATE age=31
+// 不会报错 "Duplicate entry '1000022' for key 'PRIMARY'"，而是自动更新
+```
+
+### 4. 自动建表和表结构迁移
+
+db233-go 提供强大的自动建表和表结构迁移功能，可以根据实体定义自动创建表或更新表结构。
+
+**自动创建表：**
+
+```go
+// 获取 CrudManager 实例
+cm := db233.GetCrudManagerInstance()
+
+// 自动创建表（如果表不存在）
+err := cm.AutoCreateTable(db, &User{})
+if err != nil {
+    log.Printf("创建表失败: %v", err)
+}
+```
+
+**自动迁移表结构：**
+
+```go
+// 自动迁移表（创建表或添加缺失的列）
+err := cm.AutoMigrateTable(db, &User{})
+if err != nil {
+    log.Printf("迁移表失败: %v", err)
+}
+```
+
+**工作原理：**
+
+1. **AutoCreateTable**: 
+   - 检查表是否存在
+   - 如果不存在，根据实体定义生成 CREATE TABLE SQL
+   - 只处理有 `db` 标签的字段
+   - 忽略 `db:"-"` 和没有 `db` 标签的字段
+
+2. **AutoMigrateTable**:
+   - 检查表是否存在，如果不存在则创建
+   - 如果表已存在，比对实体定义和数据库表结构
+   - 自动添加缺失的列（不删除已有列，保证数据安全）
+   - 支持添加新字段而不影响现有数据
+
+**示例：**
+
+```go
+// 定义实体
+type User struct {
+    ID       int    `db:"id,primary_key,auto_increment"`
+    Username string `db:"username,not_null"`
+    Email    string `db:"email"`
+    Age      int    `db:"age"`
+    Internal string `db:"-"` // 不会创建此列
+}
+
+// 自动创建表
+cm := db233.GetCrudManagerInstance()
+err := cm.AutoCreateTable(db, &User{})
+
+// 后续添加新字段
+type User struct {
+    ID       int    `db:"id,primary_key,auto_increment"`
+    Username string `db:"username,not_null"`
+    Email    string `db:"email"`
+    Age      int    `db:"age"`
+    Phone    string `db:"phone"` // 新增字段
+    Internal string `db:"-"`
+}
+
+// 自动迁移（只会添加 phone 列，不影响现有数据）
+err = cm.AutoMigrateTable(db, &User{})
+```
+
+### 5. 使用事务管理
 
 ```go
 // 编程式事务
@@ -132,7 +241,7 @@ err = db233.WithTransaction(db, func(tm *db233.TransactionManager) error {
 })
 ```
 
-### 5. 使用数据迁移
+### 6. 使用数据迁移
 
 ```go
 // 创建迁移管理器
@@ -167,7 +276,7 @@ for _, m := range migrations {
 }
 ```
 
-### 6. 使用健康检查
+### 7. 使用健康检查
 
 ```go
 // 创建健康检查器
@@ -190,7 +299,7 @@ scheduler.Start()
 defer scheduler.Stop()
 ```
 
-### 7. 使用配置管理
+### 8. 使用配置管理
 
 ```go
 // 从文件加载配置
@@ -208,7 +317,7 @@ dbPort := db233.GetConfigInt("database.port", 3306)
 cm.LoadFromEnv("DB233_")
 ```
 
-### 8. 使用日志系统
+### 9. 使用日志系统
 
 ```go
 // 设置日志级别
@@ -221,7 +330,7 @@ db233.LogWarn("发现配置问题: %s", issue)
 db233.LogError("数据库连接失败: %v", err)
 ```
 
-### 9. 使用分片
+### 10. 使用分片
 
 ```go
 // 配置分片策略

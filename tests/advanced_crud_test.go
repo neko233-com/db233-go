@@ -10,13 +10,13 @@ import (
 
 // TestEntityWithComplexTypes 测试包含复杂类型的实体
 type TestEntityWithComplexTypes struct {
-	ID       int                    `db:"id,primary_key,auto_increment"`
-	Name     string                 `db:"name"`
-	Tags     []string               `db:"tags"`              // slice 类型
-	Metadata map[string]interface{} `db:"metadata"`          // map 类型
-	Items    []Item                 `db:"items"`             // 结构体 slice
-	Config   *Config                `db:"config"`             // 指针类型
-	CreatedAt time.Time             `db:"created_at"`        // time.Time（不应序列化）
+	ID        int                    `db:"id,primary_key,auto_increment"`
+	Name      string                 `db:"name"`
+	Tags      []string               `db:"tags"`       // slice 类型
+	Metadata  map[string]interface{} `db:"metadata"`   // map 类型
+	Items     []Item                 `db:"items"`      // 结构体 slice
+	Config    *Config                `db:"config"`     // 指针类型
+	CreatedAt time.Time              `db:"created_at"` // time.Time（不应序列化）
 }
 
 type Item struct {
@@ -31,10 +31,6 @@ type Config struct {
 
 func (e *TestEntityWithComplexTypes) TableName() string {
 	return "test_complex_types"
-}
-
-func (e *TestEntityWithComplexTypes) GetDbUid() string {
-	return "id"
 }
 
 func (e *TestEntityWithComplexTypes) SerializeBeforeSaveDb() {
@@ -58,11 +54,7 @@ func (e *TestEntityWithUnexportedFields) TableName() string {
 	return "test_unexported_fields"
 }
 
-func (e *TestEntityWithUnexportedFields) GetDbUid() string {
-	return "id"
-}
-
-func (e *TestEntityWithUnexportedFields) SerializeBeforeSaveDb() {}
+func (e *TestEntityWithUnexportedFields) SerializeBeforeSaveDb()  {}
 func (e *TestEntityWithUnexportedFields) DeserializeAfterLoadDb() {}
 
 // TestEntityWithSkipFields 测试跳过字段
@@ -70,7 +62,7 @@ type TestEntityWithSkipFields struct {
 	ID       int    `db:"id,primary_key,auto_increment"`
 	Name     string `db:"name"`
 	SkipMe   string `db:"skip_me,skip"` // 使用 skip 选项
-	IgnoreMe string `db:"-"`             // 使用 - 标记
+	IgnoreMe string `db:"-"`            // 使用 - 标记
 	// EmptyTag 没有 db 标签，但由于现在支持无标签字段自动转换，它会被包含
 	// 如果表中有这个列，测试会通过；如果没有，测试会失败（这是预期的）
 	EmptyTag string // 无标签字段（现在会被自动包含）
@@ -80,19 +72,15 @@ func (e *TestEntityWithSkipFields) TableName() string {
 	return "test_skip_fields"
 }
 
-func (e *TestEntityWithSkipFields) GetDbUid() string {
-	return "id"
-}
-
-func (e *TestEntityWithSkipFields) SerializeBeforeSaveDb() {}
+func (e *TestEntityWithSkipFields) SerializeBeforeSaveDb()  {}
 func (e *TestEntityWithSkipFields) DeserializeAfterLoadDb() {}
 
 // TestEntityWithEmptyValues 测试空值处理
 type TestEntityWithEmptyValues struct {
-	ID       int    `db:"id,primary_key,auto_increment"`
-	Name     string `db:"name"`
-	EmptyStr string `db:"empty_str"`
-	ZeroInt  int    `db:"zero_int"`
+	ID       int     `db:"id,primary_key,auto_increment"`
+	Name     string  `db:"name"`
+	EmptyStr string  `db:"empty_str"`
+	ZeroInt  int     `db:"zero_int"`
 	NilPtr   *string `db:"nil_ptr"`
 }
 
@@ -100,11 +88,7 @@ func (e *TestEntityWithEmptyValues) TableName() string {
 	return "test_empty_values"
 }
 
-func (e *TestEntityWithEmptyValues) GetDbUid() string {
-	return "id"
-}
-
-func (e *TestEntityWithEmptyValues) SerializeBeforeSaveDb() {}
+func (e *TestEntityWithEmptyValues) SerializeBeforeSaveDb()  {}
 func (e *TestEntityWithEmptyValues) DeserializeAfterLoadDb() {}
 
 // 设置复杂类型测试表
@@ -187,8 +171,8 @@ func TestComplexTypesSerialization(t *testing.T) {
 
 	// 创建包含复杂类型的实体
 	entity := &TestEntityWithComplexTypes{
-		Name:     "测试实体",
-		Tags:     []string{"tag1", "tag2", "tag3"},
+		Name: "测试实体",
+		Tags: []string{"tag1", "tag2", "tag3"},
 		Metadata: map[string]interface{}{
 			"key1": "value1",
 			"key2": 123,
@@ -337,8 +321,8 @@ func TestEmptyValues(t *testing.T) {
 
 	entity := &TestEntityWithEmptyValues{
 		Name:     "测试实体",
-		EmptyStr: "", // 空字符串
-		ZeroInt:  0,  // 零值
+		EmptyStr: "",  // 空字符串
+		ZeroInt:  0,   // 零值
 		NilPtr:   nil, // nil 指针
 	}
 
@@ -557,8 +541,8 @@ func TestZeroValueDetection(t *testing.T) {
 
 	// 测试各种零值情况
 	testCases := []struct {
-		name     string
-		entity   *TestEntityWithEmptyValues
+		name       string
+		entity     *TestEntityWithEmptyValues
 		shouldSave bool
 	}{
 		{
@@ -602,4 +586,3 @@ func TestZeroValueDetection(t *testing.T) {
 		})
 	}
 }
-

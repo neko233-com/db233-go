@@ -127,11 +127,15 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段，请检查字段是否包含 db 标签", entity))
 	}
 
-	// 获取唯一ID列名
-	uidColumn := entity.GetDbUid()
+	// 获取唯一ID列名（自动扫描 struct tag）
+	cm := GetCrudManagerInstance()
+	uidColumn := cm.GetPrimaryKeyColumnName(entity)
 	if uidColumn == "" {
 		uidColumn = "id"
 	}
+
+	// 获取主键值（自动从 struct 字段读取）
+	uidValue := cm.GetPrimaryKeyValue(entity)
 
 	// 构建 INSERT 语句
 	columns := make([]string, 0, len(fields))
@@ -147,7 +151,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 				continue // 跳过空主键，让数据库自动处理（自增或默认值）
 			}
 		}
-		
+
 		// 对于非主键字段，即使值为空也要包含（让数据库处理 NOT NULL 约束）
 		// 如果值为 nil 或零值，提供默认值
 		finalValue := r.getDefaultValueIfEmpty(value, name)
@@ -173,12 +177,13 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		}
 	}
 
-	// 构建 INSERT ... ON DUPLICATE KEY UPDATE SQL（MySQL 的 upsert 语法）
+	// 强制使用 INSERT ... ON DUPLICATE KEY UPDATE（UPSERT 语法）
+	// 这样可以避免主键冲突错误，自动处理 INSERT 或 UPDATE
 	var sql string
 	var finalValues []interface{}
 
 	if hasPrimaryKey {
-		// 有主键值，使用 INSERT ... ON DUPLICATE KEY UPDATE
+		// 有主键值，强制使用 INSERT ... ON DUPLICATE KEY UPDATE（UPSERT）
 		updateParts := make([]string, 0)
 		for _, col := range columns {
 			if col != uidColumn {
@@ -188,21 +193,21 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		}
 
 		if len(updateParts) > 0 {
-			// 使用 ON DUPLICATE KEY UPDATE
+			// 使用 ON DUPLICATE KEY UPDATE（强制 UPSERT）
 			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ") ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
 			finalValues = values
-			LogDebug("执行 INSERT ... ON DUPLICATE KEY UPDATE (upsert): 表=%s, 主键列=%s, 字段数=%d, SQL=%s", tableName, uidColumn, len(columns), sql)
+			LogDebug("执行 UPSERT (强制): 表=%s, 主键列=%s, 主键值=%v, 字段数=%d, SQL=%s", tableName, uidColumn, uidValue, len(columns), sql)
 		} else {
-			// 只有主键字段，使用普通 INSERT
-			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
+			// 只有主键字段，使用普通 INSERT IGNORE（避免重复错误）
+			sql = "INSERT IGNORE INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 			finalValues = values
-			LogDebug("执行 INSERT: 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
+			LogDebug("执行 INSERT IGNORE (仅主键): 表=%s, 主键列=%s, 主键值=%v, SQL=%s", tableName, uidColumn, uidValue, sql)
 		}
 	} else {
 		// 没有主键值（自增主键），使用普通 INSERT
 		sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 		finalValues = values
-		LogDebug("执行 INSERT: 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
+		LogDebug("执行 INSERT (自增主键): 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
 	}
 
 	result, err := r.db.DataSource.Exec(sql, finalValues...)
@@ -277,7 +282,7 @@ func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 	if tableName != "" {
 		return tableName
 	}
-	
+
 	// 如果 TableName() 返回空字符串，使用类型名转换为 snake_case（向后兼容）
 	t := reflect.TypeOf(entity)
 	if t.Kind() == reflect.Ptr {
@@ -315,7 +320,7 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 		var shouldSkip bool
 
 		if tag == "-" {
-			// 明确标记为跳过
+			// 明确标记为跳过 (db:"-")
 			LogDebug("跳过字段（db标签为'-'）: 实体=%s, 字段=%s", entityTypeName, field.Name)
 			continue
 		}
@@ -324,9 +329,9 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 			// 解析标签，获取列名（标签格式：column_name,options...）
 			tagParts := strings.Split(tag, ",")
 			columnName = strings.TrimSpace(tagParts[0])
-			if columnName == "" {
-				// 如果 db 标签为空（如 db:""），跳过该字段
-				LogDebug("跳过字段（db标签为空字符串）: 实体=%s, 字段=%s", entityTypeName, field.Name)
+			if columnName == "" || columnName == "-" {
+				// 如果 db 标签的列名部分为空或为 "-"（如 db:"" 或 db:"-,xxx"），跳过该字段
+				LogDebug("跳过字段（db标签列名为空或'-'）: 实体=%s, 字段=%s", entityTypeName, field.Name)
 				continue
 			}
 			// 检查是否有 skip 选项
@@ -337,10 +342,10 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 				}
 			}
 		} else {
-			// 如果没有 db 标签（tag == ""），使用字段名的驼峰转下划线作为列名（向后兼容）
-			// 这样可以支持没有明确标记 db 标签的字段（如 ModulesData）
-			columnName = StringUtilsInstance.CamelToSnake(field.Name)
-			LogDebug("字段无db标签，使用字段名转换: 实体=%s, 字段=%s, 列名=%s", entityTypeName, field.Name, columnName)
+			// 如果没有 db 标签（tag == ""），跳过该字段
+			// 要求必须显式声明 db 标签才会被处理
+			LogDebug("跳过字段（无db标签）: 实体=%s, 字段=%s", entityTypeName, field.Name)
+			continue
 		}
 
 		if shouldSkip {
@@ -360,12 +365,12 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 			// 尝试序列化为 JSON
 			jsonValue, err := r.serializeComplexType(value, fieldType)
 			if err != nil {
-				LogWarn("跳过复杂类型字段（序列化失败）: 实体=%s, 字段=%s, 列名=%s, 类型=%s, 错误=%v", 
+				LogWarn("跳过复杂类型字段（序列化失败）: 实体=%s, 字段=%s, 列名=%s, 类型=%s, 错误=%v",
 					entityTypeName, field.Name, columnName, fieldType.String(), err)
 				continue
 			}
 			value = jsonValue
-			LogDebug("序列化复杂类型字段: 实体=%s, 字段=%s, 列名=%s, 类型=%s", 
+			LogDebug("序列化复杂类型字段: 实体=%s, 字段=%s, 列名=%s, 类型=%s",
 				entityTypeName, field.Name, columnName, fieldType.String())
 		}
 
@@ -444,7 +449,7 @@ func (r *BaseCrudRepository) getDefaultValueIfEmpty(value interface{}, fieldName
 	}
 
 	v := reflect.ValueOf(value)
-	
+
 	// 处理指针类型
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
@@ -509,7 +514,7 @@ func (r *BaseCrudRepository) isZeroValue(value interface{}) bool {
 	}
 
 	v := reflect.ValueOf(value)
-	
+
 	// 处理指针类型
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
@@ -570,14 +575,14 @@ func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 	}
 
 	LogDebug("开始批量保存: 实体数量=%d", len(entities))
-	
+
 	successCount := 0
 	for i, entity := range entities {
 		if entity == nil {
 			LogWarn("批量保存跳过 nil 实体: 索引=%d", i)
 			continue
 		}
-		
+
 		if err := r.Save(entity); err != nil {
 			LogError("批量保存失败: 索引=%d, 实体类型=%T, 错误=%v", i, entity, err)
 			return NewQueryExceptionWithCause(err, fmt.Sprintf("批量保存失败，已成功保存 %d/%d 条记录，第 %d 条记录保存失败", successCount, len(entities), i+1))
@@ -603,8 +608,9 @@ func (r *BaseCrudRepository) DeleteById(id interface{}, entityType IDbEntity) er
 		return NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
 	}
 
-	// 使用 GetDbUid 获取唯一ID列名，如果为空则使用默认的 "id"
-	uidColumn := entityType.GetDbUid()
+	// 使用自动扫描获取唯一ID列名
+	cm := GetCrudManagerInstance()
+	uidColumn := cm.GetPrimaryKeyColumnName(entityType)
 	if uidColumn == "" {
 		uidColumn = "id"
 	}
@@ -636,8 +642,9 @@ func (r *BaseCrudRepository) FindById(id interface{}, entityType IDbEntity) (IDb
 		return nil, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
 	}
 
-	// 使用 GetDbUid 获取唯一ID列名，如果为空则使用默认的 "id"
-	uidColumn := entityType.GetDbUid()
+	// 使用自动扫描获取唯一ID列名
+	cm := GetCrudManagerInstance()
+	uidColumn := cm.GetPrimaryKeyColumnName(entityType)
 	if uidColumn == "" {
 		uidColumn = "id"
 	}
@@ -686,7 +693,7 @@ func (r *BaseCrudRepository) FindAll(entityType IDbEntity) ([]IDbEntity, error) 
 	LogDebug("执行查询所有: 表=%s, SQL=%s", tableName, sql)
 
 	results := r.db.ExecuteQuery(sql, [][]interface{}{}, entityType)
-	
+
 	// 转换为 IDbEntity 切片并调用反序列化钩子
 	entities := make([]IDbEntity, 0, len(results))
 	for i, result := range results {
@@ -721,7 +728,7 @@ func (r *BaseCrudRepository) FindByCondition(condition string, params []interfac
 	LogDebug("执行条件查询: 表=%s, 条件=%s, 参数数=%d, SQL=%s", tableName, condition, len(params), sql)
 
 	results := r.db.ExecuteQuery(sql, [][]interface{}{params}, entityType)
-	
+
 	// 转换为 IDbEntity 切片并调用反序列化钩子
 	entities := make([]IDbEntity, 0, len(results))
 	for i, result := range results {
@@ -759,8 +766,9 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段", entity))
 	}
 
-	// 使用 GetDbUid 获取唯一ID列名，如果为空则使用默认的 "id"
-	uidColumn := entity.GetDbUid()
+	// 使用自动扫描获取唯一ID列名
+	cm := GetCrudManagerInstance()
+	uidColumn := cm.GetPrimaryKeyColumnName(entity)
 	if uidColumn == "" {
 		uidColumn = "id"
 	}
@@ -821,14 +829,14 @@ func (r *BaseCrudRepository) UpdateBatch(entities []IDbEntity) error {
 	}
 
 	LogDebug("开始批量更新: 实体数量=%d", len(entities))
-	
+
 	successCount := 0
 	for i, entity := range entities {
 		if entity == nil {
 			LogWarn("批量更新跳过 nil 实体: 索引=%d", i)
 			continue
 		}
-		
+
 		if err := r.Update(entity); err != nil {
 			LogError("批量更新失败: 索引=%d, 实体类型=%T, 错误=%v", i, entity, err)
 			return NewQueryExceptionWithCause(err, fmt.Sprintf("批量更新失败，已成功更新 %d/%d 条记录，第 %d 条记录更新失败", successCount, len(entities), i+1))

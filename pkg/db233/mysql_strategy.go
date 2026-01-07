@@ -50,22 +50,10 @@ func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType refl
 			continue
 		}
 
-		dbTag := field.Tag.Get("db")
-		// 跳过明确标记为忽略的字段
-		if dbTag == "-" {
-			LogDebug("跳过标记为忽略的字段: 表=%s, 字段=%s", tableName, field.Name)
-			continue
-		}
-		// 跳过明确标记为 skip 的字段
-		if strings.Contains(dbTag, "skip") {
-			LogDebug("跳过标记为 skip 的字段: 表=%s, 字段=%s", tableName, field.Name)
-			continue
-		}
-
-		// 获取列名（支持没有 db 标签的字段）
+		// 获取列名（统一使用 GetColumnName，自动处理 db:"-" 和无 db 标签的情况）
 		colName := s.cm.GetColumnName(field)
 		if colName == "" {
-			LogDebug("跳过无法确定列名的字段: 表=%s, 字段=%s", tableName, field.Name)
+			LogDebug("跳过无有效列名的字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
 		}
 
@@ -74,6 +62,7 @@ func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType refl
 		colDef := fmt.Sprintf("`%s` %s", colName, colType)
 
 		// 检查是否自增
+		dbTag := field.Tag.Get("db")
 		if strings.Contains(dbTag, "auto_increment") {
 			colDef += " AUTO_INCREMENT"
 		}
@@ -270,4 +259,3 @@ func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, colName string, c
 
 	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef)
 }
-

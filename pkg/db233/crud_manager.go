@@ -10,6 +10,7 @@ import (
  * IDbEntity - 数据库实体接口
  *
  * 所有数据库实体必须实现此接口，提供自定义表名
+ * 主键信息通过 struct tag 自动扫描（db:"xxx,primary_key"）
  *
  * @author neko233-com
  * @since 2025-12-28
@@ -21,14 +22,6 @@ type IDbEntity interface {
 	 * @return string 表名
 	 */
 	TableName() string
-
-	/**
-	 * 获取数据库唯一ID列名
-	 * 如果返回空字符串，则使用默认主键列（通常是 "id"）
-	 *
-	 * @return string 唯一ID列名，如果为空则使用默认主键
-	 */
-	GetDbUid() string
 
 	/**
 	 * 保存到数据库前的序列化钩子
@@ -66,7 +59,10 @@ type CrudManager struct {
 	// 已扫描过的类集合
 	metadataClassSet map[reflect.Type]bool
 
-	// 锁
+	// 类型到主键列名的缓存（优化性能）
+	typeToPrimaryKeyColumnCache map[reflect.Type]string
+
+	// 锁（保证并发安全）
 	mu sync.RWMutex
 }
 
@@ -79,10 +75,11 @@ var crudManagerOnce sync.Once
 func GetCrudManagerInstance() *CrudManager {
 	crudManagerOnce.Do(func() {
 		crudManagerInstance = &CrudManager{
-			tableNamePkColNameListMap: make(map[string][]string),
-			tableNameToColNameMap:     make(map[string][]string),
-			tableToPkToColValueMap:    make(map[string]map[interface{}]map[string]interface{}),
-			metadataClassSet:          make(map[reflect.Type]bool),
+			tableNamePkColNameListMap:   make(map[string][]string),
+			tableNameToColNameMap:       make(map[string][]string),
+			tableToPkToColValueMap:      make(map[string]map[interface{}]map[string]interface{}),
+			metadataClassSet:            make(map[reflect.Type]bool),
+			typeToPrimaryKeyColumnCache: make(map[reflect.Type]string),
 		}
 	})
 	return crudManagerInstance
@@ -146,16 +143,26 @@ func (cm *CrudManager) AutoLazyInitOrThrowError(obj interface{}) error {
  * 配置类懒初始化
  */
 func (cm *CrudManager) configClassLazy(obj interface{}) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if cm.IsContainsEntity(obj) {
-		return nil
-	}
-
 	t := reflect.TypeOf(obj)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+
+	// 先检查是否已存在（使用读锁）
+	cm.mu.RLock()
+	if cm.metadataClassSet[t] {
+		cm.mu.RUnlock()
+		return nil
+	}
+	cm.mu.RUnlock()
+
+	// 初始化（使用写锁）
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// 双重检查，防止并发初始化
+	if cm.metadataClassSet[t] {
+		return nil
 	}
 
 	cm.initEntityClassMetadata([]reflect.Type{t})
@@ -172,8 +179,11 @@ func (cm *CrudManager) IsNotContainsEntity(obj interface{}) bool {
 /**
  * 是否包含实体
  */
-// IsContainsEntity 检查是否包含实体
+// IsContainsEntity 检查是否包含实体（并发安全）
 func (cm *CrudManager) IsContainsEntity(obj interface{}) bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
 	t := reflect.TypeOf(obj)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -192,11 +202,14 @@ func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type
 
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
-			dbTag := field.Tag.Get("db")
-			if dbTag == "" || dbTag == "-" {
+			if !field.IsExported() {
 				continue
 			}
 			colName := cm.GetColumnName(field)
+			if colName == "" {
+				// 跳过没有有效列名的字段（db:"-" 或没有 db 标签）
+				continue
+			}
 			colList = append(colList, colName)
 		}
 
@@ -215,12 +228,15 @@ func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.
 
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
-			dbTag := field.Tag.Get("db")
-			if dbTag == "" || dbTag == "-" {
+			if !field.IsExported() {
+				continue
+			}
+			colName := cm.GetColumnName(field)
+			if colName == "" {
+				// 跳过没有有效列名的字段（db:"-" 或没有 db 标签）
 				continue
 			}
 			if cm.IsPrimaryKey(field) {
-				colName := cm.GetColumnName(field)
 				pkList = append(pkList, colName)
 			}
 		}
@@ -258,7 +274,7 @@ func (cm *CrudManager) GetTableName(t reflect.Type) string {
 				return tableName
 			}
 		}
-		
+
 		// 如果指针类型不实现，尝试值类型
 		instanceValue := reflect.New(t).Elem().Interface()
 		if entity, ok := instanceValue.(IDbEntity); ok {
@@ -267,7 +283,7 @@ func (cm *CrudManager) GetTableName(t reflect.Type) string {
 				return tableName
 			}
 		}
-		
+
 		// 检查是否有 table tag（向后兼容）
 		if t.NumField() > 0 {
 			if tableTag := t.Field(0).Tag.Get("table"); tableTag != "" {
@@ -284,31 +300,128 @@ func (cm *CrudManager) GetTableName(t reflect.Type) string {
  */
 func (cm *CrudManager) GetColumnName(field reflect.StructField) string {
 	// 优先使用 db 标签
-	if dbTag := field.Tag.Get("db"); dbTag != "" && dbTag != "-" {
+	if dbTag := field.Tag.Get("db"); dbTag != "" {
+		if dbTag == "-" {
+			// 明确标记为跳过
+			return ""
+		}
 		// 解析标签，获取列名（标签格式：column_name,options...）
 		tagParts := strings.Split(dbTag, ",")
 		columnName := strings.TrimSpace(tagParts[0])
-		if columnName != "" {
-			return columnName
+		if columnName == "" || columnName == "-" {
+			// 列名为空或"-"，返回空字符串表示跳过
+			return ""
 		}
+
+		// 检查是否有 skip 选项
+		for i := 1; i < len(tagParts); i++ {
+			if strings.TrimSpace(tagParts[i]) == "skip" {
+				// 明确标记为 skip，返回空字符串表示跳过
+				return ""
+			}
+		}
+
+		return columnName
 	}
-	// 其次使用 column 标签（向后兼容）
-	if colTag := field.Tag.Get("column"); colTag != "" {
-		return colTag
-	}
-	// 默认处理
-	if field.Name == "ID" || field.Name == "Id" {
-		return "id"
-	}
-	return StringUtilsInstance.CamelToSnake(field.Name)
+	// 没有 db 标签，返回空字符串（要求必须显式声明 db 标签）
+	return ""
 }
 
 /**
  * 是否为主键
+ * 支持三种标记方式：
+ * 1. db:"column_name,primary_key"
+ * 2. primary_key:"true"
+ * 3. 字段名为 ID 或 Id（默认约定）
  */
 func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
-	return strings.Contains(field.Tag.Get("db"), "primary_key") ||
-		field.Name == "ID" || field.Name == "Id"
+	// 检查 db 标签中的 primary_key 选项
+	if strings.Contains(field.Tag.Get("db"), "primary_key") {
+		return true
+	}
+	// 检查独立的 primary_key 标签
+	if field.Tag.Get("primary_key") == "true" {
+		return true
+	}
+	// 检查字段名是否为 ID 或 Id（默认约定）
+	if field.Name == "ID" || field.Name == "Id" {
+		return true
+	}
+	return false
+}
+
+/** GetPrimaryKeyColumnName
+ * 获取实体的主键列名（自动扫描 struct tag，带缓存）
+ *
+ * @param entity 实体实例
+ * @return string 主键列名，如果未找到则返回 "id"
+ */
+func (cm *CrudManager) GetPrimaryKeyColumnName(entity interface{}) string {
+	t := reflect.TypeOf(entity)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	// 先尝试从缓存读取（使用读锁）
+	cm.mu.RLock()
+	if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
+		cm.mu.RUnlock()
+		return cached
+	}
+	cm.mu.RUnlock()
+
+	// 缓存未命中，扫描字段（使用写锁）
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// 双重检查，防止并发情况下重复扫描
+	if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
+		return cached
+	}
+
+	// 扫描所有字段，查找 primary_key 标记
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if cm.IsPrimaryKey(field) {
+			colName := cm.GetColumnName(field)
+			if colName != "" {
+				// 缓存结果
+				cm.typeToPrimaryKeyColumnCache[t] = colName
+				return colName
+			}
+		}
+	}
+
+	// 默认返回 "id" 并缓存
+	cm.typeToPrimaryKeyColumnCache[t] = "id"
+	return "id"
+}
+
+/**
+ * 获取实体的主键值（自动从 struct 字段读取）
+ *
+ * @param entity 实体实例
+ * @return interface{} 主键值，如果未找到则返回 nil
+ */
+func (cm *CrudManager) GetPrimaryKeyValue(entity interface{}) interface{} {
+	v := reflect.ValueOf(entity)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	t := v.Type()
+
+	// 扫描所有字段，查找 primary_key 标记
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if cm.IsPrimaryKey(field) {
+			fieldValue := v.Field(i)
+			if fieldValue.CanInterface() {
+				return fieldValue.Interface()
+			}
+		}
+	}
+
+	return nil
 }
 
 /**
@@ -354,12 +467,30 @@ func (cm *CrudManager) AutoCreateTable(db *Db, entityType interface{}) error {
 		return nil
 	}
 
-	// 获取主键列名
+	// 获取主键列名（已持有写锁，直接扫描避免死锁）
 	var uidColumn string
 	if t.Kind() == reflect.Struct {
-		instancePtr := reflect.New(t).Interface()
-		if entity, ok := instancePtr.(IDbEntity); ok {
-			uidColumn = entity.GetDbUid()
+		// 检查缓存
+		if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
+			uidColumn = cached
+		} else {
+			// 扫描字段查找主键
+			for i := 0; i < t.NumField(); i++ {
+				field := t.Field(i)
+				if cm.IsPrimaryKey(field) {
+					colName := cm.GetColumnName(field)
+					if colName != "" {
+						uidColumn = colName
+						cm.typeToPrimaryKeyColumnCache[t] = colName
+						break
+					}
+				}
+			}
+			// 如果没找到，使用默认值
+			if uidColumn == "" {
+				uidColumn = "id"
+				cm.typeToPrimaryKeyColumnCache[t] = "id"
+			}
 		}
 	}
 
@@ -412,9 +543,6 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
  * 自动迁移表（创建或修改表结构）
  */
 func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	t := reflect.TypeOf(entityType)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -425,18 +553,23 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}) error {
 		return NewDb233Exception("无法获取表名")
 	}
 
+	// 获取建表策略
+	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
+
 	// 检查表是否已存在
-	exists, err := cm.tableExists(db, tableName)
+	exists, err := strategy.TableExists(db, tableName)
 	if err != nil {
 		return err
 	}
 
 	if !exists {
-		// 表不存在，创建表
+		// 表不存在，创建表（AutoCreateTable 会自己获取锁）
 		return cm.AutoCreateTable(db, entityType)
 	}
 
-	// 表存在，检查并添加缺失的列
+	// 表存在，获取锁后检查并添加缺失的列
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	return cm.alterTableAddMissingColumns(db, t)
 }
 
@@ -458,16 +591,34 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 		return err
 	}
 
-	// 尝试获取 IDbEntity 实例以获取主键列名
+	// 获取主键列名（已持有写锁，直接扫描避免死锁）
 	var uidColumn string
 	if t.Kind() == reflect.Struct {
-		instancePtr := reflect.New(t).Interface()
-		if entity, ok := instancePtr.(IDbEntity); ok {
-			uidColumn = entity.GetDbUid()
+		// 检查缓存
+		if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
+			uidColumn = cached
+		} else {
+			// 扫描字段查找主键
+			for i := 0; i < t.NumField(); i++ {
+				field := t.Field(i)
+				if cm.IsPrimaryKey(field) {
+					colName := cm.GetColumnName(field)
+					if colName != "" {
+						uidColumn = colName
+						cm.typeToPrimaryKeyColumnCache[t] = colName
+						break
+					}
+				}
+			}
+			// 如果没找到，使用默认值
+			if uidColumn == "" {
+				uidColumn = "id"
+				cm.typeToPrimaryKeyColumnCache[t] = "id"
+			}
 		}
 	}
 
-	// 获取实体定义的列（处理没有 db 标签的字段）
+	// 获取实体定义的列（使用统一的 GetColumnName 方法）
 	entityColumns := make(map[string]reflect.StructField)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -475,20 +626,9 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 			LogDebug("跳过未导出字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
 		}
-		dbTag := field.Tag.Get("db")
-		// 跳过明确标记为忽略的字段
-		if dbTag == "-" {
-			LogDebug("跳过标记为忽略的字段: 表=%s, 字段=%s", tableName, field.Name)
-			continue
-		}
-		// 跳过明确标记为 skip 的字段
-		if strings.Contains(dbTag, "skip") {
-			LogDebug("跳过标记为 skip 的字段: 表=%s, 字段=%s", tableName, field.Name)
-			continue
-		}
 		colName := cm.GetColumnName(field)
 		if colName == "" {
-			LogDebug("跳过无法确定列名的字段: 表=%s, 字段=%s", tableName, field.Name)
+			LogDebug("跳过无有效列名的字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
 		}
 		entityColumns[colName] = field
@@ -499,7 +639,7 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 	for colName, field := range entityColumns {
 		if _, exists := existingColumns[colName]; !exists {
 			colType := strategy.GetSQLType(field)
-			
+
 			// 判断是否为主键
 			isPrimaryKey := cm.IsPrimaryKey(field)
 			if uidColumn != "" && colName == uidColumn {

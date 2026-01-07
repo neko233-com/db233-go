@@ -12,16 +12,18 @@ type TestEntityForAutoCreate struct {
 	PlayerID string `json:"playerId" db:"player_id" primary_key:"true"`
 
 	// 有 db 标签的字段
-	Name     string `json:"name" db:"name"`
-	Age      int    `json:"age" db:"age"`
-	Email    string `json:"email" db:"email"`
+	Name  string `json:"name" db:"name"`
+	Age   int    `json:"age" db:"age"`
+	Email string `json:"email" db:"email"`
 
-	// 没有 db 标签的字段（应该自动转换）
-	ModulesData     string            `json:"modulesData"` // 应该转换为 modules_data
-	Score           int               `json:"score"`       // 应该转换为 score
-	ComplexMap      map[string]int    `json:"complexMap"`  // 应该转换为 complex_map，类型为 TEXT
-	ComplexSlice    []string          `json:"complexSlice"` // 应该转换为 complex_slice，类型为 TEXT
-	ComplexArray    [3]int            `json:"complexArray"` // 应该转换为 complex_array，类型为 TEXT
+	// 有 db 标签的字段（会被创建）
+	ModulesData  string         `json:"modulesData" db:"modules_data"`   // 显式指定 db 标签
+	Score        int            `json:"score" db:"score"`                // 显式指定 db 标签
+	ComplexMap   map[string]int `json:"complexMap" db:"complex_map"`     // 应该转换为 TEXT
+	ComplexSlice []string       `json:"complexSlice" db:"complex_slice"` // 应该转换为 TEXT
+
+	// 没有 db 标签的字段（会被忽略）
+	ComplexArray [3]int `json:"complexArray"` // 没有 db 标签，会被忽略
 
 	// 明确标记为忽略的字段
 	IgnoredField string `json:"ignored" db:"-"`
@@ -41,10 +43,6 @@ type TestEntityForAutoCreate struct {
 
 func (e *TestEntityForAutoCreate) TableName() string {
 	return "test_auto_create"
-}
-
-func (e *TestEntityForAutoCreate) GetDbUid() string {
-	return "player_id"
 }
 
 func (e *TestEntityForAutoCreate) SerializeBeforeSaveDb() {
@@ -120,12 +118,12 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 		t.Error("字段 email 应该存在")
 	}
 
-	// 验证没有 db 标签的字段也被创建（自动转换）
+	// 验证有 db 标签的字段存在
 	if _, exists := columns["modules_data"]; !exists {
-		t.Error("字段 modules_data 应该存在（自动转换）")
+		t.Error("字段 modules_data 应该存在（有 db 标签）")
 	}
 	if _, exists := columns["score"]; !exists {
-		t.Error("字段 score 应该存在（自动转换）")
+		t.Error("字段 score 应该存在（有 db 标签）")
 	}
 
 	// 验证复杂类型字段被创建为 TEXT
@@ -134,7 +132,7 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 			t.Errorf("complex_map 应该是 TEXT 类型，得到: %s", colInfo["dataType"])
 		}
 	} else {
-		t.Error("字段 complex_map 应该存在（自动转换）")
+		t.Error("字段 complex_map 应该存在（有 db 标签）")
 	}
 
 	if colInfo, exists := columns["complex_slice"]; exists {
@@ -142,7 +140,12 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 			t.Errorf("complex_slice 应该是 TEXT 类型，得到: %s", colInfo["dataType"])
 		}
 	} else {
-		t.Error("字段 complex_slice 应该存在（自动转换）")
+		t.Error("字段 complex_slice 应该存在（有 db 标签）")
+	}
+
+	// 验证没有 db 标签的字段不存在
+	if _, exists := columns["complex_array"]; exists {
+		t.Error("字段 complex_array 不应该存在（没有 db 标签）")
 	}
 
 	// 验证使用 db_type 的字段
@@ -183,12 +186,12 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 	// 测试保存数据
 	repo := db233.NewBaseCrudRepository(db)
 	entity := &TestEntityForAutoCreate{
-		PlayerID:     "test_player_001",
-		Name:         "测试用户",
-		Age:          25,
-		Email:        "test@example.com",
-		ModulesData:  "{}",
-		Score:        100,
+		PlayerID:      "test_player_001",
+		Name:          "测试用户",
+		Age:           25,
+		Email:         "test@example.com",
+		ModulesData:   "{}",
+		Score:         100,
 		RequiredField: "必填字段",
 		// OptionalField 留空，应该允许为 null
 	}
@@ -221,18 +224,14 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 
 // TestDefaultNullEntity 测试默认允许为 null 的实体
 type TestDefaultNullEntity struct {
-	ID          int    `db:"id,primary_key,auto_increment"`
-	StringField string `db:"string_field"`        // 默认允许 null
-	IntField    int    `db:"int_field"`           // 默认允许 null
+	ID           int    `db:"id,primary_key,auto_increment"`
+	StringField  string `db:"string_field"`            // 默认允许 null
+	IntField     int    `db:"int_field"`               // 默认允许 null
 	NotNullField string `db:"not_null_field,not_null"` // 明确标记为 not_null
 }
 
 func (e *TestDefaultNullEntity) TableName() string {
 	return "test_default_null"
-}
-
-func (e *TestDefaultNullEntity) GetDbUid() string {
-	return "id"
 }
 
 func (e *TestDefaultNullEntity) SerializeBeforeSaveDb() {}
@@ -298,4 +297,3 @@ func TestAutoCreateTableDefaultNull(t *testing.T) {
 
 	t.Logf("默认允许为 null 测试通过")
 }
-

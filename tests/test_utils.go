@@ -18,7 +18,7 @@ func CreateTestDb(t *testing.T) *db233.Db {
 	}
 
 	// 创建测试数据库
-	_, err = dataSource.Exec("CREATE DATABASE IF NOT EXISTS db233")
+	_, err = dataSource.Exec("CREATE DATABASE IF NOT EXISTS db233_go CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 	if err != nil {
 		t.Skipf("无法创建测试数据库: %v", err)
 		dataSource.Close()
@@ -27,7 +27,7 @@ func CreateTestDb(t *testing.T) *db233.Db {
 
 	// 重新连接到指定数据库
 	dataSource.Close()
-	dataSource, err = sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/db233")
+	dataSource, err = sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/db233_go")
 	if err != nil {
 		t.Skipf("无法连接到测试数据库: %v", err)
 		return nil
@@ -86,11 +86,6 @@ type TestUser struct {
 // TableName 实现 IDbEntity 接口 - 获取表名
 func (u *TestUser) TableName() string {
 	return "test_user"
-}
-
-// GetDbUid 实现 IDbEntity 接口 - 获取唯一ID列名
-func (u *TestUser) GetDbUid() string {
-	return "id" // 使用默认的 id 列
 }
 
 // SerializeBeforeSaveDb 实现 IDbEntity 接口 - 保存前的序列化钩子
