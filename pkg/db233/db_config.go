@@ -16,12 +16,12 @@ import (
  */
 type DbConnectionConfig struct {
 	// 基础配置
-	DatabaseType DatabaseType `json:"databaseType" yaml:"databaseType"` // 数据库类型
-	Host         string       `json:"host" yaml:"host"`                 // 主机地址
-	Port         int          `json:"port" yaml:"port"`                 // 端口号
-	Username     string       `json:"username" yaml:"username"`         // 用户名
-	Password     string       `json:"password" yaml:"password"`         // 密码
-	Database     string       `json:"database" yaml:"database"`         // 数据库名
+	DatabaseType EnumDatabaseType `json:"databaseType" yaml:"databaseType"` // 数据库类型
+	Host         string           `json:"host" yaml:"host"`                 // 主机地址
+	Port         int              `json:"port" yaml:"port"`                 // 端口号
+	Username     string           `json:"username" yaml:"username"`         // 用户名
+	Password     string           `json:"password" yaml:"password"`         // 密码
+	Database     string           `json:"database" yaml:"database"`         // 数据库名
 
 	// 连接池配置
 	MaxOpenConns    int           `json:"maxOpenConns" yaml:"maxOpenConns"`       // 最大打开连接数
@@ -56,7 +56,7 @@ type DbConnectionConfig struct {
  */
 func NewDefaultMySQLConfig(host string, port int, username, password, database string) *DbConnectionConfig {
 	return &DbConnectionConfig{
-		DatabaseType:    DatabaseTypeMySQL,
+		DatabaseType:    EnumDatabaseTypeMySQL,
 		Host:            host,
 		Port:            port,
 		Username:        username,
@@ -82,7 +82,7 @@ func NewDefaultMySQLConfig(host string, port int, username, password, database s
  */
 func NewDefaultPostgreSQLConfig(host string, port int, username, password, database string) *DbConnectionConfig {
 	return &DbConnectionConfig{
-		DatabaseType:    DatabaseTypePostgreSQL,
+		DatabaseType:    EnumDatabaseTypePostgreSQL,
 		Host:            host,
 		Port:            port,
 		Username:        username,
@@ -106,9 +106,9 @@ func NewDefaultPostgreSQLConfig(host string, port int, username, password, datab
  */
 func (c *DbConnectionConfig) BuildDSN() string {
 	switch c.DatabaseType {
-	case DatabaseTypeMySQL:
+	case EnumDatabaseTypeMySQL:
 		return c.buildMySQLDSN()
-	case DatabaseTypePostgreSQL:
+	case EnumDatabaseTypePostgreSQL:
 		return c.buildPostgreSQLDSN()
 	default:
 		return c.buildMySQLDSN()
@@ -251,22 +251,25 @@ func (c *DbConnectionConfig) CreateDataSource() (*sql.DB, error) {
 	}
 
 	// 配置连接池
-	if c.MaxOpenConnectionCount > 0 {
-		dataSource.SetMaxOpenConns(c.MaxOpenConnectionCount)
+	if c.MaxOpenConns > 0 {
+		dataSource.SetMaxOpenConns(c.MaxOpenConns)
 	}
-	if c.MaxIdleConnectionCount > 0 {
-		dataSource.SetMaxIdleConns(c.MaxIdleConnectionCount)
+	if c.MaxIdleConns > 0 {
+		dataSource.SetMaxIdleConns(c.MaxIdleConns)
 	}
-	if c.ConnectionMaxLifetimeSeconds > 0 {
-		dataSource.SetConnMaxLifetime(c.ConnectionMaxLifetimeSeconds)
+	if c.ConnMaxLifetime > 0 {
+		dataSource.SetConnMaxLifetime(c.ConnMaxLifetime)
 	}
-	if c.ConnectionMaxIdleTimeSeconds > 0 {
-		dataSource.SetConnMaxIdleTime(c.ConnectionMaxIdleTimeSeconds)
+	if c.ConnMaxIdleTime > 0 {
+		dataSource.SetConnMaxIdleTime(c.ConnMaxIdleTime)
 	}
 
 	// 测试连接
 	if err := dataSource.Ping(); err != nil {
-		dataSource.Close()
+		err := dataSource.Close()
+		if err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("数据库连接测试失败: %w", err)
 	}
 

@@ -77,7 +77,7 @@ type Db struct {
 	DataSource   *sql.DB
 	DbId         int
 	DbGroup      *DbGroup
-	DatabaseType DatabaseType // 数据库类型，默认为 MySQL
+	DatabaseType EnumDatabaseType // 数据库类型，默认为 MySQL
 }
 
 /**
@@ -93,7 +93,7 @@ func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
 		DataSource:   dataSource,
 		DbId:         dbId,
 		DbGroup:      dbGroup,
-		DatabaseType: DatabaseTypeMySQL, // 默认 MySQL
+		DatabaseType: EnumDatabaseTypeMySQL, // 默认 MySQL
 	}
 }
 
@@ -106,9 +106,9 @@ func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
  * @param dbType 数据库类型
  * @return *Db 实例
  */
-func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType DatabaseType) *Db {
+func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType EnumDatabaseType) *Db {
 	if dbType == "" || !dbType.IsValid() {
-		dbType = DatabaseTypeMySQL
+		dbType = EnumDatabaseTypeMySQL
 	}
 	return &Db{
 		DataSource:   dataSource,

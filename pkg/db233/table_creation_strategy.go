@@ -14,7 +14,7 @@ type ITableCreationStrategy interface {
 	/**
 	 * 获取数据库类型
 	 */
-	GetDatabaseType() DatabaseType
+	GetDatabaseType() EnumDatabaseType
 
 	/**
 	 * 生成建表 SQL

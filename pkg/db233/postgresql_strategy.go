@@ -25,8 +25,8 @@ func NewPostgreSQLStrategy(cm *CrudManager) *PostgreSQLStrategy {
 	return &PostgreSQLStrategy{cm: cm}
 }
 
-func (s *PostgreSQLStrategy) GetDatabaseType() DatabaseType {
-	return DatabaseTypePostgreSQL
+func (s *PostgreSQLStrategy) GetDatabaseType() EnumDatabaseType {
+	return EnumDatabaseTypePostgreSQL
 }
 
 func (s *PostgreSQLStrategy) GenerateCreateTableSQL(tableName string, entityType reflect.Type, uidColumn string) (string, error) {

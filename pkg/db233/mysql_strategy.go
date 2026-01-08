@@ -29,8 +29,8 @@ func NewMySQLStrategy(cm *CrudManager) *MySQLStrategy {
 /**
  * 获取数据库类型
  */
-func (s *MySQLStrategy) GetDatabaseType() DatabaseType {
-	return DatabaseTypeMySQL
+func (s *MySQLStrategy) GetDatabaseType() EnumDatabaseType {
+	return EnumDatabaseTypeMySQL
 }
 
 /**
