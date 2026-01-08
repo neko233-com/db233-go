@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -540,9 +541,9 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 }
 
 /**
- * 自动迁移表（创建或修改表结构）
+ * 自动迁移表（创建或修改表结构）- 简化版本，使用默认权限
  */
-func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}) error {
+func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType interface{}) error {
 	t := reflect.TypeOf(entityType)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -638,16 +639,12 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 	var alterStatements []string
 	for colName, field := range entityColumns {
 		if _, exists := existingColumns[colName]; !exists {
-			colType := strategy.GetSQLType(field)
-
-			// 判断是否为主键
-			isPrimaryKey := cm.IsPrimaryKey(field)
-			if uidColumn != "" && colName == uidColumn {
-				isPrimaryKey = true
+			// 使用策略生成添加列的 SQL（新的3参数版本）
+			alterSQL, err := strategy.GenerateAddColumnSQL(tableName, field, colName)
+			if err != nil {
+				LogError("生成添加列SQL失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
+				continue
 			}
-
-			// 使用策略生成添加列的 SQL
-			alterSQL := strategy.GenerateAddColumnSQL(tableName, colName, colType, field, isPrimaryKey)
 			alterStatements = append(alterStatements, alterSQL)
 			LogDebug("准备添加缺失的列: 表=%s, 列=%s, SQL=%s", tableName, colName, alterSQL)
 		}
@@ -677,4 +674,250 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 func (cm *CrudManager) getExistingColumns(db *Db, tableName string) (map[string]bool, error) {
 	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
 	return strategy.GetExistingColumns(db, tableName)
+}
+
+/**
+ * AutoCreateTableWithPermissions 带权限控制的自动创建表
+ */
+func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType interface{}, permissions *AutoDbPermissions) error {
+	if permissions == nil {
+		permissions = NewDefaultAutoDbPermissions()
+	}
+
+	// 检查是否允许创建表
+	if !permissions.IsAllowed(AutoDbOperateCreateTable) {
+		LogWarn("创建表操作被禁用，跳过: 实体=%v", entityType)
+		return nil
+	}
+
+	return cm.AutoCreateTable(db, entityType)
+}
+
+/**
+ * AutoMigrateTable 自动迁移表（支持创建列、更新列、删除列）
+ */
+func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissions *AutoDbPermissions) error {
+	if permissions == nil {
+		permissions = NewDefaultAutoDbPermissions()
+	}
+
+	if !permissions.EnableAutoMigration {
+		LogInfo("自动迁移未启用")
+		return nil
+	}
+
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	t := reflect.TypeOf(entityType)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	tableName := cm.GetTableName(t)
+	if tableName == "" {
+		return NewDb233Exception("无法获取表名")
+	}
+
+	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
+
+	// 检查表是否存在
+	exists, err := strategy.TableExists(db, tableName)
+	if err != nil {
+		return err
+	}
+
+	// 表不存在，创建表
+	if !exists {
+		if !permissions.IsAllowed(AutoDbOperateCreateTable) {
+			LogWarn("创建表操作被禁用: 表=%s", tableName)
+			return nil
+		}
+		return cm.AutoCreateTable(db, entityType)
+	}
+
+	// 表已存在，检查列差异
+	LogInfo("开始迁移表: 表=%s", tableName)
+
+	// 获取现有列
+	existingColumns, err := strategy.GetTableColumns(db, tableName)
+	if err != nil {
+		return fmt.Errorf("获取表列信息失败: %w", err)
+	}
+
+	// 获取实体字段
+	entityColumns := cm.getEntityColumns(t)
+
+	// 找出需要添加的列
+	columnsToAdd := make(map[string]reflect.StructField)
+	for colName, field := range entityColumns {
+		if _, exists := existingColumns[colName]; !exists {
+			columnsToAdd[colName] = field
+		}
+	}
+
+	// 找出需要删除的列
+	columnsToDelete := make([]string, 0)
+	for colName := range existingColumns {
+		if _, exists := entityColumns[colName]; !exists {
+			columnsToDelete = append(columnsToDelete, colName)
+		}
+	}
+
+	// 添加列
+	if len(columnsToAdd) > 0 && permissions.IsAllowed(AutoDbOperateCreateColumn) {
+		for colName, field := range columnsToAdd {
+			sql, err := strategy.GenerateAddColumnSQL(tableName, field, colName)
+			if err != nil {
+				LogError("生成添加列SQL失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
+				continue
+			}
+
+			if permissions.DryRun {
+				LogInfo("[DRY RUN] 添加列: 表=%s, 列=%s, SQL=%s", tableName, colName, sql)
+			} else {
+				_, err = db.DataSource.Exec(sql)
+				if err != nil {
+					LogError("添加列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
+				} else {
+					LogInfo("添加列成功: 表=%s, 列=%s", tableName, colName)
+				}
+			}
+		}
+	}
+
+	// 删除列
+	if len(columnsToDelete) > 0 && permissions.IsAllowed(AutoDbOperateDeleteColumn) {
+		for _, colName := range columnsToDelete {
+			sql, err := strategy.GenerateDropColumnSQL(tableName, colName)
+			if err != nil {
+				LogError("生成删除列SQL失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
+				continue
+			}
+
+			if permissions.DryRun {
+				LogInfo("[DRY RUN] 删除列: 表=%s, 列=%s, SQL=%s", tableName, colName, sql)
+			} else {
+				_, err = db.DataSource.Exec(sql)
+				if err != nil {
+					LogError("删除列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
+				} else {
+					LogInfo("删除列成功: 表=%s, 列=%s", tableName, colName)
+				}
+			}
+		}
+	}
+
+	LogInfo("表迁移完成: 表=%s, 添加列=%d, 删除列=%d", tableName, len(columnsToAdd), len(columnsToDelete))
+	return nil
+}
+
+/**
+ * getEntityColumns 获取实体的所有列
+ */
+func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.StructField {
+	columns := make(map[string]reflect.StructField)
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("db")
+
+		// 跳过没有 db 标签或标记为忽略的字段
+		if tag == "" || tag == "-" {
+			continue
+		}
+
+		// 解析列名
+		tagParts := strings.Split(tag, ",")
+		columnName := strings.TrimSpace(tagParts[0])
+		if columnName == "" || columnName == "-" {
+			continue
+		}
+
+		// 检查是否有 skip 选项
+		skip := false
+		for _, part := range tagParts[1:] {
+			if strings.TrimSpace(part) == "skip" {
+				skip = true
+				break
+			}
+		}
+
+		if !skip {
+			columns[columnName] = field
+		}
+	}
+
+	return columns
+}
+
+/**
+ * AutoMigrateAllTablesConcurrently 并发迁移所有表
+ */
+func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []interface{}, permissions *AutoDbPermissions) error {
+	if permissions == nil {
+		permissions = NewDefaultAutoDbPermissions()
+	}
+
+	if !permissions.EnableConcurrentMigration {
+		// 串行迁移
+		LogInfo("使用串行模式迁移 %d 个表", len(entityTypes))
+		for _, entityType := range entityTypes {
+			if err := cm.AutoMigrateTable(db, entityType, permissions); err != nil {
+				LogError("迁移表失败: 实体=%v, 错误=%v", entityType, err)
+				return err
+			}
+		}
+		return nil
+	}
+
+	// 并发迁移
+	LogInfo("使用并发模式迁移 %d 个表，最大协程数=%d", len(entityTypes), permissions.MaxConcurrentWorkers)
+
+	migrationManager := NewConcurrentMigrationManager(db, permissions)
+	migrationManager.Start()
+	defer migrationManager.Stop()
+
+	// 生成迁移任务
+	for _, entityType := range entityTypes {
+		t := reflect.TypeOf(entityType)
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+
+		tableName := cm.GetTableName(t)
+		task := &MigrationTask{
+			EntityType:    t,
+			TableName:     tableName,
+			OperationType: AutoDbOperateCreateTable, // 简化：先只支持创建表
+			Priority:      0,
+		}
+
+		// 提交任务
+		if err := migrationManager.SubmitTask(task); err != nil {
+			LogError("提交迁移任务失败: 表=%s, 错误=%v", tableName, err)
+		}
+	}
+
+	// 等待所有任务完成
+	migrationManager.Wait()
+
+	// 打印统计
+	migrationManager.PrintStatistics()
+
+	// 检查失败的任务
+	results := migrationManager.GetResults()
+	failedCount := 0
+	for _, result := range results {
+		if !result.Success {
+			failedCount++
+			LogError("迁移失败: 表=%s, 错误=%v", result.Task.TableName, result.Error)
+		}
+	}
+
+	if failedCount > 0 {
+		return fmt.Errorf("并发迁移完成，但有 %d 个任务失败", failedCount)
+	}
+
+	return nil
 }

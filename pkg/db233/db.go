@@ -74,9 +74,9 @@ type DbApi interface {
  * @since 2025-12-28
  */
 type Db struct {
-	DataSource *sql.DB
-	DbId       int
-	DbGroup    *DbGroup
+	DataSource   *sql.DB
+	DbId         int
+	DbGroup      *DbGroup
 	DatabaseType DatabaseType // 数据库类型，默认为 MySQL
 }
 
@@ -90,9 +90,9 @@ type Db struct {
  */
 func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
 	return &Db{
-		DataSource: dataSource,
-		DbId:       dbId,
-		DbGroup:    dbGroup,
+		DataSource:   dataSource,
+		DbId:         dbId,
+		DbGroup:      dbGroup,
 		DatabaseType: DatabaseTypeMySQL, // 默认 MySQL
 	}
 }
@@ -111,9 +111,9 @@ func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType Databa
 		dbType = DatabaseTypeMySQL
 	}
 	return &Db{
-		DataSource: dataSource,
-		DbId:       dbId,
-		DbGroup:    dbGroup,
+		DataSource:   dataSource,
+		DbId:         dbId,
+		DbGroup:      dbGroup,
 		DatabaseType: dbType,
 	}
 }
@@ -140,7 +140,12 @@ func (db *Db) ExecuteQuery(sql string, paramsArray [][]interface{}, returnType i
 	for _, params := range paramsArray {
 		rows, err := db.DataSource.Query(sql, params...)
 		if err != nil {
-			log.Printf("ExecuteQuery error: %v", err)
+			// 友好的错误提示
+			if isConnectionError(err) {
+				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+			} else {
+				LogError("查询执行失败: %v (SQL: %s)", err, sql)
+			}
 			continue
 		}
 

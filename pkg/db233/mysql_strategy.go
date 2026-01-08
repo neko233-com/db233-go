@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"database/sql"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -238,9 +239,9 @@ func (s *MySQLStrategy) GetExistingColumns(db *Db, tableName string) (map[string
 }
 
 /**
- * 生成添加列的 SQL
+ * 生成添加列的 SQL (old version - kept for backward compatibility)
  */
-func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, colName string, colType string, field reflect.StructField, isPrimaryKey bool) string {
+func (s *MySQLStrategy) GenerateAddColumnSQLOld(tableName string, colName string, colType string, field reflect.StructField, isPrimaryKey bool) string {
 	dbTag := field.Tag.Get("db")
 	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
 
@@ -258,4 +259,108 @@ func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, colName string, c
 	}
 
 	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef)
+}
+
+/**
+ * 生成添加列的 SQL (new interface version)
+ */
+func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, field reflect.StructField, colName string) (string, error) {
+	colType := s.GetSQLType(field)
+	dbTag := field.Tag.Get("db")
+
+	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
+
+	// 检查是否自增
+	if strings.Contains(dbTag, "auto_increment") {
+		colDef += " AUTO_INCREMENT"
+	}
+
+	// 检查是否为主键
+	isPrimaryKey := strings.Contains(dbTag, "primary_key")
+
+	// 默认允许为 NULL，除非明确标记为 not_null 或是主键
+	if strings.Contains(dbTag, "not_null") || isPrimaryKey {
+		colDef += " NOT NULL"
+	} else {
+		colDef += " NULL"
+	}
+
+	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef), nil
+}
+
+/**
+ * 获取表的所有列信息
+ */
+func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (map[string]ColumnInfo, error) {
+	query := `
+		SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+		ORDER BY ORDINAL_POSITION
+	`
+
+	rows, err := db.DataSource.Query(query, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("查询表列信息失败: %w", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]ColumnInfo)
+	for rows.Next() {
+		var colName, colType, isNullable, columnKey string
+		var columnDefault sql.NullString
+
+		if err := rows.Scan(&colName, &colType, &isNullable, &columnKey, &columnDefault); err != nil {
+			return nil, fmt.Errorf("扫描列信息失败: %w", err)
+		}
+
+		info := ColumnInfo{
+			Name:       colName,
+			Type:       colType,
+			IsNullable: isNullable == "YES",
+			IsPrimary:  columnKey == "PRI",
+		}
+
+		if columnDefault.Valid {
+			info.Default = columnDefault.String
+		}
+
+		columns[colName] = info
+	}
+
+	return columns, nil
+}
+
+/**
+ * 生成删除列的 SQL
+ */
+func (s *MySQLStrategy) GenerateDropColumnSQL(tableName string, colName string) (string, error) {
+	return fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`", tableName, colName), nil
+}
+
+/**
+ * 生成修改列的 SQL
+ */
+func (s *MySQLStrategy) GenerateModifyColumnSQL(tableName string, field reflect.StructField, colName string) (string, error) {
+	colType := s.GetSQLType(field)
+	dbTag := field.Tag.Get("db")
+
+	colDef := fmt.Sprintf("MODIFY COLUMN `%s` %s", colName, colType)
+
+	// 检查是否自增
+	if strings.Contains(dbTag, "auto_increment") {
+		colDef += " AUTO_INCREMENT"
+	}
+
+	// 检查是否为主键
+	isPrimaryKey := strings.Contains(dbTag, "primary_key")
+
+	// 默认允许为 NULL，除非明确标记为 not_null 或是主键
+	if strings.Contains(dbTag, "not_null") || isPrimaryKey {
+		colDef += " NOT NULL"
+	} else {
+		colDef += " NULL"
+	}
+
+	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef), nil
 }

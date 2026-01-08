@@ -212,8 +212,14 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 
 	result, err := r.db.DataSource.Exec(sql, finalValues...)
 	if err != nil {
-		LogError("保存实体失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
-		return NewQueryExceptionWithCause(err, fmt.Sprintf("保存实体到表 %s 失败", tableName))
+		// 友好的错误提示
+		if isConnectionError(err) {
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
+			return NewQueryExceptionWithCause(err, fmt.Sprintf("数据库连接已关闭或不可用，请检查网络连接"))
+		} else {
+			LogError("保存实体失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
+			return NewQueryExceptionWithCause(err, fmt.Sprintf("保存实体到表 %s 失败", tableName))
+		}
 	}
 
 	// 处理自增主键
@@ -869,6 +875,6 @@ func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 		return 0, NewQueryExceptionWithCause(err, fmt.Sprintf("统计表 %s 的记录数失败", tableName))
 	}
 
-	LogDebug("计数查询成功: 表=%s, 记录数=%d", tableName, count)
+	LogDebug("计数成功: 表=%s, 总数=%d", tableName, count)
 	return count, nil
 }

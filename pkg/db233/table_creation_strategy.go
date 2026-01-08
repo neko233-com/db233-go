@@ -56,15 +56,55 @@ type ITableCreationStrategy interface {
 	GetExistingColumns(db *Db, tableName string) (map[string]bool, error)
 
 	/**
-	 * 生成添加列的 SQL
+	 * 获取表的所有列信息（包括类型、约束等）
+	 *
+	 * @param db 数据库连接
+	 * @param tableName 表名
+	 * @return 列名到列信息的映射
+	 * @return 错误
+	 */
+	GetTableColumns(db *Db, tableName string) (map[string]ColumnInfo, error)
+
+	/**
+	 * 生成添加列的 SQL（简化版本）
+	 *
+	 * @param tableName 表名
+	 * @param field 字段信息
+	 * @param colName 列名
+	 * @return ALTER TABLE ADD COLUMN SQL
+	 * @return 错误
+	 */
+	GenerateAddColumnSQL(tableName string, field reflect.StructField, colName string) (string, error)
+
+	/**
+	 * 生成删除列的 SQL
 	 *
 	 * @param tableName 表名
 	 * @param colName 列名
-	 * @param colType SQL 类型
-	 * @param field 字段信息
-	 * @param isPrimaryKey 是否为主键
-	 * @return ALTER TABLE ADD COLUMN SQL
+	 * @return ALTER TABLE DROP COLUMN SQL
+	 * @return 错误
 	 */
-	GenerateAddColumnSQL(tableName string, colName string, colType string, field reflect.StructField, isPrimaryKey bool) string
+	GenerateDropColumnSQL(tableName string, colName string) (string, error)
+
+	/**
+	 * 生成修改列的 SQL
+	 *
+	 * @param tableName 表名
+	 * @param field 字段信息
+	 * @param colName 列名
+	 * @return ALTER TABLE MODIFY COLUMN SQL
+	 * @return 错误
+	 */
+	GenerateModifyColumnSQL(tableName string, field reflect.StructField, colName string) (string, error)
 }
 
+/**
+ * ColumnInfo - 列信息
+ */
+type ColumnInfo struct {
+	Name       string
+	Type       string
+	IsNullable bool
+	IsPrimary  bool
+	Default    interface{}
+}
