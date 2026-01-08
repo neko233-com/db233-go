@@ -679,13 +679,13 @@ func (cm *CrudManager) getExistingColumns(db *Db, tableName string) (map[string]
 /**
  * AutoCreateTableWithPermissions 带权限控制的自动创建表
  */
-func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType interface{}, permissions *AutoDbPermissions) error {
+func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType interface{}, permissions *AutoDbPermission) error {
 	if permissions == nil {
-		permissions = NewDefaultAutoDbPermissions()
+		permissions = NewDefaultAutoDbPermission()
 	}
 
 	// 检查是否允许创建表
-	if !permissions.IsAllowed(AutoDbOperateCreateTable) {
+	if !permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
 		LogWarn("创建表操作被禁用，跳过: 实体=%v", entityType)
 		return nil
 	}
@@ -696,14 +696,9 @@ func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType interfa
 /**
  * AutoMigrateTable 自动迁移表（支持创建列、更新列、删除列）
  */
-func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissions *AutoDbPermissions) error {
+func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissions *AutoDbPermission) error {
 	if permissions == nil {
-		permissions = NewDefaultAutoDbPermissions()
-	}
-
-	if !permissions.EnableAutoMigration {
-		LogInfo("自动迁移未启用")
-		return nil
+		permissions = NewDefaultAutoDbPermission()
 	}
 
 	cm.mu.Lock()
@@ -729,7 +724,7 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissi
 
 	// 表不存在，创建表
 	if !exists {
-		if !permissions.IsAllowed(AutoDbOperateCreateTable) {
+		if !permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
 			LogWarn("创建表操作被禁用: 表=%s", tableName)
 			return nil
 		}
@@ -765,7 +760,7 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissi
 	}
 
 	// 添加列
-	if len(columnsToAdd) > 0 && permissions.IsAllowed(AutoDbOperateCreateColumn) {
+	if len(columnsToAdd) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
 		for colName, field := range columnsToAdd {
 			sql, err := strategy.GenerateAddColumnSQL(tableName, field, colName)
 			if err != nil {
@@ -773,21 +768,17 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissi
 				continue
 			}
 
-			if permissions.DryRun {
-				LogInfo("[DRY RUN] 添加列: 表=%s, 列=%s, SQL=%s", tableName, colName, sql)
+			_, err = db.DataSource.Exec(sql)
+			if err != nil {
+				LogError("添加列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
 			} else {
-				_, err = db.DataSource.Exec(sql)
-				if err != nil {
-					LogError("添加列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-				} else {
-					LogInfo("添加列成功: 表=%s, 列=%s", tableName, colName)
-				}
+				LogInfo("添加列成功: 表=%s, 列=%s", tableName, colName)
 			}
 		}
 	}
 
 	// 删除列
-	if len(columnsToDelete) > 0 && permissions.IsAllowed(AutoDbOperateDeleteColumn) {
+	if len(columnsToDelete) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeDeleteColumn) {
 		for _, colName := range columnsToDelete {
 			sql, err := strategy.GenerateDropColumnSQL(tableName, colName)
 			if err != nil {
@@ -795,15 +786,11 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissi
 				continue
 			}
 
-			if permissions.DryRun {
-				LogInfo("[DRY RUN] 删除列: 表=%s, 列=%s, SQL=%s", tableName, colName, sql)
+			_, err = db.DataSource.Exec(sql)
+			if err != nil {
+				LogError("删除列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
 			} else {
-				_, err = db.DataSource.Exec(sql)
-				if err != nil {
-					LogError("删除列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-				} else {
-					LogInfo("删除列成功: 表=%s, 列=%s", tableName, colName)
-				}
+				LogInfo("删除列成功: 表=%s, 列=%s", tableName, colName)
 			}
 		}
 	}
@@ -854,64 +841,27 @@ func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.Struc
 /**
  * AutoMigrateAllTablesConcurrently 并发迁移所有表
  */
-func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []interface{}, permissions *AutoDbPermissions) error {
+func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []interface{}, permissions *AutoDbPermission) error {
 	if permissions == nil {
-		permissions = NewDefaultAutoDbPermissions()
+		permissions = NewSafeAutoDbPermission()
 	}
 
-	if !permissions.EnableConcurrentMigration {
-		// 串行迁移
-		LogInfo("使用串行模式迁移 %d 个表", len(entityTypes))
-		for _, entityType := range entityTypes {
-			if err := cm.AutoMigrateTable(db, entityType, permissions); err != nil {
-				LogError("迁移表失败: 实体=%v, 错误=%v", entityType, err)
-				return err
-			}
-		}
-		return nil
+	// 使用新的并发迁移管理器
+	config := &ConcurrentMigrationConfig{
+		MaxConcurrency:   10,
+		Permission:       permissions,
+		EnableConcurrent: true,
 	}
 
-	// 并发迁移
-	LogInfo("使用并发模式迁移 %d 个表，最大协程数=%d", len(entityTypes), permissions.MaxConcurrentWorkers)
-
-	migrationManager := NewConcurrentMigrationManager(db, permissions)
-	migrationManager.Start()
-	defer migrationManager.Stop()
-
-	// 生成迁移任务
-	for _, entityType := range entityTypes {
-		t := reflect.TypeOf(entityType)
-		if t.Kind() == reflect.Ptr {
-			t = t.Elem()
-		}
-
-		tableName := cm.GetTableName(t)
-		task := &MigrationTask{
-			EntityType:    t,
-			TableName:     tableName,
-			OperationType: AutoDbOperateCreateTable, // 简化：先只支持创建表
-			Priority:      0,
-		}
-
-		// 提交任务
-		if err := migrationManager.SubmitTask(task); err != nil {
-			LogError("提交迁移任务失败: 表=%s, 错误=%v", tableName, err)
-		}
-	}
-
-	// 等待所有任务完成
-	migrationManager.Wait()
-
-	// 打印统计
-	migrationManager.PrintStatistics()
+	migrationManager := NewConcurrentMigrationManager(config)
+	results := migrationManager.MigrateTablesBatch(db, entityTypes)
 
 	// 检查失败的任务
-	results := migrationManager.GetResults()
 	failedCount := 0
-	for _, result := range results {
-		if !result.Success {
+	for tableName, err := range results {
+		if err != nil {
 			failedCount++
-			LogError("迁移失败: 表=%s, 错误=%v", result.Task.TableName, result.Error)
+			LogError("迁移失败: 表=%s, 错误=%v", tableName, err)
 		}
 	}
 
