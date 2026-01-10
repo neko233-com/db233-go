@@ -310,7 +310,7 @@ if ($repoUrl) {
 Write-Host ""
 
 Write-ColoredHost "下一步操作：" "Cyan"
-Write-ColoredHost "  1. 访问 GitHub 创建 Release: $repoUrl/releases/new?tag=$tagName" "White"
+Write-ColoredHost "  1. 访问仓库创建 Release: $repoUrl/releases/new?tag=$tagName" "White"
 Write-ColoredHost "  2. 更新 CHANGELOG.md 添加版本说明" "White"
 Write-ColoredHost "  3. 通知团队成员新版本发布" "White"
 Write-Host ""
@@ -322,9 +322,5 @@ if ($DryRun) {
 
 Write-Host ""
 Write-ColoredHost "========================================" "Green"
-
-# 等待用户确认
-if (-not $DryRun) {
-    Read-Host "按 Enter 键退出"
-}
-
+Write-ColoredHost "发布脚本执行完毕！" "Green"
+Write-ColoredHost "========================================" "Green"
