@@ -193,57 +193,99 @@ func (cm *CrudManager) IsContainsEntity(obj interface{}) bool {
 }
 
 /**
- * 初始化表列元数据
+ * 初始化表列元数据（支持嵌入结构体）
  */
 func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type) {
 	for _, t := range entityTypes {
 		tableName := cm.GetTableName(t)
 
 		colList := make([]string, 0)
-
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
-			if !field.IsExported() {
-				continue
-			}
-			colName := cm.GetColumnName(field)
-			if colName == "" {
-				// 跳过没有有效列名的字段（db:"-" 或没有 db 标签）
-				continue
-			}
-			colList = append(colList, colName)
-		}
+		cm.collectColumnsRecursive(t, &colList)
 
 		cm.tableNameToColNameMap[tableName] = colList
 	}
 }
 
 /**
- * 初始化表主键元数据
+ * 递归收集列名（支持嵌入结构体）
+ */
+func (cm *CrudManager) collectColumnsRecursive(t reflect.Type, colList *[]string) {
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		// 处理嵌入结构体（Anonymous field）
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归收集
+			if embeddedType.Kind() == reflect.Struct {
+				cm.collectColumnsRecursive(embeddedType, colList)
+				continue
+			}
+		}
+
+		colName := cm.GetColumnName(field)
+		if colName == "" {
+			// 跳过没有有效列名的字段（db:"-" 或没有 db 标签）
+			continue
+		}
+		*colList = append(*colList, colName)
+	}
+}
+
+/**
+ * 初始化表主键元数据（支持嵌入结构体）
  */
 func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.Type) {
 	for _, t := range entityTypes {
 		tableName := cm.GetTableName(t)
 
 		pkList := make([]string, 0)
-
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
-			if !field.IsExported() {
-				continue
-			}
-			colName := cm.GetColumnName(field)
-			if colName == "" {
-				// 跳过没有有效列名的字段（db:"-" 或没有 db 标签）
-				continue
-			}
-			if cm.IsPrimaryKey(field) {
-				pkList = append(pkList, colName)
-			}
-		}
+		cm.collectPrimaryKeysRecursive(t, &pkList)
 
 		if len(pkList) > 0 {
 			cm.tableNamePkColNameListMap[tableName] = pkList
+		}
+	}
+}
+
+/**
+ * 递归收集主键列名（支持嵌入结构体）
+ */
+func (cm *CrudManager) collectPrimaryKeysRecursive(t reflect.Type, pkList *[]string) {
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		// 处理嵌入结构体（Anonymous field）
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归收集
+			if embeddedType.Kind() == reflect.Struct {
+				cm.collectPrimaryKeysRecursive(embeddedType, pkList)
+				continue
+			}
+		}
+
+		colName := cm.GetColumnName(field)
+		if colName == "" {
+			// 跳过没有有效列名的字段（db:"-" 或没有 db 标签）
+			continue
+		}
+		if cm.IsPrimaryKey(field) {
+			*pkList = append(*pkList, colName)
 		}
 	}
 }
@@ -352,7 +394,7 @@ func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
 }
 
 /** GetPrimaryKeyColumnName
- * 获取实体的主键列名（自动扫描 struct tag，带缓存）
+ * 获取实体的主键列名（自动扫描 struct tag，支持嵌入结构体，带缓存）
  *
  * @param entity 实体实例
  * @return string 主键列名，如果未找到则返回 "id"
@@ -380,17 +422,12 @@ func (cm *CrudManager) GetPrimaryKeyColumnName(entity interface{}) string {
 		return cached
 	}
 
-	// 扫描所有字段，查找 primary_key 标记
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if cm.IsPrimaryKey(field) {
-			colName := cm.GetColumnName(field)
-			if colName != "" {
-				// 缓存结果
-				cm.typeToPrimaryKeyColumnCache[t] = colName
-				return colName
-			}
-		}
+	// 递归扫描所有字段（包括嵌入结构体），查找 primary_key 标记
+	colName := cm.findPrimaryKeyColumnRecursive(t)
+	if colName != "" {
+		// 缓存结果
+		cm.typeToPrimaryKeyColumnCache[t] = colName
+		return colName
 	}
 
 	// 默认返回 "id" 并缓存
@@ -399,7 +436,65 @@ func (cm *CrudManager) GetPrimaryKeyColumnName(entity interface{}) string {
 }
 
 /**
- * 获取实体的主键值（自动从 struct 字段读取）
+ * findPrimaryKeyColumnRecursive 递归查找主键列名（支持嵌入结构体）
+ *
+ * 功能说明：
+ * 1. 类似 JPA 的 @Id 继承机制，自动从父类（嵌入结构体）中查找主键
+ * 2. 支持多层嵌套的结构体继承
+ * 3. 优先查找嵌入结构体中的主键，然后查找当前层级的主键
+ *
+ * 使用场景：
+ * - BaseEntity 中定义 ID，子类自动继承
+ * - 多层继承：BaseEntity -> AbstractPlayerEntity -> ConcretePlayerEntity
+ *
+ * @param t 结构体类型
+ * @return string 主键列名，未找到返回空字符串
+ */
+func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
+	// 遍历当前类型的所有字段
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		// 处理嵌入结构体（Anonymous field）- 相当于 Java 的继承
+		// Go 中的匿名字段会被提升，类似于 Java 的继承机制
+		if field.Anonymous {
+			embeddedType := field.Type
+			// 如果是指针类型，获取其指向的实际类型
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果嵌入的是结构体，递归查找其中的主键
+			// 这相当于在父类中查找 @Id 注解的字段
+			if embeddedType.Kind() == reflect.Struct {
+				colName := cm.findPrimaryKeyColumnRecursive(embeddedType)
+				if colName != "" {
+					// 在嵌入结构体（父类）中找到了主键
+					return colName
+				}
+			}
+		}
+
+		// 检查当前层级的字段是否为主键
+		// 支持三种标记方式：
+		// 1. db:"column_name,primary_key" - 明确指定主键
+		// 2. primary_key:"true" - 独立的主键标签
+		// 3. 字段名为 ID 或 Id - 默认约定
+		if cm.IsPrimaryKey(field) {
+			colName := cm.GetColumnName(field)
+			if colName != "" {
+				// 找到主键字段，返回其列名
+				return colName
+			}
+		}
+	}
+
+	// 未找到主键
+	return ""
+}
+
+/**
+ * 获取实体的主键值（自动从 struct 字段读取，支持嵌入结构体）
  *
  * @param entity 实体实例
  * @return interface{} 主键值，如果未找到则返回 nil
@@ -409,13 +504,43 @@ func (cm *CrudManager) GetPrimaryKeyValue(entity interface{}) interface{} {
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-	t := v.Type()
 
-	// 扫描所有字段，查找 primary_key 标记
+	return cm.findPrimaryKeyValueRecursive(v, v.Type())
+}
+
+/**
+ * 递归查找主键值（支持嵌入结构体）
+ */
+func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type) interface{} {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
+		fieldValue := v.Field(i)
+
+		// 处理嵌入结构体（Anonymous field）
+		if field.Anonymous {
+			embeddedType := field.Type
+			embeddedValue := fieldValue
+
+			// 如果是指针，需要解引用
+			if embeddedType.Kind() == reflect.Ptr {
+				if embeddedValue.IsNil() {
+					continue // 跳过 nil 嵌入结构体
+				}
+				embeddedValue = embeddedValue.Elem()
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归查找
+			if embeddedType.Kind() == reflect.Struct {
+				pkValue := cm.findPrimaryKeyValueRecursive(embeddedValue, embeddedType)
+				if pkValue != nil {
+					return pkValue
+				}
+			}
+		}
+
+		// 检查当前字段是否为主键
 		if cm.IsPrimaryKey(field) {
-			fieldValue := v.Field(i)
 			if fieldValue.CanInterface() {
 				return fieldValue.Interface()
 			}
@@ -436,6 +561,15 @@ func (cm *CrudManager) GetTableToPkColListMap() map[string][]string {
 		result[k] = append([]string(nil), v...)
 	}
 	return result
+}
+
+/**
+ * ClearPrimaryKeyCache 清除主键缓存（用于测试）
+ */
+func (cm *CrudManager) ClearPrimaryKeyCache() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.typeToPrimaryKeyColumnCache = make(map[reflect.Type]string)
 }
 
 /**
@@ -468,30 +602,19 @@ func (cm *CrudManager) AutoCreateTable(db *Db, entityType interface{}) error {
 		return nil
 	}
 
-	// 获取主键列名（已持有写锁，直接扫描避免死锁）
+	// 获取主键列名（已持有写锁，使用递归扫描支持嵌入结构体）
 	var uidColumn string
 	if t.Kind() == reflect.Struct {
 		// 检查缓存
 		if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
 			uidColumn = cached
 		} else {
-			// 扫描字段查找主键
-			for i := 0; i < t.NumField(); i++ {
-				field := t.Field(i)
-				if cm.IsPrimaryKey(field) {
-					colName := cm.GetColumnName(field)
-					if colName != "" {
-						uidColumn = colName
-						cm.typeToPrimaryKeyColumnCache[t] = colName
-						break
-					}
-				}
-			}
-			// 如果没找到，使用默认值
+			// 使用递归扫描查找主键（支持嵌入结构体）
+			uidColumn = cm.findPrimaryKeyColumnRecursive(t)
 			if uidColumn == "" {
 				uidColumn = "id"
-				cm.typeToPrimaryKeyColumnCache[t] = "id"
 			}
+			cm.typeToPrimaryKeyColumnCache[t] = uidColumn
 		}
 	}
 
@@ -592,30 +715,19 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 		return err
 	}
 
-	// 获取主键列名（已持有写锁，直接扫描避免死锁）
+	// 获取主键列名（已持有写锁，使用递归扫描支持嵌入结构体）
 	var uidColumn string
 	if t.Kind() == reflect.Struct {
 		// 检查缓存
 		if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
 			uidColumn = cached
 		} else {
-			// 扫描字段查找主键
-			for i := 0; i < t.NumField(); i++ {
-				field := t.Field(i)
-				if cm.IsPrimaryKey(field) {
-					colName := cm.GetColumnName(field)
-					if colName != "" {
-						uidColumn = colName
-						cm.typeToPrimaryKeyColumnCache[t] = colName
-						break
-					}
-				}
-			}
-			// 如果没找到，使用默认值
+			// 使用递归扫描查找主键（支持嵌入结构体）
+			uidColumn = cm.findPrimaryKeyColumnRecursive(t)
 			if uidColumn == "" {
 				uidColumn = "id"
-				cm.typeToPrimaryKeyColumnCache[t] = "id"
 			}
+			cm.typeToPrimaryKeyColumnCache[t] = uidColumn
 		}
 	}
 

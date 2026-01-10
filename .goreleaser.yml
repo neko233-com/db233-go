@@ -1,0 +1,56 @@
+# GoReleaser 配置文件
+# 用于自动化发布流程
+
+# 构建配置
+builds:
+  - skip: true  # db233-go 是库，不需要构建二进制
+
+# 归档配置
+archives:
+  - format: tar.gz
+    files:
+      # 包含主要代码
+      - pkg/**
+      - LICENSE
+      - README.md
+      - CHANGELOG*.md
+      - docs/**
+      # 排除示例代码和测试
+      - "!examples/**"
+      - "!tests/**"
+      - "!*_test.go"
+
+# 发布配置
+release:
+  github:
+    owner: neko233-com
+    name: db233-go
+
+  # 发布说明
+  header: |
+    ## DB233-Go {{.Tag}}
+    
+    感谢使用 db233-go！
+
+  footer: |
+    ## 安装方式
+    
+    ```bash
+    go get github.com/neko233-com/db233-go@{{.Tag}}
+    ```
+    
+    ## 文档
+    
+    - [中文文档](docs/JPA_INHERITANCE_CN.md)
+    - [English Guide](docs/JPA_INHERITANCE_GUIDE.md)
+    - [快速参考](docs/QUICK_REFERENCE.md)
+
+# 变更日志
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^examples:'
+

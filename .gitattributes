@@ -1,0 +1,30 @@
+# Git 属性配置
+# 用于控制文件在仓库中的行为
+
+# examples 目录标记为内部示例代码
+# 不应该被外部项目引用（类似 JUnit 测试代码）
+examples/** linguist-documentation
+examples/** export-ignore
+
+# 测试文件标记
+tests/** linguist-documentation
+*_test.go linguist-documentation
+
+# 文档文件标记
+*.md linguist-documentation
+docs/** linguist-documentation
+
+# 自动换行设置
+*.go text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+
+# Windows 脚本
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+

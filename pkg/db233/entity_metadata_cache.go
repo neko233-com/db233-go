@@ -115,7 +115,7 @@ func (c *EntityMetadataCache) GetOrBuild(entity interface{}) (*EntityMetadata, e
 }
 
 /**
- * buildMetadata 构建实体元数据
+ * buildMetadata 构建实体元数据（支持嵌入结构体）
  */
 func (c *EntityMetadataCache) buildMetadata(entity interface{}, entityType reflect.Type) (*EntityMetadata, error) {
 	metadata := &EntityMetadata{
@@ -142,14 +142,52 @@ func (c *EntityMetadataCache) buildMetadata(entity interface{}, entityType refle
 		return nil, fmt.Errorf("无法获取表名，实体必须实现 IDbEntity 接口")
 	}
 
-	// 扫描字段
+	// 扫描字段（递归处理嵌入结构体）
+	c.scanFields(entityType, metadata, []int{})
+
+	// 如果没有找到主键，使用默认值 "id"
+	if metadata.PrimaryKeyColumn == "" {
+		metadata.PrimaryKeyColumn = "id"
+		LogWarn("实体 %s 未找到主键字段，使用默认主键列名: id", entityType.Name())
+	}
+
+	return metadata, nil
+}
+
+/**
+ * scanFields 扫描字段（递归处理嵌入结构体）
+ * @param t 类型
+ * @param metadata 元数据
+ * @param parentIndex 父字段索引路径（用于嵌入字段）
+ */
+func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadata, parentIndex []int) {
 	cm := GetCrudManagerInstance()
-	for i := 0; i < entityType.NumField(); i++ {
-		field := entityType.Field(i)
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
 
 		// 跳过未导出字段
 		if !field.IsExported() {
 			continue
+		}
+
+		// 当前字段的完整索引路径
+		currentIndex := append(append([]int{}, parentIndex...), i)
+
+		// 处理嵌入结构体（Anonymous field）
+		if field.Anonymous {
+			// 获取嵌入字段的类型
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归扫描
+			if embeddedType.Kind() == reflect.Struct {
+				LogDebug("扫描嵌入结构体: %s -> %s", t.Name(), field.Name)
+				c.scanFields(embeddedType, metadata, currentIndex[:len(currentIndex)-1])
+				continue
+			}
 		}
 
 		// 获取列名（自动处理 db:"-" 和无 db 标签的情况）
@@ -171,19 +209,19 @@ func (c *EntityMetadataCache) buildMetadata(entity interface{}, entityType refle
 			}
 		}
 
-		// 记录映射关系
-		metadata.ColumnToFieldIndex[columnName] = i
+		// 记录映射关系（使用最后一个索引，因为嵌入字段会被提升到父级）
+		fieldIndex := currentIndex[len(currentIndex)-1]
+		if len(parentIndex) == 0 {
+			// 非嵌入字段，直接使用索引
+			metadata.ColumnToFieldIndex[columnName] = fieldIndex
+		} else {
+			// 嵌入字段，使用当前索引（Go会自动提升嵌入字段）
+			metadata.ColumnToFieldIndex[columnName] = fieldIndex
+		}
+
 		metadata.FieldNameToColumn[field.Name] = columnName
 		metadata.AllColumns = append(metadata.AllColumns, columnName)
 	}
-
-	// 如果没有找到主键，使用默认值 "id"
-	if metadata.PrimaryKeyColumn == "" {
-		metadata.PrimaryKeyColumn = "id"
-		LogWarn("实体 %s 未找到主键字段，使用默认主键列名: id", entityType.Name())
-	}
-
-	return metadata, nil
 }
 
 /**

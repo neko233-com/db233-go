@@ -34,7 +34,7 @@ func (s *MySQLStrategy) GetDatabaseType() EnumDatabaseType {
 }
 
 /**
- * 生成建表 SQL
+ * 生成建表 SQL（支持嵌入结构体）
  */
 func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType reflect.Type, uidColumn string) (string, error) {
 	if tableName == "" {
@@ -44,11 +44,47 @@ func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType refl
 	var columns []string
 	var primaryKeys []string
 
+	// 递归收集所有字段（包括嵌入结构体）
+	s.collectFieldsForCreateTable(entityType, tableName, uidColumn, &columns, &primaryKeys)
+
+	if len(primaryKeys) > 0 {
+		columns = append(columns, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
+	}
+
+	if len(columns) == 0 {
+		return "", NewDb233Exception(fmt.Sprintf("表 %s 没有可用的列", tableName))
+	}
+
+	createSQL := fmt.Sprintf("CREATE TABLE `%s` (\n\t%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", tableName, strings.Join(columns, ",\n\t"))
+
+	LogDebug("生成 MySQL 建表SQL: 表=%s, SQL=%s", tableName, createSQL)
+	return createSQL, nil
+}
+
+/**
+ * 递归收集字段用于建表（支持嵌入结构体）
+ */
+func (s *MySQLStrategy) collectFieldsForCreateTable(entityType reflect.Type, tableName string, uidColumn string, columns *[]string, primaryKeys *[]string) {
 	for i := 0; i < entityType.NumField(); i++ {
 		field := entityType.Field(i)
 		if !field.IsExported() {
 			LogDebug("跳过未导出字段: 表=%s, 字段=%s", tableName, field.Name)
 			continue
+		}
+
+		// 处理嵌入结构体（Anonymous field）
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归收集
+			if embeddedType.Kind() == reflect.Struct {
+				LogDebug("递归收集嵌入结构体字段: 表=%s, 嵌入字段=%s", tableName, field.Name)
+				s.collectFieldsForCreateTable(embeddedType, tableName, uidColumn, columns, primaryKeys)
+				continue
+			}
 		}
 
 		// 获取列名（统一使用 GetColumnName，自动处理 db:"-" 和无 db 标签的情况）
@@ -83,25 +119,12 @@ func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType refl
 			colDef += " NULL"
 		}
 
-		columns = append(columns, colDef)
+		*columns = append(*columns, colDef)
 
 		if isPrimaryKey {
-			primaryKeys = append(primaryKeys, fmt.Sprintf("`%s`", colName))
+			*primaryKeys = append(*primaryKeys, fmt.Sprintf("`%s`", colName))
 		}
 	}
-
-	if len(primaryKeys) > 0 {
-		columns = append(columns, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(primaryKeys, ", ")))
-	}
-
-	if len(columns) == 0 {
-		return "", NewDb233Exception(fmt.Sprintf("表 %s 没有可用的列", tableName))
-	}
-
-	createSQL := fmt.Sprintf("CREATE TABLE `%s` (\n\t%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", tableName, strings.Join(columns, ",\n\t"))
-
-	LogDebug("生成 MySQL 建表SQL: 表=%s, SQL=%s", tableName, createSQL)
-	return createSQL, nil
 }
 
 /**

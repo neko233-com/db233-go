@@ -168,6 +168,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		return NewValidationException(fmt.Sprintf("表 %s 没有可插入的字段（所有字段都为空或已跳过）", tableName))
 	}
 
+	// ========== UPSERT 逻辑：自动处理 INSERT 或 UPDATE ==========
 	// 检查主键是否在 columns 中（用于判断是否需要 upsert）
 	hasPrimaryKey := false
 	for _, col := range columns {
@@ -178,36 +179,42 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	}
 
 	// 强制使用 INSERT ... ON DUPLICATE KEY UPDATE（UPSERT 语法）
-	// 这样可以避免主键冲突错误，自动处理 INSERT 或 UPDATE
+	// 优点：
+	// 1. 避免主键冲突错误（Error 1062: Duplicate entry）
+	// 2. 自动判断是 INSERT 还是 UPDATE
+	// 3. 减少业务代码复杂度，无需手动判断记录是否存在
 	var sql string
 	var finalValues []interface{}
 
 	if hasPrimaryKey {
 		// 有主键值，强制使用 INSERT ... ON DUPLICATE KEY UPDATE（UPSERT）
+		// 相当于：如果主键不存在则插入，如果主键已存在则更新其他字段
 		updateParts := make([]string, 0)
 		for _, col := range columns {
 			if col != uidColumn {
-				// 只更新非主键字段
+				// 只更新非主键字段（主键不能修改）
 				updateParts = append(updateParts, col+" = VALUES("+col+")")
 			}
 		}
 
 		if len(updateParts) > 0 {
 			// 使用 ON DUPLICATE KEY UPDATE（强制 UPSERT）
+			// MySQL 语法：INSERT INTO ... VALUES ... ON DUPLICATE KEY UPDATE ...
 			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ") ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
 			finalValues = values
-			LogDebug("执行 UPSERT (强制): 表=%s, 主键列=%s, 主键值=%v, 字段数=%d, SQL=%s", tableName, uidColumn, uidValue, len(columns), sql)
+			LogDebug("执行 UPSERT (强制): 表=%s, 主键列=%s, 主键值=%v, 字段数=%d", tableName, uidColumn, uidValue, len(columns))
 		} else {
 			// 只有主键字段，使用普通 INSERT IGNORE（避免重复错误）
 			sql = "INSERT IGNORE INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 			finalValues = values
-			LogDebug("执行 INSERT IGNORE (仅主键): 表=%s, 主键列=%s, 主键值=%v, SQL=%s", tableName, uidColumn, uidValue, sql)
+			LogDebug("执行 INSERT IGNORE (仅主键): 表=%s, 主键列=%s, 主键值=%v", tableName, uidColumn, uidValue)
 		}
 	} else {
 		// 没有主键值（自增主键），使用普通 INSERT
+		// 场景：id 为 0 或 nil，由数据库自动生成主键
 		sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 		finalValues = values
-		LogDebug("执行 INSERT (自增主键): 表=%s, 字段数=%d, SQL=%s", tableName, len(columns), sql)
+		LogDebug("执行 INSERT (自增主键): 表=%s, 字段数=%d", tableName, len(columns))
 	}
 
 	result, err := r.db.DataSource.Exec(sql, finalValues...)
@@ -298,7 +305,7 @@ func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 }
 
 /**
- * 获取字段
+ * 获取字段（支持嵌入结构体）
  */
 func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{} {
 	v := reflect.ValueOf(entity)
@@ -310,6 +317,16 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 	t := v.Type()
 	entityTypeName := t.Name()
 
+	// 递归扫描字段（包括嵌入结构体）
+	r.scanFieldsRecursive(v, t, entityTypeName, fields)
+
+	return fields
+}
+
+/**
+ * 递归扫描字段（处理嵌入结构体）
+ */
+func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type, entityTypeName string, fields map[string]interface{}) {
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
@@ -318,6 +335,29 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 		if !fieldValue.CanInterface() {
 			LogDebug("跳过未导出字段: 实体=%s, 字段=%s (字段未导出，无法访问)", entityTypeName, field.Name)
 			continue
+		}
+
+		// 处理嵌入结构体（Anonymous field）
+		if field.Anonymous {
+			embeddedType := field.Type
+			embeddedValue := fieldValue
+
+			// 如果是指针，需要解引用
+			if embeddedType.Kind() == reflect.Ptr {
+				if embeddedValue.IsNil() {
+					LogDebug("跳过 nil 嵌入结构体: 实体=%s, 字段=%s", entityTypeName, field.Name)
+					continue
+				}
+				embeddedValue = embeddedValue.Elem()
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归扫描
+			if embeddedType.Kind() == reflect.Struct {
+				LogDebug("递归扫描嵌入结构体: 实体=%s, 嵌入字段=%s", entityTypeName, field.Name)
+				r.scanFieldsRecursive(embeddedValue, embeddedType, entityTypeName, fields)
+				continue
+			}
 		}
 
 		// 解析 db 标签
@@ -382,8 +422,6 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 
 		fields[columnName] = value
 	}
-
-	return fields
 }
 
 /**
