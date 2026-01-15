@@ -65,24 +65,8 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interfac
 
 		// 映射到结构体字段
 		for i, col := range columns {
-			// 首先尝试直接匹配字段名
-			field := newInstance.FieldByName(col)
-			if !field.IsValid() || !field.CanSet() {
-				// 尝试通过标签匹配
-				for j := 0; j < structType.NumField(); j++ {
-					structField := structType.Field(j)
-					tag := structField.Tag.Get("db")
-					if tag != "" {
-						// 解析标签，获取列名（标签格式：column_name,options...）
-						tagParts := strings.Split(tag, ",")
-						columnName := strings.TrimSpace(tagParts[0])
-						if columnName == col {
-							field = newInstance.Field(j)
-							break
-						}
-					}
-				}
-			}
+			// 尝试查找字段（支持嵌入结构体）
+			field := o.findFieldByColumnName(newInstance, structType, col)
 
 			if field.IsValid() && field.CanSet() {
 				val := reflect.ValueOf(scanTargets[i]).Elem()
@@ -102,6 +86,77 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interfac
 	}
 
 	return results
+}
+
+/**
+ * findFieldByColumnName 根据列名查找字段（支持嵌入结构体递归查找）
+ *
+ * @param structValue 结构体值
+ * @param structType 结构体类型
+ * @param columnName 列名
+ * @return reflect.Value 找到的字段值
+ */
+func (o *OrmHandler) findFieldByColumnName(structValue reflect.Value, structType reflect.Type, columnName string) reflect.Value {
+	// 首先尝试直接匹配字段名
+	field := structValue.FieldByName(columnName)
+	if field.IsValid() && field.CanSet() {
+		return field
+	}
+
+	// 遍历所有字段，尝试通过 db 标签匹配或递归处理嵌入结构体
+	for i := 0; i < structType.NumField(); i++ {
+		structField := structType.Field(i)
+		fieldValue := structValue.Field(i)
+
+		// 处理嵌入结构体（Anonymous field）
+		if structField.Anonymous {
+			embeddedType := structField.Type
+			embeddedValue := fieldValue
+
+			// 如果是指针，需要解引用
+			if embeddedType.Kind() == reflect.Ptr {
+				if embeddedValue.IsNil() {
+					// 如果是 nil 指针，创建新实例
+					embeddedValue = reflect.New(embeddedType.Elem())
+					fieldValue.Set(embeddedValue)
+				}
+				embeddedValue = embeddedValue.Elem()
+				embeddedType = embeddedType.Elem()
+			}
+
+			// 如果是结构体，递归查找
+			if embeddedType.Kind() == reflect.Struct {
+				foundField := o.findFieldByColumnName(embeddedValue, embeddedType, columnName)
+				if foundField.IsValid() && foundField.CanSet() {
+					return foundField
+				}
+			}
+			continue
+		}
+
+		// 检查 db 标签
+		tag := structField.Tag.Get("db")
+		if tag != "" {
+			// 解析标签，获取列名（标签格式：column_name,options...）
+			tagParts := strings.Split(tag, ",")
+			dbColumnName := strings.TrimSpace(tagParts[0])
+
+			// 忽略 db:"-" 标记的字段
+			if dbColumnName == "-" {
+				continue
+			}
+
+			// 匹配列名
+			if dbColumnName == columnName {
+				if fieldValue.CanSet() {
+					return fieldValue
+				}
+			}
+		}
+	}
+
+	// 未找到匹配字段
+	return reflect.Value{}
 }
 
 /**
