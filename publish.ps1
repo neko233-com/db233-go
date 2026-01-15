@@ -100,7 +100,7 @@ function Get-NextVersion {
         }
     }
 
-    return "$major.$minor.$patch"
+    return "{0}.{1}.{2}" -f $major, $minor, $patch
 }
 
 # 保存版本号
