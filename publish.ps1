@@ -4,18 +4,27 @@
 # 功能：
 # 1. 自动读取 version.txt 并自增版本号
 # 2. 确保所有测试通过
-# 3. 自动提交所有更改
-# 4. 创建 Git Tag 并推送
+# 3. 自动提交 version.txt 变更
+# 4. 创建并推送 Git Tag 与当前分支
 # ========================================
+
 param(
     [string]$VersionPart = "patch",  # patch | minor | major
-    [switch]$DryRun = $false,         # 模拟运行
-    [switch]$SkipTests = $false       # 跳过测试
+    [switch]$DryRun = $false,          # 模拟运行，不写入、不推送
+    [switch]$SkipTests = $false        # 跳过测试
 )
-# 设置错误处理
+
+
+# 始终切换到脚本所在目录
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $scriptDir
+
+# 全局错误立刻退出
 $ErrorActionPreference = "Stop"
+
+
 # ========================================
-# 辅助函数
+# 输出工具
 # ========================================
 function Write-ColoredHost {
     param(
@@ -24,238 +33,236 @@ function Write-ColoredHost {
     )
     Write-Host $Message -ForegroundColor $Color
 }
-function Write-Step {
+
+function Write-Section {
     param([string]$Message)
     Write-Host ""
     Write-ColoredHost "===> $Message" "Cyan"
 }
-function Write-Success {
+
+function Write-Ok {
     param([string]$Message)
     Write-ColoredHost "OK: $Message" "Green"
 }
-function Write-ErrorMsg {
+
+function Write-Err {
     param([string]$Message)
     Write-ColoredHost "ERROR: $Message" "Red"
 }
-function Write-WarningMsg {
+
+function Write-Warn {
     param([string]$Message)
-    Write-ColoredHost "WARNING: $Message" "Yellow"
+    Write-ColoredHost "WARN: $Message" "Yellow"
 }
-# 读取版本号
+
+
+# ========================================
+# 版本工具
+# ========================================
 function Get-CurrentVersion {
     $versionFile = "version.txt"
     if (-not (Test-Path $versionFile)) {
-        Write-ErrorMsg "version.txt not found"
+        Write-Err "version.txt not found"
         exit 1
     }
-    $version = Get-Content $versionFile -Raw
-    $version = $version.Trim()
-    if ($version -notmatch '^\d+\.\d+\.\d+$') {
-        Write-ErrorMsg "Invalid version format in version.txt: $version (Expected: X.Y.Z)"
+
+    $raw = (Get-Content $versionFile -Raw).Trim()
+    if ($raw -notmatch '^v?(\d+)\.(\d+)\.(\d+)$') {
+        Write-Err "Invalid version format in version.txt. Expected vX.Y.Z"
         exit 1
     }
-    return $version
+
+    return $raw
 }
-# 自增版本号
-function Get-NextVersion {
+
+function Bump-Version {
     param(
         [string]$CurrentVersion,
-        [string]$Part = "patch"
+        [string]$Part
     )
-    $parts = $CurrentVersion -split '\.'
-    $major = [int]$parts[0]
-    $minor = [int]$parts[1]
-    $patch = [int]$parts[2]
-    switch ($Part.ToLower()) {
-        "major" {
-            $major++
-            $minor = 0
-            $patch = 0
-        }
-        "minor" {
-            $minor++
-            $patch = 0
-        }
-        "patch" {
-            $patch++
-        }
-        default {
-            Write-ErrorMsg "Invalid version part: $Part (Support: major, minor, patch)"
-            exit 1
-        }
+
+    if ($CurrentVersion -match '^v?(\d+)\.(\d+)\.(\d+)$') {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $patch = [int]$Matches[3]
+    } else {
+        Write-Err "Cannot parse version: $CurrentVersion"
+        exit 1
     }
-    return "{0}.{1}.{2}" -f $major, $minor, $patch
+
+    switch ($Part.ToLower()) {
+        "major" { $major++; $minor = 0; $patch = 0 }
+        "minor" { $minor++; $patch = 0 }
+        "patch" { $patch++ }
+        default { Write-Err "Invalid version part: $Part"; exit 1 }
+    }
+
+    return "v{0}.{1}.{2}" -f $major, $minor, $patch
 }
-# 保存版本号
+
 function Set-Version {
     param([string]$Version)
-    $versionFile = "version.txt"
-    Set-Content -Path $versionFile -Value $Version -NoNewline
-    Write-Success "Version updated to: $Version"
+    "${Version}" | Out-File "version.txt" -Encoding UTF8 -NoNewline
+    Write-Ok "version.txt updated to $Version"
 }
+
+
 # ========================================
 # 主流程
 # ========================================
 Write-ColoredHost "========================================" "Cyan"
 Write-ColoredHost "   db233-go Auto Publish Script" "Cyan"
 Write-ColoredHost "========================================" "Cyan"
+
 if ($DryRun) {
-    Write-WarningMsg "Dry Run Mode - No changes will be committed or pushed"
+    Write-Warn "DryRun mode: no files will be modified or pushed"
 }
-# 1. 读取当前版本
-Write-Step "Reading current version"
-$currentVersion = Get-CurrentVersion
-Write-ColoredHost "Current Version: $currentVersion" "White"
-# 2. 计算下一个版本
-Write-Step "Calculating next version"
-$nextVersion = Get-NextVersion -CurrentVersion $currentVersion -Part $VersionPart
-$tagName = "v$nextVersion"
-Write-ColoredHost "Next Version: $nextVersion (Tag: $tagName)" "Green"
-Write-ColoredHost "Version Part: $VersionPart" "White"
-# 3. 检查 Git 仓库状态
-Write-Step "Checking Git status"
-$currentBranch = git branch --show-current
-Write-ColoredHost "Current Branch: $currentBranch" "White"
-# 检查分支
-if ($currentBranch -ne "main" -and $currentBranch -ne "master") {
-    Write-WarningMsg "Current branch is not main or master"
-    $confirm = Read-Host "Continue anyway? (y/N)"
-    if ($confirm -ne "y" -and $confirm -ne "Y") {
-        Write-ErrorMsg "Publish cancelled"
+
+
+# 0. 确保工作区干净（DryRun 时仅告警）
+Write-Section "Checking git status"
+$gitStatus = git status --porcelain
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "Git command failed"
+    exit 1
+}
+if ($gitStatus) {
+    if ($DryRun) {
+        Write-Warn "Working tree not clean (DryRun continues)."
+        Write-Host $gitStatus
+    } else {
+        Write-Err "Working tree not clean. Please commit or stash changes."
+        Write-Host $gitStatus
         exit 1
     }
 }
-# 检查标签
-$existingTag = git tag -l $tagName
-if ($existingTag) {
-    Write-ErrorMsg "Tag $tagName already exists"
-    exit 1
+
+
+# 1. 运行测试
+if (-not $SkipTests) {
+    Write-Section "Running tests"
+    go test ./tests
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "Tests failed"
+        exit 1
+    }
+    Write-Ok "Tests passed"
+} else {
+    Write-Warn "Skip tests requested"
 }
-# 4. 拉取最新代码
-Write-Step "Pulling latest code"
-try {
-    git fetch origin
-    git pull origin $currentBranch
-    Write-Success "Code is up to date"
-}
-catch {
-    Write-WarningMsg "Failed to pull code, continuing..."
-}
-# 5. 清理和构建
-Write-Step "Cleaning and building project"
-go clean -cache
+
+
+# 2. 构建
+Write-Section "Building"
 go build ./...
 if ($LASTEXITCODE -ne 0) {
-    Write-ErrorMsg "Build failed"
+    Write-Err "Build failed"
     exit 1
 }
-Write-Success "Build successful"
-# 6. 运行测试
-if (-not $SkipTests) {
-    Write-Step "Running tests"
-    Write-ColoredHost "Executing all tests..." "White"
-    $testOutput = go test ./... -v 2>&1
+Write-Ok "Build succeeded"
+
+
+# 3. 读取与递增版本
+Write-Section "Bumping version"
+$currentVersion = Get-CurrentVersion
+Write-ColoredHost "Current version: $currentVersion" "White"
+$newVersion = Bump-Version -CurrentVersion $currentVersion -Part $VersionPart
+Write-ColoredHost "New version: $newVersion" "Green"
+
+
+# 4. 更新 version.txt（非 DryRun）
+if (-not $DryRun) {
+    Set-Version -Version $newVersion
+} else {
+    Write-Warn "[DryRun] Would update version.txt to $newVersion"
+}
+
+
+# 5. 提交 version.txt（非 DryRun）
+if (-not $DryRun) {
+    Write-Section "Committing version.txt"
+    git add version.txt
     if ($LASTEXITCODE -ne 0) {
-        Write-ErrorMsg "Tests failed, publish cancelled"
-        Write-ColoredHost "Test Output:" "Yellow"
-        Write-Host $testOutput
+        Write-Err "Failed to stage version.txt"
         exit 1
     }
-    $skippedTests = $testOutput | Select-String "SKIP"
-    if ($skippedTests) {
-        Write-WarningMsg "Found skipped tests:"
-        $skippedTests | ForEach-Object { Write-Host $_.Line }
-    }
-    Write-Success "All tests passed"
-}
-else {
-    Write-WarningMsg "Skipping tests (Not recommended)"
-}
-# 7. 更新版本号文件
-Write-Step "Updating version.txt"
-if (-not $DryRun) {
-    Set-Version -Version $nextVersion
-}
-else {
-    Write-WarningMsg "[DryRun] Would update version to: $nextVersion"
-}
-# 8. 检查并提交更改
-Write-Step "Committing changes"
-$status = git status --porcelain
-if ($status) {
-    Write-ColoredHost "Uncommitted changes found:" "White"
-    git status --short
-    if (-not $DryRun) {
-        git add .
-        $commitMessage = "chore: release version $nextVersion"
-        git commit -m $commitMessage
-        Write-Success "Changes committed: $commitMessage"
-    }
-    else {
-        Write-WarningMsg "[DryRun] Would commit all changes"
-    }
-}
-else {
-    Write-ColoredHost "No changes to commit" "White"
-}
-# 9. 创建 Git Tag
-Write-Step "Creating Git Tag"
-$tagDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-$tagMessage = "Release $nextVersion`n`nAuto-published`nTime: $tagDate`nBranch: $currentBranch"
-if (-not $DryRun) {
-    git tag -a $tagName -m $tagMessage
+
+    git commit -m "chore: bump version to $newVersion"
     if ($LASTEXITCODE -ne 0) {
-        Write-ErrorMsg "Failed to create tag"
+        Write-Err "Failed to commit version.txt"
         exit 1
     }
-    Write-Success "Tag $tagName created"
+    Write-Ok "Commit created"
+} else {
+    Write-Warn "[DryRun] Would commit version.txt"
 }
-else {
-    Write-WarningMsg "[DryRun] Would create tag: $tagName"
-}
-# 10. 推送到远程
-Write-Step "Pushing to remote"
+
+
+# 6. 创建标签
+Write-Section "Creating git tag"
 if (-not $DryRun) {
-    Write-ColoredHost "Pushing code..." "White"
+    git tag -a $newVersion -m "Release $newVersion"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "Failed to create git tag"
+        exit 1
+    }
+    Write-Ok "Tag $newVersion created"
+} else {
+    Write-Warn "[DryRun] Would create tag $newVersion"
+}
+
+
+# 7. 推送当前分支与标签
+Write-Section "Pushing to remote"
+$currentBranch = git branch --show-current
+if (-not $DryRun) {
+    Write-ColoredHost "Pushing branch $currentBranch..." "White"
     git push origin $currentBranch
     if ($LASTEXITCODE -ne 0) {
-        Write-ErrorMsg "Failed to push code"
+        Write-Err "Failed to push branch $currentBranch"
         exit 1
     }
-    Write-ColoredHost "Pushing tags..." "White"
-    git push origin $tagName
+
+    Write-ColoredHost "Pushing tag $newVersion..." "White"
+    git push origin $newVersion
     if ($LASTEXITCODE -ne 0) {
-        Write-ErrorMsg "Failed to push tags"
-        Write-WarningMsg "Code pushed but tag failed. Run: git push origin $tagName"
+        Write-Err "Failed to push tag $newVersion"
         exit 1
     }
-    Write-Success "Successfully pushed to remote"
+
+    # 如果存在 github 远程，也推送
+    $githubRemote = git remote get-url github 2>$null
+    if ($LASTEXITCODE -eq 0 -and $githubRemote) {
+        Write-ColoredHost "Pushing to github remote..." "White"
+        git push github $currentBranch
+        git push github $newVersion
+    }
+
+    Write-Ok "Pushed branch and tag"
+} else {
+    Write-Warn "[DryRun] Would push branch $currentBranch and tag $newVersion"
 }
-else {
-    Write-WarningMsg "[DryRun] Would push code and tags to origin"
-}
-# 11. 发布摘要
-Write-Step "Publish Summary"
-Write-ColoredHost "========================================" "Green"
-Write-ColoredHost "Completed Successfully!" "Green"
-Write-ColoredHost "========================================" "Green"
-Write-Host ""
-Write-ColoredHost "Version Info:" "Cyan"
-Write-ColoredHost "  Old: $currentVersion" "White"
-Write-ColoredHost "  New: $nextVersion" "Green"
-Write-ColoredHost "  Tag: $tagName" "Green"
-Write-ColoredHost "  Branch: $currentBranch" "White"
-Write-Host ""
+
+
+# 8. 摘要
+Write-Section "Release summary"
+Write-ColoredHost "Old version: $currentVersion" "White"
+Write-ColoredHost "New version: $newVersion" "Green"
+Write-ColoredHost "Branch: $currentBranch" "White"
+Write-ColoredHost "Tag: $newVersion" "Green"
+
 $repoUrl = git config --get remote.origin.url
 if ($repoUrl) {
     $repoUrl = $repoUrl -replace '\.git$', ''
     Write-ColoredHost "Repo: $repoUrl" "White"
-    Write-ColoredHost "Tags: $repoUrl/tags" "White"
+    Write-ColoredHost "Tag URL: $repoUrl/releases/tag/$newVersion" "White"
 }
-Write-Host ""
+
 if ($DryRun) {
-    Write-WarningMsg "Dry run completed. No actual publish performed."
+    Write-Warn "DryRun completed. No changes were pushed."
 }
+
 Write-Host ""
 Write-ColoredHost "========================================" "Green"
-Write-Host ""
+Write-ColoredHost "Release pipeline finished" "Green"
+Write-ColoredHost "========================================" "Green"
