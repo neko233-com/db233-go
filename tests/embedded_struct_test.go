@@ -14,7 +14,7 @@ import (
 type BasePlayerEntity struct {
 	// PlayerID 玩家ID（主键，Long 类型，参考 Kotlin）
 	// 注意：db tag 使用小驼峰格式，兼容 Kotlin JPA 生成的列名
-	PlayerID int64 `json:"playerId" db:"playerId,primary_key"`
+	PlayerID int64 `json:"playerId" db:"playerId" primary_key:"true"`
 }
 
 // GetPlayerID 获取玩家ID

@@ -393,6 +393,24 @@ func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
 	return false
 }
 
+/**
+ * 是否为自增字段
+ * 支持两种标记方式：
+ * 1. db:"column_name,auto_increment"
+ * 2. auto_increment:"true"
+ */
+func (cm *CrudManager) IsAutoIncrement(field reflect.StructField) bool {
+	// 检查 db 标签中的 auto_increment 选项
+	if strings.Contains(field.Tag.Get("db"), "auto_increment") {
+		return true
+	}
+	// 检查独立的 auto_increment 标签
+	if field.Tag.Get("auto_increment") == "true" {
+		return true
+	}
+	return false
+}
+
 /** GetPrimaryKeyColumnName
  * 获取实体的主键列名（自动扫描 struct tag，支持嵌入结构体，带缓存）
  *

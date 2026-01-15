@@ -202,9 +202,8 @@ func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadat
 			metadata.PrimaryKeyColumn = columnName
 			metadata.PrimaryKeyFieldName = field.Name
 
-			// 检查是否自增
-			dbTag := field.Tag.Get("db")
-			if containsOption(dbTag, "auto_increment") {
+			// 检查是否自增（支持两种方式）
+			if cm.IsAutoIncrement(field) {
 				metadata.HasAutoIncrement = true
 			}
 		}

@@ -142,14 +142,26 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	placeholders := make([]string, 0, len(fields))
 	values := make([]interface{}, 0, len(fields))
 
+	// 检查主键是否为自增主键
+	isAutoIncrement := r.isAutoIncrementPrimaryKey(entity, uidColumn)
+
 	for name, value := range fields {
-		// 跳过空字符串的主键字段（自增主键或空主键应该由数据库处理）
+		// 主键字段的特殊处理
 		if name == uidColumn {
-			// 检查值是否为零值或空字符串
+			// 检查值是否为零值
 			if r.isZeroValue(value) {
-				LogDebug("跳过空主键字段: 表=%s, 主键列=%s (值为空，将由数据库自动处理)", tableName, uidColumn)
-				continue // 跳过空主键，让数据库自动处理（自增或默认值）
+				if isAutoIncrement {
+					// 自增主键：零值时跳过，由数据库自动生成
+					LogDebug("跳过自增主键字段: 表=%s, 主键列=%s (值为零值，将由数据库自动生成)", tableName, uidColumn)
+					continue
+				} else {
+					// 非自增主键：零值时报错（业务主键必须提供有效值）
+					LogError("非自增主键字段值为零值: 表=%s, 主键列=%s", tableName, uidColumn)
+					return NewValidationException(fmt.Sprintf("主键字段 %s 不能为零值（0 或空字符串），请设置有效的主键值", uidColumn))
+				}
 			}
+			// 主键有值，正常包含
+			LogDebug("包含主键字段: 表=%s, 主键列=%s, 主键值=%v, 自增=%v", tableName, uidColumn, value, isAutoIncrement)
 		}
 
 		// 对于非主键字段，即使值为空也要包含（让数据库处理 NOT NULL 约束）
@@ -249,7 +261,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 }
 
 /**
- * 设置主键值
+ * 设置主键值（支持嵌入结构体和多种主键标签方式）
  */
 func (r *BaseCrudRepository) setPrimaryKeyValue(entity interface{}, id int64) {
 	v := reflect.ValueOf(entity)
@@ -257,30 +269,57 @@ func (r *BaseCrudRepository) setPrimaryKeyValue(entity interface{}, id int64) {
 		v = v.Elem()
 	}
 
-	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
+	cm := GetCrudManagerInstance()
+	r.setPrimaryKeyValueRecursive(v, v.Type(), id, cm)
+}
+
+/**
+ * 递归设置主键值
+ */
+func (r *BaseCrudRepository) setPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type, id int64, cm *CrudManager) bool {
+	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		tag := field.Tag.Get("db")
-		if tag != "" {
-			tagParts := strings.Split(tag, ",")
-			for _, part := range tagParts {
-				part = strings.TrimSpace(part)
-				if part == "primary_key" || part == "auto_increment" {
-					// 设置主键值
-					fieldValue := v.Field(i)
-					if fieldValue.CanSet() {
-						switch fieldValue.Kind() {
-						case reflect.Int, reflect.Int64:
-							fieldValue.SetInt(id)
-						case reflect.Int32:
-							fieldValue.SetInt(id)
-						}
-					}
-					return
+		fieldValue := v.Field(i)
+
+		// 处理嵌入结构体
+		if field.Anonymous {
+			embeddedValue := fieldValue
+			embeddedType := field.Type
+
+			if embeddedType.Kind() == reflect.Ptr {
+				if embeddedValue.IsNil() {
+					continue
+				}
+				embeddedValue = embeddedValue.Elem()
+				embeddedType = embeddedType.Elem()
+			}
+
+			if embeddedType.Kind() == reflect.Struct {
+				// 递归查找嵌入结构体中的主键字段
+				if r.setPrimaryKeyValueRecursive(embeddedValue, embeddedType, id, cm) {
+					return true
+				}
+			}
+			continue
+		}
+
+		// 检查是否为主键或自增字段
+		if cm.IsPrimaryKey(field) || cm.IsAutoIncrement(field) {
+			if fieldValue.CanSet() {
+				switch fieldValue.Kind() {
+				case reflect.Int, reflect.Int64, reflect.Int32, reflect.Int16, reflect.Int8:
+					fieldValue.SetInt(id)
+					LogDebug("主键值已设置: 字段=%s, 值=%d", field.Name, id)
+					return true
+				case reflect.Uint, reflect.Uint64, reflect.Uint32, reflect.Uint16, reflect.Uint8:
+					fieldValue.SetUint(uint64(id))
+					LogDebug("主键值已设置: 字段=%s, 值=%d", field.Name, id)
+					return true
 				}
 			}
 		}
 	}
+	return false
 }
 
 /**
@@ -547,6 +586,52 @@ func (r *BaseCrudRepository) getDefaultValueIfEmpty(value interface{}, fieldName
 		// 其他类型，返回原值（让数据库处理）
 		return value
 	}
+}
+
+/**
+ * 检查主键字段是否为自增主键
+ */
+func (r *BaseCrudRepository) isAutoIncrementPrimaryKey(entity interface{}, pkColumnName string) bool {
+	v := reflect.ValueOf(entity)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	t := v.Type()
+
+	return r.findAutoIncrementFieldRecursive(t, pkColumnName)
+}
+
+/**
+ * 递归查找字段是否有 auto_increment 标签
+ */
+func (r *BaseCrudRepository) findAutoIncrementFieldRecursive(t reflect.Type, targetColumnName string) bool {
+	cm := GetCrudManagerInstance()
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		// 处理嵌入结构体
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+			if embeddedType.Kind() == reflect.Struct {
+				if r.findAutoIncrementFieldRecursive(embeddedType, targetColumnName) {
+					return true
+				}
+			}
+			continue
+		}
+
+		// 获取列名
+		columnName := cm.GetColumnName(field)
+		if columnName == targetColumnName {
+			// 使用 CrudManager 的 IsAutoIncrement 方法
+			return cm.IsAutoIncrement(field)
+		}
+	}
+	return false
 }
 
 /**

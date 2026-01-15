@@ -98,9 +98,12 @@ func (s *MySQLStrategy) collectFieldsForCreateTable(entityType reflect.Type, tab
 		colType := s.GetSQLType(field)
 		colDef := fmt.Sprintf("`%s` %s", colName, colType)
 
-		// 检查是否自增
+		// 获取 db 标签（用于其他检查）
 		dbTag := field.Tag.Get("db")
-		if strings.Contains(dbTag, "auto_increment") {
+
+		// 检查是否自增（支持两种方式）
+		isAutoIncrement := s.cm.IsAutoIncrement(field)
+		if isAutoIncrement {
 			colDef += " AUTO_INCREMENT"
 		}
 
@@ -268,8 +271,9 @@ func (s *MySQLStrategy) GenerateAddColumnSQLOld(tableName string, colName string
 	dbTag := field.Tag.Get("db")
 	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
 
-	// 检查是否自增
-	if strings.Contains(dbTag, "auto_increment") {
+	// 检查是否自增（支持两种方式）
+	isAutoIncrement := s.cm.IsAutoIncrement(field)
+	if isAutoIncrement {
 		colDef += " AUTO_INCREMENT"
 	}
 
@@ -293,13 +297,14 @@ func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, field reflect.Str
 
 	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
 
-	// 检查是否自增
-	if strings.Contains(dbTag, "auto_increment") {
+	// 检查是否自增（支持两种方式）
+	isAutoIncrement := s.cm.IsAutoIncrement(field)
+	if isAutoIncrement {
 		colDef += " AUTO_INCREMENT"
 	}
 
-	// 检查是否为主键
-	isPrimaryKey := strings.Contains(dbTag, "primary_key")
+	// 检查是否为主键（支持多种方式）
+	isPrimaryKey := s.cm.IsPrimaryKey(field)
 
 	// 默认允许为 NULL，除非明确标记为 not_null 或是主键
 	if strings.Contains(dbTag, "not_null") || isPrimaryKey {

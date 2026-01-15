@@ -158,7 +158,8 @@ type User struct {
 // 基础实体（父类）
 type BasePlayerEntity struct {
     // 主键：自动检测，无需手动实现 GetDbUid()
-    PlayerID int64 `db:"playerId,primary_key"`
+    // 推荐使用独立的 primary_key 标签（更清晰）
+    PlayerID int64 `json:"playerId" db:"playerId" primary_key:"true"`
 }
 
 // 业务实体（子类）- 自动继承 playerId 主键
@@ -182,6 +183,18 @@ func (e *StrengthEntity) SerializeBeforeSaveDb() {}
 func (e *StrengthEntity) DeserializeAfterLoadDb() {}
 ```
 
+**主键定义的两种风格（都支持）：**
+
+1. **独立标签风格（推荐）：** `primary_key:"true"`
+   ```go
+   PlayerID int64 `json:"playerId" db:"playerId" primary_key:"true"`
+   ```
+
+2. **逗号分隔风格：** `db:"playerId,primary_key"`
+   ```go
+   PlayerID int64 `json:"playerId" db:"playerId,primary_key"`
+   ```
+
 **优势：**
 - ✅ 自动继承父类的主键字段 (`playerId`)
 - ✅ 自动继承父类的业务方法 (`GetPlayerID()`, `SetPlayerID()`)
@@ -199,12 +212,48 @@ func (e *StrengthEntity) DeserializeAfterLoadDb() {}
 - `db` 标签格式：`db:"列名,选项1,选项2"`
   - 列名：数据库列名
   - 选项：`primary_key`（主键）、`auto_increment`（自增）、`not_null`（非空）、`skip`（跳过）
-- 支持的 db 标签：
+  
+**支持的主键定义方式：**
+1. **独立标签（推荐）：** `primary_key:"true"`
+   ```go
+   PlayerID int64 `db:"playerId" primary_key:"true"`
+   ```
+2. **逗号分隔：** `db:"列名,primary_key"`
+   ```go
+   PlayerID int64 `db:"playerId,primary_key"`
+   ```
+3. **字段名约定：** 字段名为 `ID` 或 `Id` 会自动识别为主键
+
+**支持的 db 标签选项：**
   - `db:"column_name"` - 指定列名
-  - `db:"column_name,primary_key"` - 主键
-  - `db:"column_name,auto_increment"` - 自增主键
+  - `db:"column_name,primary_key"` - 主键（或使用 `primary_key:"true"`）
+  - `db:"column_name,auto_increment"` - 自增主键（零值会被跳过，由数据库生成）
   - `db:"column_name,not_null"` - 非空约束
   - `db:"-"` - 忽略字段
+
+**⚠️ 主键字段的特殊处理：**
+- 如果主键字段的值为**零值**（int 类型为 0，string 类型为 ""），该字段会被**自动跳过**，不包含在 INSERT 语句中
+- 这适用于自增主键场景（`auto_increment`），让数据库自动生成主键值
+- 如果你需要手动设置主键值（非自增主键），**必须确保主键字段的值不为零值**
+- 示例：
+  ```go
+  // ❌ 错误：RankId 为 0，会被跳过，导致 "Field 'rankId' doesn't have a default value" 错误
+  entity := &RankEntity{
+      RankId: 0,  // 零值，会被跳过
+      RankName: "test",
+  }
+  
+  // ✅ 正确：RankId 有非零值，会被包含在 INSERT 语句中
+  entity := &RankEntity{
+      RankId: 1001,  // 非零值，会被包含
+      RankName: "test",
+  }
+  
+  // ✅ 或者使用自增主键（让数据库生成）
+  type RankEntity struct {
+      RankId int `db:"rankId,primary_key,auto_increment"` // 添加 auto_increment
+  }
+  ```
 
 ### 3. 使用 CRUD 操作
 
@@ -1216,6 +1265,137 @@ cat examples/player_entity_example.go
 
 # 运行测试（包含示例）
 go test ./tests -v
+```
+
+---
+
+## ❓ 常见问题与故障排除
+
+### 问题 1: "Field 'xxx' doesn't have a default value" 错误
+
+**错误信息：**
+```
+Error 1364 (HY000): Field 'rankId' doesn't have a default value
+```
+
+**原因：**
+主键字段的值为零值（int 类型为 0，string 类型为 ""），被自动跳过，未包含在 INSERT 语句中。
+
+**解决方案：**
+
+1. **为主键赋非零值（手动设置 ID）：**
+```go
+// ✅ 正确
+entity := &RankEntity{
+    RankId: 1001,  // 非零值，会被包含在 INSERT 中
+    RankName: "test",
+}
+```
+
+2. **使用自增主键（让数据库生成 ID）：**
+```go
+type RankEntity struct {
+    RankId int `db:"rankId,primary_key,auto_increment"` // 添加 auto_increment
+    // ...其他字段
+}
+
+// 保存时不需要设置 RankId，数据库会自动生成
+entity := &RankEntity{
+    RankName: "test",
+}
+```
+
+3. **使用指针类型区分零值和未设置：**
+```go
+type RankEntity struct {
+    RankId *int `db:"rankId,primary_key"` // 使用指针
+    // ...其他字段
+}
+
+// nil 表示未设置，0 表示真的想设置为 0
+rankId := 1001
+entity := &RankEntity{
+    RankId: &rankId,
+    RankName: "test",
+}
+```
+
+### 问题 2: UPSERT 行为说明
+
+**问题：** 为什么 Save 会自动变成 UPDATE？
+
+**说明：**
+db233-go 默认使用 `INSERT ... ON DUPLICATE KEY UPDATE` 语法（UPSERT），自动处理主键冲突：
+
+```go
+// 第一次保存 - 执行 INSERT
+user := &User{ID: 1000022, Username: "john"}
+repo.Save(user) // INSERT
+
+// 第二次保存相同主键 - 自动变为 UPDATE
+user.Username = "john_updated"
+repo.Save(user) // UPDATE（不会报错）
+```
+
+**优点：**
+- ✅ 避免主键冲突错误
+- ✅ 减少业务代码复杂度
+- ✅ 自动判断 INSERT 还是 UPDATE
+
+### 问题 3: 嵌入结构体的字段未被识别
+
+**问题：** 继承的字段没有保存到数据库
+
+**检查清单：**
+
+1. ✅ 嵌入字段是否有 `db` 标签？
+```go
+type BaseEntity struct {
+    PlayerID int64 `db:"playerId,primary_key"` // 必须有 db 标签
+}
+```
+
+2. ✅ 嵌入方式是否正确？
+```go
+type StrengthEntity struct {
+    BaseEntity  // ✅ 正确：匿名嵌入
+    // ...
+}
+
+// 而不是：
+type StrengthEntity struct {
+    Base BaseEntity  // ❌ 错误：命名字段不会被递归扫描
+}
+```
+
+3. ✅ 是否调用了 `AutoInitEntity` 或 `AutoMigrateTable`？
+```go
+cm := db233.GetCrudManagerInstance()
+cm.AutoInitEntity(&StrengthEntity{}) // 必须初始化
+```
+
+### 问题 4: 字段被意外跳过
+
+**问题：** 某些字段没有保存到数据库
+
+**检查项：**
+
+1. 是否有 `db` 标签？
+```go
+Name string `db:"name"` // ✅ 有标签，会保存
+Age  int    // ❌ 无标签，会被跳过
+```
+
+2. 是否标记为跳过？
+```go
+Internal string `db:"-"` // ✅ 明确跳过
+Temp     string `db:"temp,skip"` // ✅ 明确跳过
+```
+
+3. 字段是否为未导出字段？
+```go
+Name string `db:"name"` // ✅ 导出字段（首字母大写）
+age  int    `db:"age"`  // ❌ 未导出字段，无法访问
 ```
 
 ---
