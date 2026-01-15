@@ -230,12 +230,34 @@ if (-not $DryRun) {
         exit 1
     }
 
-    # 如果存在 github 远程，也推送
-    $githubRemote = git remote get-url github 2>$null
-    if ($LASTEXITCODE -eq 0 -and $githubRemote) {
+    # 自动配置 github 远程仓库（如果不存在或配置错误）
+    $originUrl = git remote get-url origin 2>$null
+    if ($originUrl) {
+        $githubRemote = git remote get-url github 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            # github 远程不存在，添加它
+            Write-ColoredHost "Adding github remote..." "Yellow"
+            git remote add github $originUrl
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "Github remote added: $originUrl"
+            }
+        } elseif ($githubRemote -ne $originUrl) {
+            # github 远程存在但 URL 不同，更新它
+            Write-ColoredHost "Updating github remote URL..." "Yellow"
+            git remote remove github
+            git remote add github $originUrl
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "Github remote updated: $originUrl"
+            }
+        }
+        
+        # 推送到 github 远程
         Write-ColoredHost "Pushing to github remote..." "White"
         git push github $currentBranch
         git push github $newVersion
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Pushed to github remote"
+        }
     }
 
     Write-Ok "Pushed branch and tag"
