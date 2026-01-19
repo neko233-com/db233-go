@@ -7,7 +7,7 @@ import (
 	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
-// TestFindAll_EmptyTable 测试空表�?FindAll
+// TestFindAll_EmptyTable 测试空表 FindAll
 func TestFindAll_EmptyTable(t *testing.T) {
 	db := CreateTestDb(t)
 	if db == nil {
@@ -15,20 +15,20 @@ func TestFindAll_EmptyTable(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 设置测试�?
+	// 设置测试环境
 	err := SetupTestTables(db)
 	if err != nil {
-		t.Fatalf("设置测试表失�? %v", err)
+		t.Fatalf("设置测试表失败: %v", err)
 	}
 	defer CleanupTestTables(db)
 
 	repo := db233.NewBaseCrudRepository(db)
 
-	// 初始化实�?
+	// 初始化实体元信息
 	cm := db233.GetCrudManagerInstance()
 	cm.AutoInitEntity(&TestUser{})
 
-	// 测试空表�?FindAll
+	// 测试空表的 FindAll
 	entities, err := repo.FindAll(&TestUser{})
 	if err != nil {
 		t.Errorf("FindAll 执行失败: %v", err)
@@ -36,15 +36,15 @@ func TestFindAll_EmptyTable(t *testing.T) {
 	}
 
 	if entities == nil {
-		t.Error("FindAll 不应该返�?nil，应该返回空切片")
+		t.Error("FindAll 不应该返回 nil，应该返回空切片")
 		return
 	}
 
 	if len(entities) != 0 {
-		t.Errorf("空表应该返回空切片，但得�?%d 条记�?, len(entities))
+		t.Errorf("空表应该返回空切片，但得到: %d 条记录", len(entities))
 	}
 
-	t.Logf("空表 FindAll 测试通过: 返回 %d 条记�?, len(entities))
+	t.Logf("空表 FindAll 测试通过: 返回 %d 条记录", len(entities))
 }
 
 // TestFindAll_WithData 测试有数据的 FindAll
@@ -55,24 +55,24 @@ func TestFindAll_WithData(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 设置日志级别�?DEBUG 以便查看详细信息
+	// 设置日志级别为 DEBUG 以便查看详细信息
 	logger := db233.GetLogger()
 	logger.SetLevel(db233.DEBUG)
 
-	// 设置测试�?
+	// 设置测试环境
 	err := SetupTestTables(db)
 	if err != nil {
-		t.Fatalf("设置测试表失�? %v", err)
+		t.Fatalf("设置测试表失败: %v", err)
 	}
 	defer CleanupTestTables(db)
 
 	repo := db233.NewBaseCrudRepository(db)
 
-	// 初始化实�?
+	// 初始化实体元信息
 	cm := db233.GetCrudManagerInstance()
 	cm.AutoInitEntity(&TestUser{})
 
-	// 先保存几个测试用�?
+	// 先保存几个测试用例
 	testUsers := []*TestUser{
 		{Username: "findall_user1", Email: "findall1@example.com", Age: 20},
 		{Username: "findall_user2", Email: "findall2@example.com", Age: 25},
@@ -96,35 +96,35 @@ func TestFindAll_WithData(t *testing.T) {
 	}
 
 	if entities == nil {
-		t.Error("FindAll 不应该返�?nil")
+		t.Error("FindAll 不应该返回 nil")
 		return
 	}
 
-	t.Logf("FindAll 返回�?%d 条记�?, len(entities))
+	t.Logf("FindAll 返回 %d 条记录", len(entities))
 
 	// 验证返回的记录数
-	// 注意：可能包含其他测试留下的数据，所以至少应该有我们刚保存的3�?
+	// 注意：可能包含其他测试留下的数据，所以至少应该有我们刚保存的 3 条
 	if len(entities) < 3 {
-		t.Errorf("期望至少找到 3 条记录，但只找到 %d �?, len(entities))
+		t.Errorf("期望至少找到 3 条记录，但只找到 %d 条", len(entities))
 	}
 
 	// 验证返回的数据类型和内容
 	foundCount := 0
 	for i, entity := range entities {
-		t.Logf("记录 %d: 类型=%T, �?%+v", i, entity, entity)
+		t.Logf("记录 %d: 类型=%T, 值=%+v", i, entity, entity)
 
 		// 检查类型断言
 		if entity == nil {
-			t.Errorf("记录 %d �?nil", i)
+			t.Errorf("记录 %d 为 nil", i)
 			continue
 		}
 
-		// 尝试类型断言�?*TestUser
+		// 尝试类型断言为 *TestUser
 		var user *TestUser
 		if v, ok := entity.(*TestUser); ok {
 			user = v
 		} else {
-			// 如果不是指针类型，尝试转�?
+			// 如果不是指针类型，尝试转换
 			v := reflect.ValueOf(entity)
 			if v.Kind() != reflect.Ptr {
 				// 创建指针
@@ -133,11 +133,11 @@ func TestFindAll_WithData(t *testing.T) {
 				if u, ok := ptr.Interface().(*TestUser); ok {
 					user = u
 				} else {
-					t.Errorf("记录 %d 无法转换�?*TestUser，实际类�? %T", i, entity)
+					t.Errorf("记录 %d 无法转换为 *TestUser，实际类型 %T", i, entity)
 					continue
 				}
 			} else {
-				t.Errorf("记录 %d 是指针但不是 *TestUser，实际类�? %T", i, entity)
+				t.Errorf("记录 %d 是指针但不是 *TestUser，实际类型 %T", i, entity)
 				continue
 			}
 		}
@@ -147,7 +147,7 @@ func TestFindAll_WithData(t *testing.T) {
 			t.Logf("找到用户: ID=%d, Username=%s, Email=%s, Age=%d",
 				user.ID, user.Username, user.Email, user.Age)
 
-			// 检查是否是我们保存的测试用�?
+			// 检查是否是我们保存的测试用例
 			for _, testUser := range testUsers {
 				if user.ID == testUser.ID && user.Username == testUser.Username {
 					foundCount++
@@ -158,10 +158,10 @@ func TestFindAll_WithData(t *testing.T) {
 	}
 
 	if foundCount < 3 {
-		t.Errorf("期望找到至少 3 条我们保存的测试记录，但只找�?%d �?, foundCount)
+		t.Errorf("期望找到至少 3 条我们保存的测试记录，但只找到了 %d 条", foundCount)
 	}
 
-	t.Logf("FindAll 测试完成: 总共 %d 条记录，其中 %d 条是我们保存的测试记�?, len(entities), foundCount)
+	t.Logf("FindAll 测试完成: 总共 %d 条记录，其中 %d 条是我们保存的测试记录", len(entities), foundCount)
 }
 
 // TestFindAll_TypeAssertionIssue 专门测试类型断言问题
@@ -172,20 +172,20 @@ func TestFindAll_TypeAssertionIssue(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 设置测试�?
+	// 设置测试环境
 	err := SetupTestTables(db)
 	if err != nil {
-		t.Fatalf("设置测试表失�? %v", err)
+		t.Fatalf("设置测试表失败: %v", err)
 	}
 	defer CleanupTestTables(db)
 
 	repo := db233.NewBaseCrudRepository(db)
 
-	// 初始化实�?
+	// 初始化实体元信息
 	cm := db233.GetCrudManagerInstance()
 	cm.AutoInitEntity(&TestUser{})
 
-	// 保存一个测试用�?
+	// 保存一个测试用例
 	user := &TestUser{
 		Username: "type_test_user",
 		Email:    "type_test@example.com",
@@ -202,20 +202,20 @@ func TestFindAll_TypeAssertionIssue(t *testing.T) {
 	sql := "SELECT * FROM test_user WHERE username = ?"
 	results := db.ExecuteQuery(sql, [][]any{{"type_test_user"}}, &TestUser{})
 
-	t.Logf("ExecuteQuery 返回�?%d 条结�?, len(results))
+	t.Logf("ExecuteQuery 返回 %d 条结果", len(results))
 
 	for i, result := range results {
-		t.Logf("结果 %d: 类型=%T, �?%+v", i, result, result)
+		t.Logf("结果 %d: 类型=%T, 值=%+v", i, result, result)
 
-		// 检查类�?
+		// 检查类型信息
 		v := reflect.ValueOf(result)
-		t.Logf("结果 %d 的反射信�? Kind=%s, Type=%s", i, v.Kind(), v.Type())
+		t.Logf("结果 %d 的反射信息 Kind=%s, Type=%s", i, v.Kind(), v.Type())
 
-		// 尝试类型断言�?IDbEntity
+		// 尝试类型断言为 IDbEntity
 		if dbEntity, ok := result.(db233.IDbEntity); ok {
-			t.Logf("结果 %d 成功断言�?IDbEntity: %+v", i, dbEntity)
+			t.Logf("结果 %d 成功断言为 IDbEntity: %+v", i, dbEntity)
 		} else {
-			t.Logf("结果 %d 无法断言�?IDbEntity，实际类�? %T", i, result)
+			t.Logf("结果 %d 无法断言为 IDbEntity，实际类型 %T", i, result)
 
 			// 如果不是指针，尝试转换为指针
 			if v.Kind() != reflect.Ptr {
@@ -225,9 +225,9 @@ func TestFindAll_TypeAssertionIssue(t *testing.T) {
 				t.Logf("转换为指针后: 类型=%T", ptrResult)
 
 				if dbEntity, ok := ptrResult.(db233.IDbEntity); ok {
-					t.Logf("转换为指针后成功断言�?IDbEntity: %+v", dbEntity)
+					t.Logf("转换为指针后成功断言为 IDbEntity: %+v", dbEntity)
 				} else {
-					t.Logf("转换为指针后仍无法断言�?IDbEntity")
+					t.Logf("转换为指针后仍无法断言为 IDbEntity")
 				}
 			}
 		}
@@ -240,11 +240,11 @@ func TestFindAll_TypeAssertionIssue(t *testing.T) {
 		return
 	}
 
-	t.Logf("FindAll 返回�?%d 条记�?, len(entities))
+	t.Logf("FindAll 返回 %d 条记录", len(entities))
 
-	// 如果 ExecuteQuery 有结果但 FindAll 返回空，说明类型断言有问�?
+	// 如果 ExecuteQuery 有结果但 FindAll 返回空，说明类型断言有问题
 	if len(results) > 0 && len(entities) == 0 {
-		t.Error("发现问题: ExecuteQuery 返回了结果，�?FindAll 返回空列表，说明类型断言失败")
-		t.Logf("这可能是由于 OrmBatch 返回的是值类型，�?IDbEntity 接口的方法是指针接收�?)
+		t.Error("发现问题: ExecuteQuery 返回了结果，但 FindAll 返回空列表，说明类型断言失败")
+		t.Logf("这可能是由于 OrmBatch 返回的是值类型，而 IDbEntity 接口的方法是指针接收者")
 	}
 }
