@@ -102,7 +102,7 @@ func (p *PerformanceMonitorPlugin) PostExecuteSql(context *ExecuteSqlContext) {
  */
 type MetricsPlugin struct {
 	*AbstractDb233Plugin
-	metrics map[string]interface{}
+	metrics map[string]any
 }
 
 /**
@@ -111,7 +111,7 @@ type MetricsPlugin struct {
 func NewMetricsPlugin() *MetricsPlugin {
 	return &MetricsPlugin{
 		AbstractDb233Plugin: NewAbstractDb233Plugin("metrics-plugin"),
-		metrics:             make(map[string]interface{}),
+		metrics:             make(map[string]any),
 	}
 }
 
@@ -150,8 +150,8 @@ func (p *MetricsPlugin) PostExecuteSql(context *ExecuteSqlContext) {
 /**
  * 获取指标数据
  */
-func (p *MetricsPlugin) GetMetrics() map[string]interface{} {
-	result := make(map[string]interface{})
+func (p *MetricsPlugin) GetMetrics() map[string]any {
+	result := make(map[string]any)
 	for k, v := range p.metrics {
 		result[k] = v
 	}

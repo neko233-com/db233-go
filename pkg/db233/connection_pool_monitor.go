@@ -164,11 +164,11 @@ func (cpm *ConnectionPoolMonitor) UpdatePoolStats(total, active, idle, waiting, 
 /**
  * 获取监控报告
  */
-func (cpm *ConnectionPoolMonitor) GetReport() map[string]interface{} {
+func (cpm *ConnectionPoolMonitor) GetReport() map[string]any {
 	cpm.mu.RLock()
 	defer cpm.mu.RUnlock()
 
-	report := make(map[string]interface{})
+	report := make(map[string]any)
 
 	// 连接池统计
 	report["db_group"] = cpm.dbGroupName
@@ -218,10 +218,10 @@ func (cpm *ConnectionPoolMonitor) Reset() {
 /**
  * 获取指标数据（实现MetricsDataSource接口）
  */
-func (cpm *ConnectionPoolMonitor) GetMetrics() map[string]interface{} {
+func (cpm *ConnectionPoolMonitor) GetMetrics() map[string]any {
 	report := cpm.GetReport()
 
-	metrics := make(map[string]interface{})
+	metrics := make(map[string]any)
 
 	// 连接池统计指标
 	if val, ok := report["total_connections"].(int64); ok {

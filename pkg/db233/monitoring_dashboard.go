@@ -50,7 +50,7 @@ type MonitoringDashboard struct {
 type DashboardSnapshot struct {
 	Timestamp    time.Time
 	Summary      DashboardSummary
-	Components   map[string]interface{}
+	Components   map[string]any
 	Alerts       []AlertSummary
 	HealthStatus map[string]HealthSummary
 	Performance  map[string]PerformanceSummary
@@ -301,7 +301,7 @@ func (md *MonitoringDashboard) refreshSnapshot() {
 	snapshot := &DashboardSnapshot{
 		Timestamp:    time.Now(),
 		Summary:      md.generateSummary(),
-		Components:   make(map[string]interface{}),
+		Components:   make(map[string]any),
 		Alerts:       md.generateAlertSummaries(),
 		HealthStatus: make(map[string]HealthSummary),
 		Performance:  make(map[string]PerformanceSummary),
@@ -317,7 +317,7 @@ func (md *MonitoringDashboard) refreshSnapshot() {
 	}
 
 	// 收集组件状态信息
-	components := make(map[string]interface{})
+	components := make(map[string]any)
 
 	for name, monitor := range md.performanceMonitors {
 		components[fmt.Sprintf("performance_%s", name)] = monitor.GetDetailedReport()
@@ -525,11 +525,11 @@ func (md *MonitoringDashboard) GetCurrentSnapshot() *DashboardSnapshot {
 /**
  * 获取仪表板状态
  */
-func (md *MonitoringDashboard) GetStatus() map[string]interface{} {
+func (md *MonitoringDashboard) GetStatus() map[string]any {
 	md.mu.RLock()
 	defer md.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"name":                 md.name,
 		"enabled":              md.enabled,
 		"auto_refresh":         md.autoRefresh,
@@ -555,7 +555,7 @@ func (md *MonitoringDashboard) GenerateReport(filename string, format string) er
 /**
  * 获取组件状态
  */
-func (md *MonitoringDashboard) GetComponentStatus(componentType, name string) interface{} {
+func (md *MonitoringDashboard) GetComponentStatus(componentType, name string) any {
 	md.mu.RLock()
 	defer md.mu.RUnlock()
 

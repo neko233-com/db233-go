@@ -48,7 +48,7 @@ func GetEntityCacheManagerInstance() *EntityCacheManager {
 /**
  * 获取或创建选择列名CSV
  */
-func (ecm *EntityCacheManager) GetOrCreateSelectColumnNameCsv(entityType reflect.Type, colNameToValueMap map[string]interface{}) string {
+func (ecm *EntityCacheManager) GetOrCreateSelectColumnNameCsv(entityType reflect.Type, colNameToValueMap map[string]any) string {
 	ecm.mu.Lock()
 	defer ecm.mu.Unlock()
 

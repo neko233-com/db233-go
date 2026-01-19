@@ -8,15 +8,15 @@ import (
 
 // TestEntityWithDefaults 测试默认值处理
 type TestEntityWithDefaults struct {
-	ID          int                    `db:"id,primary_key,auto_increment"`
-	Name        string                 `db:"name"`
-	EmptyString string                 `db:"empty_string"` // 空字符串字段
-	ZeroInt     int                    `db:"zero_int"`     // 零值整数
-	ZeroFloat   float64                `db:"zero_float"`   // 零值浮点数
-	FalseBool   bool                   `db:"false_bool"`   // false 布尔值
-	EmptySlice  []string               `db:"empty_slice"`  // 空切片
-	EmptyMap    map[string]interface{} `db:"empty_map"`    // 空 map
-	TextField   string                 `db:"text_field"`   // TEXT 类型字段
+	ID          int            `db:"id,primary_key,auto_increment"`
+	Name        string         `db:"name"`
+	EmptyString string         `db:"empty_string"` // 空字符串字段
+	ZeroInt     int            `db:"zero_int"`     // 零值整数
+	ZeroFloat   float64        `db:"zero_float"`   // 零值浮点数
+	FalseBool   bool           `db:"false_bool"`   // false 布尔值
+	EmptySlice  []string       `db:"empty_slice"`  // 空切片
+	EmptyMap    map[string]any `db:"empty_map"`    // 空 map
+	TextField   string         `db:"text_field"`   // TEXT 类型字段
 }
 
 func (e *TestEntityWithDefaults) TableName() string {

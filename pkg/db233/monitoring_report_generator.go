@@ -38,12 +38,12 @@ type MonitoringReportGenerator struct {
  * ReportData - 报告数据结构
  */
 type ReportData struct {
-	Title       string                 `json:"title"`
-	GeneratedAt time.Time              `json:"generated_at"`
-	Period      string                 `json:"period"`
-	Summary     ReportSummary          `json:"summary"`
-	Details     ReportDetails          `json:"details"`
-	Charts      map[string]interface{} `json:"charts,omitempty"`
+	Title       string         `json:"title"`
+	GeneratedAt time.Time      `json:"generated_at"`
+	Period      string         `json:"period"`
+	Summary     ReportSummary  `json:"summary"`
+	Details     ReportDetails  `json:"details"`
+	Charts      map[string]any `json:"charts,omitempty"`
 }
 
 /**
@@ -392,7 +392,7 @@ func (rg *MonitoringReportGenerator) generateDatabaseReports() []DatabaseReport 
 /**
  * 提取性能报告
  */
-func (rg *MonitoringReportGenerator) extractPerformanceReport(data map[string]interface{}) PerformanceReport {
+func (rg *MonitoringReportGenerator) extractPerformanceReport(data map[string]any) PerformanceReport {
 	report := PerformanceReport{}
 
 	if val, ok := data["total_queries"].(int64); ok {
@@ -426,7 +426,7 @@ func (rg *MonitoringReportGenerator) extractPerformanceReport(data map[string]in
 /**
  * 提取连接报告
  */
-func (rg *MonitoringReportGenerator) extractConnectionReport(data map[string]interface{}) ConnectionReport {
+func (rg *MonitoringReportGenerator) extractConnectionReport(data map[string]any) ConnectionReport {
 	report := ConnectionReport{}
 
 	if val, ok := data["active_connections"].(int64); ok {
@@ -576,8 +576,8 @@ func (rg *MonitoringReportGenerator) generateTrendReports() []TrendReport {
 /**
  * 生成图表数据
  */
-func (rg *MonitoringReportGenerator) generateCharts() map[string]interface{} {
-	charts := make(map[string]interface{})
+func (rg *MonitoringReportGenerator) generateCharts() map[string]any {
+	charts := make(map[string]any)
 
 	// 性能趋势图表
 	charts["performance_trends"] = rg.generatePerformanceChart()
@@ -594,33 +594,33 @@ func (rg *MonitoringReportGenerator) generateCharts() map[string]interface{} {
 /**
  * 生成性能图表
  */
-func (rg *MonitoringReportGenerator) generatePerformanceChart() map[string]interface{} {
-	chart := map[string]interface{}{
+func (rg *MonitoringReportGenerator) generatePerformanceChart() map[string]any {
+	chart := map[string]any{
 		"type":   "line",
 		"title":  "性能指标趋势",
-		"series": make([]map[string]interface{}, 0),
+		"series": make([]map[string]any, 0),
 	}
 
 	// 为每个数据库创建系列
 	for name, collector := range rg.metricsCollectors {
 		if perfMonitor, exists := rg.performanceMonitors[name]; exists && perfMonitor != nil { // 使用perfMonitor进行检查
-			series := map[string]interface{}{
+			series := map[string]any{
 				"name": fmt.Sprintf("%s - 查询数", name),
-				"data": make([]map[string]interface{}, 0),
+				"data": make([]map[string]any, 0),
 			}
 
 			// 获取查询数历史数据
 			history := collector.GetMetricHistory(fmt.Sprintf("%s.total_queries", name), rg.reportPeriod)
 			for _, point := range history {
 				if val, ok := point.Value.(float64); ok {
-					series["data"] = append(series["data"].([]map[string]interface{}), map[string]interface{}{
+					series["data"] = append(series["data"].([]map[string]any), map[string]any{
 						"x": point.Timestamp.Unix(),
 						"y": val,
 					})
 				}
 			}
 
-			chart["series"] = append(chart["series"].([]map[string]interface{}), series)
+			chart["series"] = append(chart["series"].([]map[string]any), series)
 		}
 	}
 
@@ -630,17 +630,17 @@ func (rg *MonitoringReportGenerator) generatePerformanceChart() map[string]inter
 /**
  * 生成连接图表
  */
-func (rg *MonitoringReportGenerator) generateConnectionChart() map[string]interface{} {
-	chart := map[string]interface{}{
+func (rg *MonitoringReportGenerator) generateConnectionChart() map[string]any {
+	chart := map[string]any{
 		"type":  "bar",
 		"title": "连接池状态",
-		"data":  make([]map[string]interface{}, 0),
+		"data":  make([]map[string]any, 0),
 	}
 
 	for name, monitor := range rg.connectionMonitors {
 		report := monitor.GetReport()
 
-		chart["data"] = append(chart["data"].([]map[string]interface{}), map[string]interface{}{
+		chart["data"] = append(chart["data"].([]map[string]any), map[string]any{
 			"name":    name,
 			"active":  report["active_connections"],
 			"idle":    report["idle_connections"],
@@ -654,11 +654,11 @@ func (rg *MonitoringReportGenerator) generateConnectionChart() map[string]interf
 /**
  * 生成健康图表
  */
-func (rg *MonitoringReportGenerator) generateHealthChart() map[string]interface{} {
-	chart := map[string]interface{}{
+func (rg *MonitoringReportGenerator) generateHealthChart() map[string]any {
+	chart := map[string]any{
 		"type":  "pie",
 		"title": "数据库健康状态",
-		"data":  make([]map[string]interface{}, 0),
+		"data":  make([]map[string]any, 0),
 	}
 
 	healthy := 0
@@ -673,7 +673,7 @@ func (rg *MonitoringReportGenerator) generateHealthChart() map[string]interface{
 		}
 	}
 
-	chart["data"] = []map[string]interface{}{
+	chart["data"] = []map[string]any{
 		{"name": "健康", "value": healthy, "color": "#00ff00"},
 		{"name": "不健康", "value": unhealthy, "color": "#ff0000"},
 	}

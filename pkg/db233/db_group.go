@@ -19,7 +19,7 @@ type DbGroup struct {
 	GroupName                string
 	CreateStrategy           DataSourceCreateStrategy
 	ShardingDbStrategy       ShardingDbStrategy
-	DatasourceConfigTemplate map[string]interface{}
+	DatasourceConfigTemplate map[string]any
 	DbIdToConfigMap          map[int]*DbConfig
 	DbMap                    map[int]*Db
 	isInit                   bool
@@ -99,7 +99,7 @@ func (dg *DbGroup) Init() error {
  */
 func (dg *DbGroup) createDbByConfig(cfg *DbConfig) (*Db, error) {
 	// 合并配置
-	config := make(map[string]interface{})
+	config := make(map[string]any)
 	for k, v := range dg.DatasourceConfigTemplate {
 		config[k] = v
 	}

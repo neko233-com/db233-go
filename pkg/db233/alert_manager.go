@@ -50,7 +50,7 @@ type AlertRule struct {
 	Description string
 	Metric      string
 	Condition   AlertCondition
-	Threshold   interface{}
+	Threshold   any
 	Severity    AlertSeverity
 	Cooldown    time.Duration
 	Enabled     bool
@@ -92,8 +92,8 @@ type Alert struct {
 	Description string
 	Severity    AlertSeverity
 	Metric      string
-	Value       interface{}
-	Threshold   interface{}
+	Value       any
+	Threshold   any
 	Condition   string
 	Timestamp   time.Time
 	Status      AlertStatus
@@ -223,7 +223,7 @@ func (am *AlertManager) Disable() {
 /**
  * 检查指标并触发告警
  */
-func (am *AlertManager) CheckMetric(metricName string, value interface{}) {
+func (am *AlertManager) CheckMetric(metricName string, value any) {
 	if !am.enabled {
 		return
 	}
@@ -265,7 +265,7 @@ func (am *AlertManager) CheckMetric(metricName string, value interface{}) {
 /**
  * 评估告警条件
  */
-func (am *AlertManager) evaluateCondition(value interface{}, condition AlertCondition, threshold interface{}) bool {
+func (am *AlertManager) evaluateCondition(value any, condition AlertCondition, threshold any) bool {
 	// 类型转换和比较
 	switch condition {
 	case GreaterThan:
@@ -288,7 +288,7 @@ func (am *AlertManager) evaluateCondition(value interface{}, condition AlertCond
 /**
  * 比较两个值
  */
-func (am *AlertManager) compareValues(a, b interface{}) int {
+func (am *AlertManager) compareValues(a, b any) int {
 	switch va := a.(type) {
 	case int:
 		if vb, ok := b.(int); ok {
@@ -333,7 +333,7 @@ func (am *AlertManager) compareValues(a, b interface{}) int {
 /**
  * 触发告警
  */
-func (am *AlertManager) triggerAlert(rule *AlertRule, metricName string, value interface{}, timestamp time.Time) {
+func (am *AlertManager) triggerAlert(rule *AlertRule, metricName string, value any, timestamp time.Time) {
 	alertID := fmt.Sprintf("%s_%s", rule.ID, metricName)
 
 	alert := &Alert{
@@ -449,11 +449,11 @@ func (am *AlertManager) GetAlertHistory(limit int) []*Alert {
 /**
  * 获取告警统计
  */
-func (am *AlertManager) GetAlertStats() map[string]interface{} {
+func (am *AlertManager) GetAlertStats() map[string]any {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
 
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"active_alerts": len(am.activeAlerts),
 		"total_history": len(am.alertHistory),
 		"rules_count":   len(am.alertRules),
@@ -512,11 +512,11 @@ func (am *AlertManager) Stop() {
 /**
  * 获取管理器状态
  */
-func (am *AlertManager) GetStatus() map[string]interface{} {
+func (am *AlertManager) GetStatus() map[string]any {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"name":            am.name,
 		"enabled":         am.enabled,
 		"rules_count":     len(am.alertRules),
@@ -531,10 +531,10 @@ func (am *AlertManager) GetStatus() map[string]interface{} {
 /**
  * 获取指标数据（实现MetricsDataSource接口）
  */
-func (am *AlertManager) GetMetrics() map[string]interface{} {
+func (am *AlertManager) GetMetrics() map[string]any {
 	stats := am.GetAlertStats()
 
-	metrics := make(map[string]interface{})
+	metrics := make(map[string]any)
 
 	// 告警数量指标
 	if val, ok := stats["active_alerts"].(int); ok {

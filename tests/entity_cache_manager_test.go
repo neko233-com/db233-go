@@ -26,7 +26,7 @@ func TestEntityCacheManager_GetOrCreateSelectColumnNameCsv(t *testing.T) {
 	}
 
 	entityType := reflect.TypeOf(TestEntity{})
-	colNameToValueMap := map[string]interface{}{
+	colNameToValueMap := map[string]any{
 		"id":   1,
 		"name": "test",
 		"age":  25,
@@ -98,7 +98,7 @@ func TestEntityCacheManager_GetSelectColumnNameSql(t *testing.T) {
 	}
 
 	entityType := reflect.TypeOf(TestEntity{})
-	colNameToValueMap := map[string]interface{}{
+	colNameToValueMap := map[string]any{
 		"id":   1,
 		"name": "test",
 	}
@@ -168,7 +168,7 @@ func TestEntityCacheManager_ClearCache(t *testing.T) {
 	entityType := reflect.TypeOf(TestEntity{})
 
 	// 创建缓存
-	colNameToValueMap := map[string]interface{}{"id": 1}
+	colNameToValueMap := map[string]any{"id": 1}
 	ecm.GetOrCreateSelectColumnNameCsv(entityType, colNameToValueMap)
 
 	// 验证缓存存在
@@ -197,7 +197,7 @@ func TestEntityCacheManager_ClearAllCache(t *testing.T) {
 	entityType2 := reflect.TypeOf(TestEntity2{})
 
 	// 创建缓存
-	ecm.GetOrCreateSelectColumnNameCsv(entityType1, map[string]interface{}{"id": 1})
+	ecm.GetOrCreateSelectColumnNameCsv(entityType1, map[string]any{"id": 1})
 	ecm.GetOrCreateAllColumnNameCsv(entityType2, func() []string { return []string{"name"} })
 
 	// 验证缓存存在
@@ -233,7 +233,7 @@ func TestEntityCacheManager_GetCacheSize(t *testing.T) {
 	}
 
 	// 添加缓存
-	ecm.GetOrCreateSelectColumnNameCsv(entityType1, map[string]interface{}{"id": 1})
+	ecm.GetOrCreateSelectColumnNameCsv(entityType1, map[string]any{"id": 1})
 	ecm.GetOrCreateAllColumnNameCsv(entityType2, func() []string { return []string{"name"} })
 
 	// 验证大小

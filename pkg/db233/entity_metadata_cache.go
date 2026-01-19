@@ -80,7 +80,7 @@ func GetEntityMetadataCacheInstance() *EntityMetadataCache {
  * @return *EntityMetadata 实体元数据
  * @return error 错误信息
  */
-func (c *EntityMetadataCache) GetOrBuild(entity interface{}) (*EntityMetadata, error) {
+func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
 	t := reflect.TypeOf(entity)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -117,7 +117,7 @@ func (c *EntityMetadataCache) GetOrBuild(entity interface{}) (*EntityMetadata, e
 /**
  * buildMetadata 构建实体元数据（支持嵌入结构体）
  */
-func (c *EntityMetadataCache) buildMetadata(entity interface{}, entityType reflect.Type) (*EntityMetadata, error) {
+func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type) (*EntityMetadata, error) {
 	metadata := &EntityMetadata{
 		EntityType:         entityType,
 		ColumnToFieldIndex: make(map[string]int),

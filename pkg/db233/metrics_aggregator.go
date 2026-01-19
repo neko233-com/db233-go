@@ -40,7 +40,7 @@ type MetricsAggregator struct {
  */
 type AggregatedMetric struct {
 	Name       string
-	Value      interface{}
+	Value      any
 	Count      int
 	Sum        float64
 	Avg        float64
@@ -171,7 +171,7 @@ func (ma *MetricsAggregator) GetAllAggregatedMetrics() map[string]AggregatedMetr
 /**
  * 获取聚合指标值
  */
-func (ma *MetricsAggregator) GetAggregatedValue(name string) interface{} {
+func (ma *MetricsAggregator) GetAggregatedValue(name string) any {
 	if metric, exists := ma.GetAggregatedMetric(name); exists {
 		return metric.Value
 	}
@@ -197,14 +197,14 @@ func (ma *MetricsAggregator) RefreshMetrics() error {
 	}
 
 	// 收集所有数据源的指标
-	allMetrics := make(map[string][]interface{})
+	allMetrics := make(map[string][]any)
 
 	for _, source := range ma.dataSources {
 		sourceMetrics := source.GetMetrics()
 
 		for metricName, value := range sourceMetrics {
 			if _, exists := allMetrics[metricName]; !exists {
-				allMetrics[metricName] = make([]interface{}, 0)
+				allMetrics[metricName] = make([]any, 0)
 			}
 			allMetrics[metricName] = append(allMetrics[metricName], value)
 		}
@@ -240,8 +240,8 @@ func (ma *MetricsAggregator) RefreshMetrics() error {
 /**
  * 查找匹配的指标
  */
-func (ma *MetricsAggregator) findMatchingMetrics(pattern string, allMetrics map[string][]interface{}) []interface{} {
-	matching := make([]interface{}, 0)
+func (ma *MetricsAggregator) findMatchingMetrics(pattern string, allMetrics map[string][]any) []any {
+	matching := make([]any, 0)
 
 	for metricName, values := range allMetrics {
 		if ma.matchesPattern(metricName, pattern) {
@@ -273,7 +273,7 @@ func (ma *MetricsAggregator) matchesPattern(metricName, pattern string) bool {
 /**
  * 聚合指标值
  */
-func (ma *MetricsAggregator) aggregateMetrics(name string, values []interface{}, aggType AggregationType) AggregatedMetric {
+func (ma *MetricsAggregator) aggregateMetrics(name string, values []any, aggType AggregationType) AggregatedMetric {
 	metric := AggregatedMetric{
 		Name:       name,
 		LastUpdate: time.Now(),
@@ -340,7 +340,7 @@ func (ma *MetricsAggregator) aggregateMetrics(name string, values []interface{},
 /**
  * 转换为float64
  */
-func (ma *MetricsAggregator) toFloat64(value interface{}) (float64, bool) {
+func (ma *MetricsAggregator) toFloat64(value any) (float64, bool) {
 	switch v := value.(type) {
 	case int:
 		return float64(v), true
@@ -382,11 +382,11 @@ func (ma *MetricsAggregator) calculatePercentile(sortedValues []float64, percent
 /**
  * 获取聚合器状态
  */
-func (ma *MetricsAggregator) GetStatus() map[string]interface{} {
+func (ma *MetricsAggregator) GetStatus() map[string]any {
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"name":              ma.name,
 		"enabled":           ma.enabled,
 		"data_sources":      len(ma.dataSources),
@@ -400,14 +400,14 @@ func (ma *MetricsAggregator) GetStatus() map[string]interface{} {
 /**
  * 获取指标摘要
  */
-func (ma *MetricsAggregator) GetMetricsSummary() map[string]interface{} {
-	summary := map[string]interface{}{
+func (ma *MetricsAggregator) GetMetricsSummary() map[string]any {
+	summary := map[string]any{
 		"total_metrics": len(ma.aggregatedMetrics),
-		"metrics":       make([]map[string]interface{}, 0),
+		"metrics":       make([]map[string]any, 0),
 	}
 
 	for name, metric := range ma.aggregatedMetrics {
-		metricSummary := map[string]interface{}{
+		metricSummary := map[string]any{
 			"name":  name,
 			"value": metric.Value,
 			"count": metric.Count,
@@ -417,7 +417,7 @@ func (ma *MetricsAggregator) GetMetricsSummary() map[string]interface{} {
 			"p95":   metric.P95,
 			"p99":   metric.P99,
 		}
-		summary["metrics"] = append(summary["metrics"].([]map[string]interface{}), metricSummary)
+		summary["metrics"] = append(summary["metrics"].([]map[string]any), metricSummary)
 	}
 
 	return summary

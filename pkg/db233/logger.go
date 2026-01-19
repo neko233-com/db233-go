@@ -69,42 +69,42 @@ func (l *Logger) SetOutput(w *os.File) {
 /**
  * 记录 TRACE 级别日志
  */
-func (l *Logger) Trace(format string, args ...interface{}) {
+func (l *Logger) Trace(format string, args ...any) {
 	l.log(TRACE, format, args...)
 }
 
 /**
  * 记录 DEBUG 级别日志
  */
-func (l *Logger) Debug(format string, args ...interface{}) {
+func (l *Logger) Debug(format string, args ...any) {
 	l.log(DEBUG, format, args...)
 }
 
 /**
  * 记录 INFO 级别日志
  */
-func (l *Logger) Info(format string, args ...interface{}) {
+func (l *Logger) Info(format string, args ...any) {
 	l.log(INFO, format, args...)
 }
 
 /**
  * 记录 WARN 级别日志
  */
-func (l *Logger) Warn(format string, args ...interface{}) {
+func (l *Logger) Warn(format string, args ...any) {
 	l.log(WARN, format, args...)
 }
 
 /**
  * 记录 ERROR 级别日志
  */
-func (l *Logger) Error(format string, args ...interface{}) {
+func (l *Logger) Error(format string, args ...any) {
 	l.log(ERROR, format, args...)
 }
 
 /**
  * 记录 FATAL 级别日志
  */
-func (l *Logger) Fatal(format string, args ...interface{}) {
+func (l *Logger) Fatal(format string, args ...any) {
 	l.log(FATAL, format, args...)
 	os.Exit(1)
 }
@@ -112,7 +112,7 @@ func (l *Logger) Fatal(format string, args ...interface{}) {
 /**
  * 内部日志记录方法
  */
-func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
+func (l *Logger) log(level LogLevel, format string, args ...any) {
 	if level < l.level {
 		return
 	}
@@ -125,41 +125,41 @@ func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
 /**
  * 便捷方法：记录 TRACE 级别日志到默认记录器
  */
-func LogTrace(format string, args ...interface{}) {
+func LogTrace(format string, args ...any) {
 	defaultLogger.Trace(format, args...)
 }
 
 /**
  * 便捷方法：记录 DEBUG 级别日志到默认记录器
  */
-func LogDebug(format string, args ...interface{}) {
+func LogDebug(format string, args ...any) {
 	defaultLogger.Debug(format, args...)
 }
 
 /**
  * 便捷方法：记录 INFO 级别日志到默认记录器
  */
-func LogInfo(format string, args ...interface{}) {
+func LogInfo(format string, args ...any) {
 	defaultLogger.Info(format, args...)
 }
 
 /**
  * 便捷方法：记录 WARN 级别日志到默认记录器
  */
-func LogWarn(format string, args ...interface{}) {
+func LogWarn(format string, args ...any) {
 	defaultLogger.Warn(format, args...)
 }
 
 /**
  * 便捷方法：记录 ERROR 级别日志到默认记录器
  */
-func LogError(format string, args ...interface{}) {
+func LogError(format string, args ...any) {
 	defaultLogger.Error(format, args...)
 }
 
 /**
  * 便捷方法：记录 FATAL 级别日志到默认记录器
  */
-func LogFatal(format string, args ...interface{}) {
+func LogFatal(format string, args ...any) {
 	defaultLogger.Fatal(format, args...)
 }

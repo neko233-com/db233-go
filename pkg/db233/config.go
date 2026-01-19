@@ -17,7 +17,7 @@ type DbGroupConfig struct {
 	GroupName string
 
 	// DatasourceConfigTemplate 连接池配置模板
-	DatasourceConfigTemplate map[string]interface{}
+	DatasourceConfigTemplate map[string]any
 
 	// DataSourceCreateStrategy 数据源创建策略
 	DataSourceCreateStrategy DataSourceCreateStrategy
@@ -45,7 +45,7 @@ type DbConfig struct {
 	DbGroup *DbGroup
 
 	// DbConfigMap 数据库配置映射
-	DbConfigMap map[string]interface{}
+	DbConfigMap map[string]any
 }
 
 /**
@@ -82,7 +82,7 @@ type DataSourceCreateStrategy interface {
 	 * @param config 具体配置
 	 * @return 数据源驱动
 	 */
-	Create(template map[string]interface{}, config map[string]interface{}) (driver.Driver, error)
+	Create(template map[string]any, config map[string]any) (driver.Driver, error)
 }
 
 /**

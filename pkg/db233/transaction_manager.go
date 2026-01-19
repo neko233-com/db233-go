@@ -238,7 +238,7 @@ func (tm *TransactionManager) ReleaseSavepoint(name string) error {
 /**
  * 执行事务中的查询
  */
-func (tm *TransactionManager) Query(query string, args ...interface{}) (*sql.Rows, error) {
+func (tm *TransactionManager) Query(query string, args ...any) (*sql.Rows, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
@@ -252,7 +252,7 @@ func (tm *TransactionManager) Query(query string, args ...interface{}) (*sql.Row
 /**
  * 执行事务中的查询（带上下文）
  */
-func (tm *TransactionManager) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+func (tm *TransactionManager) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
@@ -266,7 +266,7 @@ func (tm *TransactionManager) QueryContext(ctx context.Context, query string, ar
 /**
  * 执行事务中的语句
  */
-func (tm *TransactionManager) Exec(query string, args ...interface{}) (sql.Result, error) {
+func (tm *TransactionManager) Exec(query string, args ...any) (sql.Result, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
@@ -280,7 +280,7 @@ func (tm *TransactionManager) Exec(query string, args ...interface{}) (sql.Resul
 /**
  * 执行事务中的语句（带上下文）
  */
-func (tm *TransactionManager) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+func (tm *TransactionManager) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 

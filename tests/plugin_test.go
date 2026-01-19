@@ -29,7 +29,7 @@ func TestAbstractDb233Plugin_InitPlugin(t *testing.T) {
 
 func TestAbstractDb233Plugin_Hooks(t *testing.T) {
 	plugin := db233.NewAbstractDb233Plugin("test-plugin")
-	context := db233.NewExecuteSqlContext("SELECT 1", []interface{}{})
+	context := db233.NewExecuteSqlContext("SELECT 1", []any{})
 
 	// 默认实现不应该panic
 	plugin.Begin()
@@ -135,7 +135,7 @@ func TestDb233PluginManager_RemoveAll(t *testing.T) {
 
 func TestLoggingPlugin_PreExecuteSql(t *testing.T) {
 	plugin := db233.NewLoggingPlugin()
-	context := db233.NewExecuteSqlContext("SELECT * FROM users", []interface{}{1})
+	context := db233.NewExecuteSqlContext("SELECT * FROM users", []any{1})
 
 	// 不应该panic
 	plugin.PreExecuteSql(context)
@@ -143,8 +143,8 @@ func TestLoggingPlugin_PreExecuteSql(t *testing.T) {
 
 func TestLoggingPlugin_PostExecuteSql(t *testing.T) {
 	plugin := db233.NewLoggingPlugin()
-	context := db233.NewExecuteSqlContext("SELECT * FROM users", []interface{}{1})
-	context.SetResult([]interface{}{}, 1)
+	context := db233.NewExecuteSqlContext("SELECT * FROM users", []any{1})
+	context.SetResult([]any{}, 1)
 
 	// 不应该panic
 	plugin.PostExecuteSql(context)
@@ -152,7 +152,7 @@ func TestLoggingPlugin_PostExecuteSql(t *testing.T) {
 
 func TestPerformanceMonitorPlugin_PostExecuteSql(t *testing.T) {
 	plugin := db233.NewPerformanceMonitorPlugin(100 * time.Millisecond)
-	context := db233.NewExecuteSqlContext("SELECT * FROM users", []interface{}{1})
+	context := db233.NewExecuteSqlContext("SELECT * FROM users", []any{1})
 
 	// 快速查询
 	context.Duration = 50 * time.Millisecond
@@ -167,8 +167,8 @@ func TestMetricsPlugin_PostExecuteSql(t *testing.T) {
 	plugin := db233.NewMetricsPlugin()
 	plugin.InitPlugin() // 确保初始化
 
-	context := db233.NewExecuteSqlContext("SELECT * FROM users", []interface{}{1})
-	context.SetResult([]interface{}{}, 1)
+	context := db233.NewExecuteSqlContext("SELECT * FROM users", []any{1})
+	context.SetResult([]any{}, 1)
 
 	plugin.PostExecuteSql(context)
 
@@ -180,8 +180,8 @@ func TestMetricsPlugin_PostExecuteSql(t *testing.T) {
 
 func TestMetricsPlugin_PrintReport(t *testing.T) {
 	plugin := db233.NewMetricsPlugin()
-	context := db233.NewExecuteSqlContext("SELECT * FROM users", []interface{}{1})
-	context.SetResult([]interface{}{}, 1)
+	context := db233.NewExecuteSqlContext("SELECT * FROM users", []any{1})
+	context.SetResult([]any{}, 1)
 
 	plugin.PostExecuteSql(context)
 
@@ -190,7 +190,7 @@ func TestMetricsPlugin_PrintReport(t *testing.T) {
 }
 
 func TestExecuteSqlContext_NewExecuteSqlContext(t *testing.T) {
-	context := db233.NewExecuteSqlContext("SELECT 1", []interface{}{1})
+	context := db233.NewExecuteSqlContext("SELECT 1", []any{1})
 
 	if context.Sql != "SELECT 1" {
 		t.Error("SQL should be set")

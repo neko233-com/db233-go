@@ -18,7 +18,7 @@ type ExecuteSqlContext struct {
 	Sql string
 
 	// SQL 参数
-	Params []interface{}
+	Params []any
 
 	// 执行开始时间
 	StartTime time.Time
@@ -33,27 +33,27 @@ type ExecuteSqlContext struct {
 	AffectedRows int
 
 	// 执行结果
-	Result interface{}
+	Result any
 
 	// 错误信息
 	Error error
 
 	// 数据库连接信息
-	DataSource interface{}
+	DataSource any
 
 	// 其他上下文信息
-	Attributes map[string]interface{}
+	Attributes map[string]any
 }
 
 /**
  * 创建新的 SQL 执行上下文
  */
-func NewExecuteSqlContext(sql string, params []interface{}) *ExecuteSqlContext {
+func NewExecuteSqlContext(sql string, params []any) *ExecuteSqlContext {
 	return &ExecuteSqlContext{
 		Sql:        sql,
 		Params:     params,
 		StartTime:  time.Now(),
-		Attributes: make(map[string]interface{}),
+		Attributes: make(map[string]any),
 	}
 }
 
@@ -75,7 +75,7 @@ func (ctx *ExecuteSqlContext) MarkEnd() {
 /**
  * 设置执行结果
  */
-func (ctx *ExecuteSqlContext) SetResult(result interface{}, affectedRows int) {
+func (ctx *ExecuteSqlContext) SetResult(result any, affectedRows int) {
 	ctx.Result = result
 	ctx.AffectedRows = affectedRows
 	ctx.MarkEnd()
@@ -92,13 +92,13 @@ func (ctx *ExecuteSqlContext) SetError(err error) {
 /**
  * 获取属性
  */
-func (ctx *ExecuteSqlContext) GetAttribute(key string) interface{} {
+func (ctx *ExecuteSqlContext) GetAttribute(key string) any {
 	return ctx.Attributes[key]
 }
 
 /**
  * 设置属性
  */
-func (ctx *ExecuteSqlContext) SetAttribute(key string, value interface{}) {
+func (ctx *ExecuteSqlContext) SetAttribute(key string, value any) {
 	ctx.Attributes[key] = value
 }

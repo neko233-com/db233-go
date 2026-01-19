@@ -272,8 +272,8 @@ func (hcs *HealthCheckScheduler) Stop() {
 /**
  * 获取指标数据（实现MetricsDataSource接口）
  */
-func (hc *HealthChecker) GetMetrics() map[string]interface{} {
-	metrics := make(map[string]interface{})
+func (hc *HealthChecker) GetMetrics() map[string]any {
+	metrics := make(map[string]any)
 
 	// 执行健康检查获取最新状态
 	result := hc.Check()

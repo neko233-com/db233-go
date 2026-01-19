@@ -17,7 +17,7 @@ import (
  * @since 2025-12-29
  */
 type ConfigManager struct {
-	configs map[string]interface{}
+	configs map[string]any
 	mu      sync.RWMutex
 }
 
@@ -30,7 +30,7 @@ var configManagerOnce sync.Once
 func GetConfigManager() *ConfigManager {
 	configManagerOnce.Do(func() {
 		configManagerInstance = &ConfigManager{
-			configs: make(map[string]interface{}),
+			configs: make(map[string]any),
 		}
 	})
 	return configManagerInstance
@@ -48,7 +48,7 @@ func (cm *ConfigManager) LoadFromFile(filename string) error {
 		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("解析JSON配置失败: %w", err)
 	}
@@ -137,7 +137,7 @@ func (cm *ConfigManager) GetBool(key string, defaultValue bool) bool {
 /**
  * 设置配置值
  */
-func (cm *ConfigManager) Set(key string, value interface{}) {
+func (cm *ConfigManager) Set(key string, value any) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -148,11 +148,11 @@ func (cm *ConfigManager) Set(key string, value interface{}) {
 /**
  * 获取所有配置
  */
-func (cm *ConfigManager) GetAll() map[string]interface{} {
+func (cm *ConfigManager) GetAll() map[string]any {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	for k, v := range cm.configs {
 		result[k] = v
 	}
@@ -166,7 +166,7 @@ func (cm *ConfigManager) Clear() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	cm.configs = make(map[string]interface{})
+	cm.configs = make(map[string]any)
 	LogInfo("所有配置已清除")
 }
 
@@ -194,6 +194,6 @@ func GetConfigBool(key string, defaultValue bool) bool {
 /**
  * 便捷方法：设置默认配置管理器的值
  */
-func SetConfig(key string, value interface{}) {
+func SetConfig(key string, value any) {
 	GetConfigManager().Set(key, value)
 }

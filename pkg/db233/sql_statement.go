@@ -7,7 +7,7 @@ package db233
  *
  * 说明：
  * - 对应 Kotlin 版本的 SqlStatement
- * - 使用 interface{} 表示返回类型
+ * - 使用 any 表示返回类型
  * - 支持查询和更新语句
  *
  * 使用示例：
@@ -33,7 +33,7 @@ type SqlStatement struct {
 	SqlList []string
 
 	// ReturnType 返回结果的类型（用于 ORM 映射）
-	ReturnType interface{}
+	ReturnType any
 }
 
 /**
@@ -43,7 +43,7 @@ type SqlStatement struct {
  * @param returnType 返回类型
  * @return SqlStatement 实例
  */
-func NewQueryStatement(sql string, returnType interface{}) *SqlStatement {
+func NewQueryStatement(sql string, returnType any) *SqlStatement {
 	return &SqlStatement{
 		IsQuery:      true,
 		IsAutoCommit: true,
@@ -59,7 +59,7 @@ func NewQueryStatement(sql string, returnType interface{}) *SqlStatement {
  * @param returnType 返回类型
  * @return SqlStatement 实例
  */
-func NewQueryStatements(sqlList []string, returnType interface{}) *SqlStatement {
+func NewQueryStatements(sqlList []string, returnType any) *SqlStatement {
 	return &SqlStatement{
 		IsQuery:      true,
 		IsAutoCommit: true,

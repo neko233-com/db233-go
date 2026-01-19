@@ -36,9 +36,9 @@ func (s *SimpleDataSourceCreateStrategy) Name() string {
  * @return driver.Driver 数据源驱动
  * @return error 创建错误
  */
-func (s *SimpleDataSourceCreateStrategy) Create(template map[string]interface{}, config map[string]interface{}) (driver.Driver, error) {
+func (s *SimpleDataSourceCreateStrategy) Create(template map[string]any, config map[string]any) (driver.Driver, error) {
 	// 合并配置
-	merged := make(map[string]interface{})
+	merged := make(map[string]any)
 	for k, v := range template {
 		merged[k] = v
 	}

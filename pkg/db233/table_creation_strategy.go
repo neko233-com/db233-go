@@ -106,5 +106,5 @@ type ColumnInfo struct {
 	Type       string
 	IsNullable bool
 	IsPrimary  bool
-	Default    interface{}
+	Default    any
 }

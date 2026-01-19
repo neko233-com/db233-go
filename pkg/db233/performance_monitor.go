@@ -333,11 +333,11 @@ func (pm *PerformanceMonitor) updateTimeWindowStats(duration time.Duration) {
 /**
  * 获取详细监控报告
  */
-func (pm *PerformanceMonitor) GetDetailedReport() map[string]interface{} {
+func (pm *PerformanceMonitor) GetDetailedReport() map[string]any {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
-	report := make(map[string]interface{})
+	report := make(map[string]any)
 
 	// 基础信息
 	report["db_group"] = pm.dbGroupName
@@ -408,9 +408,9 @@ func (pm *PerformanceMonitor) GetDetailedReport() map[string]interface{} {
 	report["error_count"] = len(pm.lastErrors)
 
 	// 最近错误
-	recentErrors := make([]map[string]interface{}, 0, len(pm.lastErrors))
+	recentErrors := make([]map[string]any, 0, len(pm.lastErrors))
 	for _, err := range pm.lastErrors {
-		recentErrors = append(recentErrors, map[string]interface{}{
+		recentErrors = append(recentErrors, map[string]any{
 			"timestamp": err.Timestamp,
 			"error":     err.Error.Error(),
 			"query":     err.Query,
@@ -420,7 +420,7 @@ func (pm *PerformanceMonitor) GetDetailedReport() map[string]interface{} {
 	report["recent_errors"] = recentErrors
 
 	// 时间窗口统计
-	report["time_window"] = map[string]interface{}{
+	report["time_window"] = map[string]any{
 		"start_time":        pm.windowStats.StartTime,
 		"end_time":          pm.windowStats.EndTime,
 		"query_count":       pm.windowStats.QueryCount,
@@ -430,7 +430,7 @@ func (pm *PerformanceMonitor) GetDetailedReport() map[string]interface{} {
 	}
 
 	// 阈值设置
-	report["thresholds"] = map[string]interface{}{
+	report["thresholds"] = map[string]any{
 		"slow_query_threshold":      pm.slowQueryThreshold.String(),
 		"very_slow_query_threshold": pm.verySlowQueryThreshold.String(),
 	}
@@ -441,11 +441,11 @@ func (pm *PerformanceMonitor) GetDetailedReport() map[string]interface{} {
 /**
  * 获取摘要报告
  */
-func (pm *PerformanceMonitor) GetSummaryReport() map[string]interface{} {
+func (pm *PerformanceMonitor) GetSummaryReport() map[string]any {
 	report := pm.GetDetailedReport()
 
 	// 只保留关键指标
-	summary := map[string]interface{}{
+	summary := map[string]any{
 		"db_group":            report["db_group"],
 		"timestamp":           report["timestamp"],
 		"total_queries":       report["total_queries"],
@@ -504,11 +504,11 @@ func (pm *PerformanceMonitor) Reset() {
 /**
  * 获取指标数据（实现MetricsDataSource接口）
  */
-func (pm *PerformanceMonitor) GetMetrics() map[string]interface{} {
+func (pm *PerformanceMonitor) GetMetrics() map[string]any {
 	report := pm.GetDetailedReport()
 
 	// 转换报告为指标格式
-	metrics := make(map[string]interface{})
+	metrics := make(map[string]any)
 
 	// 基础查询指标
 	if val, ok := report["total_queries"].(int64); ok {

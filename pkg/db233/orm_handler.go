@@ -26,12 +26,12 @@ type OrmHandler struct{}
  *
  * @param rows 数据库结果集
  * @param returnType 返回类型
- * @return []interface{} 映射后的对象列表
+ * @return []any 映射后的对象列表
  */
-func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interface{} {
+func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 	defer rows.Close()
 
-	var results []interface{}
+	var results []any
 
 	// 获取结构体类型
 	structType := reflect.TypeOf(returnType)
@@ -52,9 +52,9 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interfac
 		newInstance := newInstancePtr.Elem()
 
 		// 准备扫描目标
-		scanTargets := make([]interface{}, len(columns))
+		scanTargets := make([]any, len(columns))
 		for i := range scanTargets {
-			scanTargets[i] = new(interface{})
+			scanTargets[i] = new(any)
 		}
 
 		// 扫描行
@@ -166,9 +166,9 @@ func (o *OrmHandler) findFieldByColumnName(structValue reflect.Value, structType
  *
  * @param rows 数据库结果集
  * @param returnType 返回类型
- * @return interface{} 映射后的对象
+ * @return any 映射后的对象
  */
-func (o *OrmHandler) OrmSingle(rows *sql.Rows, returnType interface{}) interface{} {
+func (o *OrmHandler) OrmSingle(rows *sql.Rows, returnType any) any {
 	results := o.OrmBatch(rows, returnType)
 	if len(results) > 0 {
 		return results[0]
@@ -187,7 +187,7 @@ func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Ty
 		return reflect.Zero(targetType), nil
 	}
 
-	// 处理 interface{} 包装
+	// 处理 any 包装
 	if sourceVal.Kind() == reflect.Interface {
 		sourceVal = sourceVal.Elem()
 	}

@@ -42,12 +42,12 @@ type CrudRepository interface {
 	/**
 	 * 根据主键删除
 	 */
-	DeleteById(id interface{}, entityType IDbEntity) error
+	DeleteById(id any, entityType IDbEntity) error
 
 	/**
 	 * 根据主键查找
 	 */
-	FindById(id interface{}, entityType IDbEntity) (IDbEntity, error)
+	FindById(id any, entityType IDbEntity) (IDbEntity, error)
 
 	/**
 	 * 查找所有
@@ -57,7 +57,7 @@ type CrudRepository interface {
 	/**
 	 * 根据条件查找
 	 */
-	FindByCondition(condition string, params []interface{}, entityType IDbEntity) ([]IDbEntity, error)
+	FindByCondition(condition string, params []any, entityType IDbEntity) ([]IDbEntity, error)
 
 	/**
 	 * 更新实体（必须实现 IDbEntity 接口）
@@ -140,7 +140,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	// 构建 INSERT 语句
 	columns := make([]string, 0, len(fields))
 	placeholders := make([]string, 0, len(fields))
-	values := make([]interface{}, 0, len(fields))
+	values := make([]any, 0, len(fields))
 
 	// 检查主键是否为自增主键
 	isAutoIncrement := r.isAutoIncrementPrimaryKey(entity, uidColumn)
@@ -196,7 +196,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	// 2. 自动判断是 INSERT 还是 UPDATE
 	// 3. 减少业务代码复杂度，无需手动判断记录是否存在
 	var sql string
-	var finalValues []interface{}
+	var finalValues []any
 
 	if hasPrimaryKey {
 		// 有主键值，强制使用 INSERT ... ON DUPLICATE KEY UPDATE（UPSERT）
@@ -267,7 +267,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 /**
  * 设置主键值（支持嵌入结构体和多种主键标签方式）
  */
-func (r *BaseCrudRepository) setPrimaryKeyValue(entity interface{}, id int64) {
+func (r *BaseCrudRepository) setPrimaryKeyValue(entity any, id int64) {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -350,13 +350,13 @@ func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 /**
  * 获取字段（支持嵌入结构体）
  */
-func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{} {
+func (r *BaseCrudRepository) getFields(entity any) map[string]any {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
 
-	fields := make(map[string]interface{})
+	fields := make(map[string]any)
 	t := v.Type()
 	entityTypeName := t.Name()
 
@@ -369,7 +369,7 @@ func (r *BaseCrudRepository) getFields(entity interface{}) map[string]interface{
 /**
  * 递归扫描字段（处理嵌入结构体）
  */
-func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type, entityTypeName string, fields map[string]interface{}) {
+func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type, entityTypeName string, fields map[string]any) {
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
@@ -504,7 +504,7 @@ func (r *BaseCrudRepository) isComplexType(kind reflect.Kind, fieldType reflect.
 /**
  * 序列化复杂类型为 JSON 字符串
  */
-func (r *BaseCrudRepository) serializeComplexType(value interface{}, fieldType reflect.Type) (string, error) {
+func (r *BaseCrudRepository) serializeComplexType(value any, fieldType reflect.Type) (string, error) {
 	// 如果值已经是字符串，直接返回
 	if str, ok := value.(string); ok {
 		return str, nil
@@ -528,7 +528,7 @@ func (r *BaseCrudRepository) serializeComplexType(value interface{}, fieldType r
  * 获取默认值（如果值为空）
  * 对于空值字段，根据类型提供合理的默认值，确保数据库 INSERT 不会因为缺少字段而失败
  */
-func (r *BaseCrudRepository) getDefaultValueIfEmpty(value interface{}, fieldName string) interface{} {
+func (r *BaseCrudRepository) getDefaultValueIfEmpty(value any, fieldName string) any {
 	if value == nil {
 		// nil 值，返回空字符串（数据库可以处理）
 		LogDebug("字段值为 nil，使用空字符串作为默认值: 字段=%s", fieldName)
@@ -595,7 +595,7 @@ func (r *BaseCrudRepository) getDefaultValueIfEmpty(value interface{}, fieldName
 /**
  * 检查主键字段是否为自增主键
  */
-func (r *BaseCrudRepository) isAutoIncrementPrimaryKey(entity interface{}, pkColumnName string) bool {
+func (r *BaseCrudRepository) isAutoIncrementPrimaryKey(entity any, pkColumnName string) bool {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -641,7 +641,7 @@ func (r *BaseCrudRepository) findAutoIncrementFieldRecursive(t reflect.Type, tar
 /**
  * 判断值是否为零值
  */
-func (r *BaseCrudRepository) isZeroValue(value interface{}) bool {
+func (r *BaseCrudRepository) isZeroValue(value any) bool {
 	if value == nil {
 		return true
 	}
@@ -727,7 +727,7 @@ func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 	return nil
 }
 
-func (r *BaseCrudRepository) DeleteById(id interface{}, entityType IDbEntity) error {
+func (r *BaseCrudRepository) DeleteById(id any, entityType IDbEntity) error {
 	// 参数验证
 	if entityType == nil {
 		return NewValidationException("实体类型不能为 nil")
@@ -755,7 +755,7 @@ func (r *BaseCrudRepository) DeleteById(id interface{}, entityType IDbEntity) er
 	if err != nil {
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
-			r.recordFailedOperation("Delete", tableName, sql, []interface{}{id}, id)
+			r.recordFailedOperation("Delete", tableName, sql, []any{id}, id)
 			if r.db.FaultTolerantMgr != nil {
 				r.db.FaultTolerantMgr.CheckAndReconnect()
 			}
@@ -775,7 +775,7 @@ func (r *BaseCrudRepository) DeleteById(id interface{}, entityType IDbEntity) er
 	return nil
 }
 
-func (r *BaseCrudRepository) FindById(id interface{}, entityType IDbEntity) (IDbEntity, error) {
+func (r *BaseCrudRepository) FindById(id any, entityType IDbEntity) (IDbEntity, error) {
 	// 参数验证
 	if entityType == nil {
 		return nil, NewValidationException("实体类型不能为 nil")
@@ -799,7 +799,7 @@ func (r *BaseCrudRepository) FindById(id interface{}, entityType IDbEntity) (IDb
 	sql := "SELECT * FROM " + tableName + " WHERE " + uidColumn + " = ?"
 	LogDebug("执行查询: 表=%s, 主键列=%s, ID=%v, SQL=%s", tableName, uidColumn, id, sql)
 
-	results := r.db.ExecuteQuery(sql, [][]interface{}{{id}}, entityType)
+	results := r.db.ExecuteQuery(sql, [][]any{{id}}, entityType)
 	if len(results) > 0 {
 		// 返回指针类型
 		result := results[0]
@@ -839,7 +839,7 @@ func (r *BaseCrudRepository) FindAll(entityType IDbEntity) ([]IDbEntity, error) 
 	sql := "SELECT * FROM " + tableName
 	LogDebug("执行查询所有: 表=%s, SQL=%s", tableName, sql)
 
-	results := r.db.ExecuteQuery(sql, [][]interface{}{}, entityType)
+	results := r.db.ExecuteQuery(sql, [][]any{}, entityType)
 
 	// 转换为 IDbEntity 切片并调用反序列化钩子
 	entities := make([]IDbEntity, 0, len(results))
@@ -857,7 +857,7 @@ func (r *BaseCrudRepository) FindAll(entityType IDbEntity) ([]IDbEntity, error) 
 	return entities, nil
 }
 
-func (r *BaseCrudRepository) FindByCondition(condition string, params []interface{}, entityType IDbEntity) ([]IDbEntity, error) {
+func (r *BaseCrudRepository) FindByCondition(condition string, params []any, entityType IDbEntity) ([]IDbEntity, error) {
 	// 参数验证
 	if entityType == nil {
 		return nil, NewValidationException("实体类型不能为 nil")
@@ -874,7 +874,7 @@ func (r *BaseCrudRepository) FindByCondition(condition string, params []interfac
 	sql := "SELECT * FROM " + tableName + " WHERE " + condition
 	LogDebug("执行条件查询: 表=%s, 条件=%s, 参数数=%d, SQL=%s", tableName, condition, len(params), sql)
 
-	results := r.db.ExecuteQuery(sql, [][]interface{}{params}, entityType)
+	results := r.db.ExecuteQuery(sql, [][]any{params}, entityType)
 
 	// 转换为 IDbEntity 切片并调用反序列化钩子
 	entities := make([]IDbEntity, 0, len(results))
@@ -932,7 +932,7 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	}
 
 	setParts := make([]string, 0)
-	values := make([]interface{}, 0)
+	values := make([]any, 0)
 
 	for name, value := range fields {
 		if name != uidColumn {
@@ -1031,7 +1031,7 @@ func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 /**
  * 记录失败操作（连接异常时）
  */
-func (r *BaseCrudRepository) recordFailedOperation(operation string, tableName string, sql string, params []interface{}, primaryKey any) {
+func (r *BaseCrudRepository) recordFailedOperation(operation string, tableName string, sql string, params []any, primaryKey any) {
 	if r == nil || r.db == nil || r.db.FaultTolerantMgr == nil {
 		return
 	}

@@ -10,13 +10,13 @@ import (
 
 // TestEntityWithComplexTypes 测试包含复杂类型的实体
 type TestEntityWithComplexTypes struct {
-	ID        int                    `db:"id,primary_key,auto_increment"`
-	Name      string                 `db:"name"`
-	Tags      []string               `db:"tags"`       // slice 类型
-	Metadata  map[string]interface{} `db:"metadata"`   // map 类型
-	Items     []Item                 `db:"items"`      // 结构体 slice
-	Config    *Config                `db:"config"`     // 指针类型
-	CreatedAt time.Time              `db:"created_at"` // time.Time（不应序列化）
+	ID        int            `db:"id,primary_key,auto_increment"`
+	Name      string         `db:"name"`
+	Tags      []string       `db:"tags"`       // slice 类型
+	Metadata  map[string]any `db:"metadata"`   // map 类型
+	Items     []Item         `db:"items"`      // 结构体 slice
+	Config    *Config        `db:"config"`     // 指针类型
+	CreatedAt time.Time      `db:"created_at"` // time.Time（不应序列化）
 }
 
 type Item struct {
@@ -173,7 +173,7 @@ func TestComplexTypesSerialization(t *testing.T) {
 	entity := &TestEntityWithComplexTypes{
 		Name: "测试实体",
 		Tags: []string{"tag1", "tag2", "tag3"},
-		Metadata: map[string]interface{}{
+		Metadata: map[string]any{
 			"key1": "value1",
 			"key2": 123,
 			"key3": true,
@@ -488,7 +488,7 @@ func TestErrorMessages(t *testing.T) {
 // TestComplexTypeJSONSerialization 测试复杂类型的 JSON 序列化
 func TestComplexTypeJSONSerialization(t *testing.T) {
 	// 测试 map 序列化
-	testMap := map[string]interface{}{
+	testMap := map[string]any{
 		"key1": "value1",
 		"key2": 123,
 		"key3": true,

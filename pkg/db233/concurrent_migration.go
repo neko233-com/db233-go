@@ -65,7 +65,7 @@ func NewConcurrentMigrationManager(config *ConcurrentMigrationConfig) *Concurren
  * @param entities 实体列表
  * @return 迁移结果（表名到错误的映射，成功的表为 nil）
  */
-func (m *ConcurrentMigrationManager) MigrateTablesBatch(db *Db, entities []interface{}) map[string]error {
+func (m *ConcurrentMigrationManager) MigrateTablesBatch(db *Db, entities []any) map[string]error {
 	if len(entities) == 0 {
 		return make(map[string]error)
 	}
@@ -82,7 +82,7 @@ func (m *ConcurrentMigrationManager) MigrateTablesBatch(db *Db, entities []inter
 /**
  * migrateTablesSequential 顺序迁移表
  */
-func (m *ConcurrentMigrationManager) migrateTablesSequential(db *Db, entities []interface{}) map[string]error {
+func (m *ConcurrentMigrationManager) migrateTablesSequential(db *Db, entities []any) map[string]error {
 	results := make(map[string]error)
 
 	for _, entity := range entities {
@@ -103,12 +103,12 @@ func (m *ConcurrentMigrationManager) migrateTablesSequential(db *Db, entities []
 /**
  * migrateTablesConcurrent 并发迁移表
  */
-func (m *ConcurrentMigrationManager) migrateTablesConcurrent(db *Db, entities []interface{}) map[string]error {
+func (m *ConcurrentMigrationManager) migrateTablesConcurrent(db *Db, entities []any) map[string]error {
 	results := make(map[string]error)
 	resultsMu := sync.Mutex{}
 
 	// 创建工作队列
-	jobs := make(chan interface{}, len(entities))
+	jobs := make(chan any, len(entities))
 	for _, entity := range entities {
 		jobs <- entity
 	}
@@ -156,7 +156,7 @@ func (m *ConcurrentMigrationManager) migrateTablesConcurrent(db *Db, entities []
 /**
  * migrateTable 迁移单个表
  */
-func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity interface{}) error {
+func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity any) error {
 	// 获取元数据
 	metadata, err := GetEntityMetadataCacheInstance().GetOrBuild(entity)
 	if err != nil {
@@ -189,7 +189,7 @@ func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity interface{}) er
 /**
  * createTable 创建表
  */
-func (m *ConcurrentMigrationManager) createTable(db *Db, entity interface{}, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
+func (m *ConcurrentMigrationManager) createTable(db *Db, entity any, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
 	createSQL, err := strategy.GenerateCreateTableSQL(metadata.TableName, metadata.EntityType, metadata.PrimaryKeyColumn)
 	if err != nil {
 		return fmt.Errorf("生成建表 SQL 失败: %w", err)
@@ -208,7 +208,7 @@ func (m *ConcurrentMigrationManager) createTable(db *Db, entity interface{}, met
 /**
  * updateTableStructure 更新表结构
  */
-func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity interface{}, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
+func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity any, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
 	// 获取现有列
 	existingColumns, err := strategy.GetExistingColumns(db, metadata.TableName)
 	if err != nil {
@@ -282,7 +282,7 @@ func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity interfa
 /**
  * getTableName 获取表名
  */
-func (m *ConcurrentMigrationManager) getTableName(entity interface{}) string {
+func (m *ConcurrentMigrationManager) getTableName(entity any) string {
 	if dbEntity, ok := entity.(IDbEntity); ok {
 		return dbEntity.TableName()
 	}

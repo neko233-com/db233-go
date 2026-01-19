@@ -45,7 +45,7 @@ type MetricsCollector struct {
 type MetricPoint struct {
 	Timestamp time.Time
 	Name      string
-	Value     interface{}
+	Value     any
 	Tags      map[string]string
 }
 
@@ -53,7 +53,7 @@ type MetricPoint struct {
  * MetricsDataSource - 监控数据源接口
  */
 type MetricsDataSource interface {
-	GetMetrics() map[string]interface{}
+	GetMetrics() map[string]any
 	GetName() string
 }
 
@@ -263,18 +263,18 @@ func (mc *MetricsCollector) GetLatestMetrics() map[string]MetricPoint {
 /**
  * 计算指标统计信息
  */
-func (mc *MetricsCollector) GetMetricStats(metricName string, duration time.Duration) map[string]interface{} {
+func (mc *MetricsCollector) GetMetricStats(metricName string, duration time.Duration) map[string]any {
 	points := mc.GetMetricHistory(metricName, duration)
 
 	if len(points) == 0 {
-		return map[string]interface{}{
+		return map[string]any{
 			"metric":    metricName,
 			"count":     0,
 			"available": false,
 		}
 	}
 
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"metric":     metricName,
 		"count":      len(points),
 		"available":  true,
@@ -353,7 +353,7 @@ func (mc *MetricsCollector) ExportToFile(filename string) error {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"collector":    mc.name,
 		"export_time":  time.Now(),
 		"last_update":  mc.lastUpdate,
@@ -391,7 +391,7 @@ func (mc *MetricsCollector) ImportFromFile(filename string) error {
 	}
 	defer file.Close()
 
-	var data map[string]interface{}
+	var data map[string]any
 	decoder := json.NewDecoder(file)
 
 	if err := decoder.Decode(&data); err != nil {
@@ -399,12 +399,12 @@ func (mc *MetricsCollector) ImportFromFile(filename string) error {
 	}
 
 	// 解析指标数据
-	if metricsData, ok := data["metrics"].(map[string]interface{}); ok {
+	if metricsData, ok := data["metrics"].(map[string]any); ok {
 		for name, pointsData := range metricsData {
-			if pointsArray, ok := pointsData.([]interface{}); ok {
+			if pointsArray, ok := pointsData.([]any); ok {
 				points := make([]MetricPoint, 0, len(pointsArray))
 				for _, pointData := range pointsArray {
-					if pointMap, ok := pointData.(map[string]interface{}); ok {
+					if pointMap, ok := pointData.(map[string]any); ok {
 						point := MetricPoint{
 							Name: name,
 							Tags: make(map[string]string),
@@ -418,7 +418,7 @@ func (mc *MetricsCollector) ImportFromFile(filename string) error {
 
 						point.Value = pointMap["Value"]
 
-						if tags, ok := pointMap["Tags"].(map[string]interface{}); ok {
+						if tags, ok := pointMap["Tags"].(map[string]any); ok {
 							for k, v := range tags {
 								if str, ok := v.(string); ok {
 									point.Tags[k] = str
@@ -468,7 +468,7 @@ func (mc *MetricsCollector) CleanupExpiredData(maxAge time.Duration) {
 /**
  * 获取收集器状态
  */
-func (mc *MetricsCollector) GetStatus() map[string]interface{} {
+func (mc *MetricsCollector) GetStatus() map[string]any {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
@@ -477,7 +477,7 @@ func (mc *MetricsCollector) GetStatus() map[string]interface{} {
 		totalPoints += len(points)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"name":                mc.name,
 		"enabled":             mc.enabled,
 		"data_sources":        len(mc.dataSources),

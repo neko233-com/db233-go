@@ -55,7 +55,7 @@ type CrudManager struct {
 	tableNameToColNameMap map[string][]string
 
 	// tableName -> pk对象 -> colName -> value 的映射
-	tableToPkToColValueMap map[string]map[interface{}]map[string]interface{}
+	tableToPkToColValueMap map[string]map[any]map[string]any
 
 	// 已扫描过的类集合
 	metadataClassSet map[reflect.Type]bool
@@ -78,7 +78,7 @@ func GetCrudManagerInstance() *CrudManager {
 		crudManagerInstance = &CrudManager{
 			tableNamePkColNameListMap:   make(map[string][]string),
 			tableNameToColNameMap:       make(map[string][]string),
-			tableToPkToColValueMap:      make(map[string]map[interface{}]map[string]interface{}),
+			tableToPkToColValueMap:      make(map[string]map[any]map[string]any),
 			metadataClassSet:            make(map[reflect.Type]bool),
 			typeToPrimaryKeyColumnCache: make(map[reflect.Type]string),
 		}
@@ -89,7 +89,7 @@ func GetCrudManagerInstance() *CrudManager {
 /**
  * 自动初始化实体
  */
-func (cm *CrudManager) AutoInitEntity(entityType interface{}) *CrudManager {
+func (cm *CrudManager) AutoInitEntity(entityType any) *CrudManager {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -128,7 +128,7 @@ func (cm *CrudManager) initEntityClassMetadata(entityTypes []reflect.Type) {
 /**
  * 懒初始化或抛出错误
  */
-func (cm *CrudManager) AutoLazyInitOrThrowError(obj interface{}) error {
+func (cm *CrudManager) AutoLazyInitOrThrowError(obj any) error {
 	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Interface {
 		return NewDb233Exception("对象类型错误，不能是接口")
 	}
@@ -143,7 +143,7 @@ func (cm *CrudManager) AutoLazyInitOrThrowError(obj interface{}) error {
 /**
  * 配置类懒初始化
  */
-func (cm *CrudManager) configClassLazy(obj interface{}) error {
+func (cm *CrudManager) configClassLazy(obj any) error {
 	t := reflect.TypeOf(obj)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -173,7 +173,7 @@ func (cm *CrudManager) configClassLazy(obj interface{}) error {
 /**
  * 是否不包含实体
  */
-func (cm *CrudManager) IsNotContainsEntity(obj interface{}) bool {
+func (cm *CrudManager) IsNotContainsEntity(obj any) bool {
 	return !cm.IsContainsEntity(obj)
 }
 
@@ -181,7 +181,7 @@ func (cm *CrudManager) IsNotContainsEntity(obj interface{}) bool {
  * 是否包含实体
  */
 // IsContainsEntity 检查是否包含实体（并发安全）
-func (cm *CrudManager) IsContainsEntity(obj interface{}) bool {
+func (cm *CrudManager) IsContainsEntity(obj any) bool {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -417,7 +417,7 @@ func (cm *CrudManager) IsAutoIncrement(field reflect.StructField) bool {
  * @param entity 实体实例
  * @return string 主键列名，如果未找到则返回 "id"
  */
-func (cm *CrudManager) GetPrimaryKeyColumnName(entity interface{}) string {
+func (cm *CrudManager) GetPrimaryKeyColumnName(entity any) string {
 	t := reflect.TypeOf(entity)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -515,9 +515,9 @@ func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
  * 获取实体的主键值（自动从 struct 字段读取，支持嵌入结构体）
  *
  * @param entity 实体实例
- * @return interface{} 主键值，如果未找到则返回 nil
+ * @return any 主键值，如果未找到则返回 nil
  */
-func (cm *CrudManager) GetPrimaryKeyValue(entity interface{}) interface{} {
+func (cm *CrudManager) GetPrimaryKeyValue(entity any) any {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -529,7 +529,7 @@ func (cm *CrudManager) GetPrimaryKeyValue(entity interface{}) interface{} {
 /**
  * 递归查找主键值（支持嵌入结构体）
  */
-func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type) interface{} {
+func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type) any {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
@@ -593,7 +593,7 @@ func (cm *CrudManager) ClearPrimaryKeyCache() {
 /**
  * 自动创建表
  */
-func (cm *CrudManager) AutoCreateTable(db *Db, entityType interface{}) error {
+func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -684,7 +684,7 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 /**
  * 自动迁移表（创建或修改表结构）- 简化版本，使用默认权限
  */
-func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType interface{}) error {
+func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 	t := reflect.TypeOf(entityType)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -809,7 +809,7 @@ func (cm *CrudManager) getExistingColumns(db *Db, tableName string) (map[string]
 /**
  * AutoCreateTableWithPermissions 带权限控制的自动创建表
  */
-func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType interface{}, permissions *AutoDbPermission) error {
+func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType any, permissions *AutoDbPermission) error {
 	if permissions == nil {
 		permissions = NewDefaultAutoDbPermission()
 	}
@@ -826,7 +826,7 @@ func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType interfa
 /**
  * AutoMigrateTable 自动迁移表（支持创建列、更新列、删除列）
  */
-func (cm *CrudManager) AutoMigrateTable(db *Db, entityType interface{}, permissions *AutoDbPermission) error {
+func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *AutoDbPermission) error {
 	if permissions == nil {
 		permissions = NewDefaultAutoDbPermission()
 	}
@@ -971,7 +971,7 @@ func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.Struc
 /**
  * AutoMigrateAllTablesConcurrently 并发迁移所有表
  */
-func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []interface{}, permissions *AutoDbPermission) error {
+func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []any, permissions *AutoDbPermission) error {
 	if permissions == nil {
 		permissions = NewSafeAutoDbPermission()
 	}

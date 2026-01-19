@@ -107,7 +107,7 @@ func TestPackageScanner_ScanSubTypes(t *testing.T) {
 
 	// 定义接口和实现
 	type Repository interface {
-		Save(entity interface{}) error
+		Save(entity any) error
 	}
 
 	type UserRepo struct{}

@@ -28,17 +28,17 @@ type DbApi interface {
 	 * @param sql SQL 语句
 	 * @param paramsArray 参数数组
 	 * @param returnType 返回类型
-	 * @return []interface{} 结果列表
+	 * @return []any 结果列表
 	 */
-	ExecuteQuery(sql string, paramsArray [][]interface{}, returnType interface{}) []interface{}
+	ExecuteQuery(sql string, paramsArray [][]any, returnType any) []any
 
 	/**
 	 * 使用 SqlStatement 执行查询
 	 *
 	 * @param statement SQL 语句对象
-	 * @return []interface{} 结果列表
+	 * @return []any 结果列表
 	 */
-	ExecuteQueryByStatement(statement *SqlStatement) []interface{}
+	ExecuteQueryByStatement(statement *SqlStatement) []any
 
 	/**
 	 * 使用 SqlStatement 执行更新
@@ -55,7 +55,7 @@ type DbApi interface {
 	 * @param multiRowParams 多行参数
 	 * @return int 影响行数
 	 */
-	ExecuteOriginalUpdate(sql string, multiRowParams [][]interface{}) int
+	ExecuteOriginalUpdate(sql string, multiRowParams [][]any) int
 
 	/**
 	 * 提供直接使用 Connection 的回调入口
@@ -136,15 +136,21 @@ func (db *Db) GetDataSource() *sql.DB {
  * @param sql SQL 语句
  * @param paramsArray 参数数组
  * @param returnType 返回类型
- * @return []interface{} 结果列表
+ * @return []any 结果列表
  */
-func (db *Db) ExecuteQuery(sql string, paramsArray [][]interface{}, returnType interface{}) []interface{} {
+func (db *Db) ExecuteQuery(sql string, paramsArray [][]any, returnType any) []any {
 	defer func() {
 		if r := recover(); r != nil {
 			LogError("查询执行发生 panic: %v, SQL=%s", r, sql)
 		}
 	}()
-	var results []interface{}
+	var results []any
+
+	// 如果没有提供参数数组，或者提供了空的参数数组，仍然需要执行一次 SQL（无参数）
+	if len(paramsArray) == 0 {
+		paramsArray = [][]any{{}}
+	}
+
 	for _, params := range paramsArray {
 		rows, err := db.DataSource.Query(sql, params...)
 		if err != nil {
@@ -172,14 +178,14 @@ func (db *Db) ExecuteQuery(sql string, paramsArray [][]interface{}, returnType i
  * 使用 SqlStatement 执行查询
  *
  * @param statement SQL 语句对象
- * @return []interface{} 结果列表
+ * @return []any 结果列表
  */
-func (db *Db) ExecuteQueryByStatement(statement *SqlStatement) []interface{} {
+func (db *Db) ExecuteQueryByStatement(statement *SqlStatement) []any {
 	if !statement.IsQuery {
 		return nil
 	}
 	// 简化：假设单条 SQL，无参数
-	return db.ExecuteQuery(statement.SqlList[0], [][]interface{}{}, statement.ReturnType)
+	return db.ExecuteQuery(statement.SqlList[0], [][]any{}, statement.ReturnType)
 }
 
 // ExecuteUpdateByStatement 使用 SqlStatement 执行更新
@@ -227,7 +233,7 @@ func (db *Db) ExecuteUpdateByStatement(statement *SqlStatement) int {
  * @param multiRowParams 多行参数
  * @return int 影响行数
  */
-func (db *Db) ExecuteOriginalUpdate(sql string, multiRowParams [][]interface{}) int {
+func (db *Db) ExecuteOriginalUpdate(sql string, multiRowParams [][]any) int {
 	defer func() {
 		if r := recover(); r != nil {
 			LogError("批量更新发生 panic: %v, SQL=%s", r, sql)
@@ -282,10 +288,10 @@ func (db *Db) ExecuteWithConnection(fn func(*sql.Conn) error) error {
  * @param sql SQL 语句
  * @param params 参数
  * @param returnType 返回类型
- * @return interface{} 结果
+ * @return any 结果
  */
-func (db *Db) ExecuteQuerySingle(sql string, params []interface{}, returnType interface{}) interface{} {
-	results := db.ExecuteQuery(sql, [][]interface{}{params}, returnType)
+func (db *Db) ExecuteQuerySingle(sql string, params []any, returnType any) any {
+	results := db.ExecuteQuery(sql, [][]any{params}, returnType)
 	if len(results) > 0 {
 		return results[0]
 	}
@@ -299,10 +305,10 @@ func (db *Db) ExecuteQuerySingle(sql string, params []interface{}, returnType in
  * @param sql SQL 语句
  * @param params 参数
  * @param returnType 返回类型
- * @return interface{} 结果或 nil
+ * @return any 结果或 nil
  */
-func (db *Db) ExecuteQuerySingleOrNull(sql string, params []interface{}, returnType interface{}) interface{} {
-	results := db.ExecuteQuery(sql, [][]interface{}{params}, returnType)
+func (db *Db) ExecuteQuerySingleOrNull(sql string, params []any, returnType any) any {
+	results := db.ExecuteQuery(sql, [][]any{params}, returnType)
 	if len(results) > 0 {
 		return results[0]
 	}
@@ -351,9 +357,9 @@ func (db *Db) DisableFaultTolerance() {
 }
 
 /**
- * toAnySlice 将 []interface{} 转为 []any
+ * toAnySlice 将 []any 转为 []any
  */
-func toAnySlice(params []interface{}) []any {
+func toAnySlice(params []any) []any {
 	if len(params) == 0 {
 		return []any{}
 	}
@@ -368,9 +374,9 @@ func toAnySlice(params []interface{}) []any {
  * 获取类型的默认值
  *
  * @param t 类型
- * @return interface{} 默认值
+ * @return any 默认值
  */
-func getDefaultValue(t interface{}) interface{} {
+func getDefaultValue(t any) any {
 	switch t.(type) {
 	case int:
 		return 0
