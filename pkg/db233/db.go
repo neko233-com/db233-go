@@ -3,77 +3,34 @@ package db233
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 )
 
-/**
- * DbApi 接口 - Go 版
- *
- * 定义数据库操作的统一抽象
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// DbApi 定义数据库操作的统一抽象。
+// DbApi 接口包含执行查询、更新和获取底层数据源等方法。
 type DbApi interface {
-	/**
-	 * 获取数据源
-	 *
-	 * @return *sql.DB 数据源
-	 */
+	// GetDataSource 返回底层的 *sql.DB 数据源。
 	GetDataSource() *sql.DB
 
-	/**
-	 * 使用占位符 SQL + 批量参数，查询结果列表
-	 *
-	 * @param sql SQL 语句
-	 * @param paramsArray 参数数组
-	 * @param returnType 返回类型
-	 * @return []any 结果列表
-	 */
-	ExecuteQuery(sql string, paramsArray [][]any, returnType any) []any
+	// ExecuteQuery 执行占位符 SQL 并使用批量参数进行多组查询，返回映射后的结果列表。
+	ExecuteQuery(query string, paramsArray [][]any, returnType any) []any
 
-	/**
-	 * 使用 SqlStatement 执行查询
-	 *
-	 * @param statement SQL 语句对象
-	 * @return []any 结果列表
-	 */
+	// ExecuteQueryByStatement 使用 SqlStatement 对象执行查询并返回映射后的结果。
 	ExecuteQueryByStatement(statement *SqlStatement) []any
 
-	/**
-	 * 使用 SqlStatement 执行更新
-	 *
-	 * @param statement SQL 语句对象
-	 * @return int 影响行数
-	 */
+	// ExecuteUpdateByStatement 使用 SqlStatement 对象执行更新语句，返回影响行数。
 	ExecuteUpdateByStatement(statement *SqlStatement) int
 
-	/**
-	 * 使用占位符 SQL 批量更新
-	 *
-	 * @param sql SQL 语句
-	 * @param multiRowParams 多行参数
-	 * @return int 影响行数
-	 */
-	ExecuteOriginalUpdate(sql string, multiRowParams [][]any) int
+	// ExecuteOriginalUpdate 使用 SQL 与多行参数执行批量更新，返回总影响行数。
+	ExecuteOriginalUpdate(query string, multiRowParams [][]any) int
 
-	/**
-	 * 提供直接使用 Connection 的回调入口
-	 *
-	 * @param fn 回调函数
-	 * @return error 执行错误
-	 */
+	// ExecuteWithConnection 提供对底层 *sql.Conn 的回调，便于执行低级别操作。
 	ExecuteWithConnection(fn func(*sql.Conn) error) error
 }
 
-/**
- * Db 数据库操作核心类 - Go 版
- *
- * 对应 Kotlin 版本的 Db 类
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// Db 是数据库操作核心类型，封装了数据源、数据库分组、容错管理器等信息。
+// Db 对象负责执行 SQL、管理容错逻辑与辅助方法。
 type Db struct {
 	DataSource   *sql.DB
 	DbId         int
@@ -83,14 +40,7 @@ type Db struct {
 	FaultTolerantMgr *FaultTolerantManager
 }
 
-/**
- * 创建 Db 实例
- *
- * @param dataSource 数据源
- * @param dbId 数据库 ID
- * @param dbGroup 所属数据库组
- * @return *Db 实例
- */
+// NewDb 创建一个默认使用 MySQL 的 Db 实例。
 func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
 	return &Db{
 		DataSource:   dataSource,
@@ -100,15 +50,7 @@ func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
 	}
 }
 
-/**
- * 创建指定数据库类型的 Db 实例
- *
- * @param dataSource 数据源
- * @param dbId 数据库 ID
- * @param dbGroup 所属数据库组
- * @param dbType 数据库类型
- * @return *Db 实例
- */
+// NewDbWithType 创建一个带指定数据库类型的 Db 实例。
 func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType EnumDatabaseType) *Db {
 	if dbType == "" || !dbType.IsValid() {
 		dbType = EnumDatabaseTypeMySQL
@@ -121,27 +63,23 @@ func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType EnumDa
 	}
 }
 
-/**
- * 获取数据源
- *
- * @return *sql.DB 数据源
- */
+// GetDataSource 返回底层的 *sql.DB 数据源。
 func (db *Db) GetDataSource() *sql.DB {
 	return db.DataSource
 }
 
-/**
- * 执行查询（批量参数）
- *
- * @param sql SQL 语句
- * @param paramsArray 参数数组
- * @param returnType 返回类型
- * @return []any 结果列表
- */
-func (db *Db) ExecuteQuery(sql string, paramsArray [][]any, returnType any) []any {
+// ExecuteQuery 使用批量参数集合执行查询（每组参数单独执行一次），并将结果映射为 returnType 指定的类型。
+func (db *Db) ExecuteQuery(query string, paramsArray [][]any, returnType any) []any {
+	// 保持向后兼容：默认使用 background context
+	return db.ExecuteQueryContext(context.Background(), query, paramsArray, returnType)
+}
+
+// ExecuteQueryContext 使用指定的 context 执行查询，支持批量参数集。
+// 如果 paramsArray 为空，将执行一次无参数查询。
+func (db *Db) ExecuteQueryContext(ctx context.Context, query string, paramsArray [][]any, returnType any) []any {
 	defer func() {
 		if r := recover(); r != nil {
-			LogError("查询执行发生 panic: %v, SQL=%s", r, sql)
+			LogError("查询执行发生 panic: %v, SQL=%s", r, query)
 		}
 	}()
 	var results []any
@@ -152,34 +90,60 @@ func (db *Db) ExecuteQuery(sql string, paramsArray [][]any, returnType any) []an
 	}
 
 	for _, params := range paramsArray {
-		rows, err := db.DataSource.Query(sql, params...)
+		rows, err := db.DataSource.QueryContext(ctx, query, params...)
 		if err != nil {
 			// 友好的错误提示
 			if isConnectionError(err) {
-				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, query)
 				if db.FaultTolerantMgr != nil {
 					db.FaultTolerantMgr.CheckAndReconnect()
 				}
 			} else {
-				LogError("查询执行失败: %v (SQL: %s)", err, sql)
+				LogError("查询执行失败: %v (SQL: %s)", err, query)
 			}
 			continue
 		}
 
-		// 使用 ORM 映射
-		batchResults := OrmHandlerInstance.OrmBatch(rows, returnType)
-		results = append(results, batchResults...)
+		// 确保 rows 在本次迭代结束时被关闭，避免延迟到函数退出
+		func() {
+			defer rows.Close()
+			// 使用 ORM 映射（假设 OrmBatch 会消费 rows）
+			batchResults := OrmHandlerInstance.OrmBatch(rows, returnType)
+			results = append(results, batchResults...)
+		}()
 	}
 	return results
 }
 
-// ExecuteQueryByStatement 使用 SqlStatement 执行查询
-/**
- * 使用 SqlStatement 执行查询
- *
- * @param statement SQL 语句对象
- * @return []any 结果列表
- */
+// ExecuteQueryVariadic 使用单组可变参数执行查询并返回映射结果。
+func (db *Db) ExecuteQueryVariadic(query string, returnType any, params ...any) []any {
+	// 将可变参数包装成单条 paramsArray
+	return db.ExecuteQueryContext(context.Background(), query, [][]any{params}, returnType)
+}
+
+// ExecuteQueryTyped 执行查询并返回泛型类型切片，适用于 Go 泛型调用。
+// 使用示例：ExecuteQueryTyped[MyEntity](db, ctx, "SELECT ...", params...)
+func ExecuteQueryTyped[T any](db *Db, ctx context.Context, query string, params ...any) ([]T, error) {
+	var tPtr *T
+	results := db.ExecuteQueryContext(ctx, query, [][]any{params}, tPtr)
+	out := make([]T, 0, len(results))
+	for i, r := range results {
+		switch v := r.(type) {
+		case T:
+			out = append(out, v)
+		case *T:
+			if v == nil {
+				continue
+			}
+			out = append(out, *v)
+		default:
+			return nil, fmt.Errorf("结果无法转换为目标类型 (index=%d): %T", i, r)
+		}
+	}
+	return out, nil
+}
+
+// ExecuteQueryByStatement 使用 SqlStatement 执行查询并返回映射结果。
 func (db *Db) ExecuteQueryByStatement(statement *SqlStatement) []any {
 	if !statement.IsQuery {
 		return nil
@@ -188,27 +152,21 @@ func (db *Db) ExecuteQueryByStatement(statement *SqlStatement) []any {
 	return db.ExecuteQuery(statement.SqlList[0], [][]any{}, statement.ReturnType)
 }
 
-// ExecuteUpdateByStatement 使用 SqlStatement 执行更新
-/**
- * 使用 SqlStatement 执行更新
- *
- * @param statement SQL 语句对象
- * @return int 影响行数
- */
+// ExecuteUpdateByStatement 使用 SqlStatement 执行更新语句，返回受影响行数。
 func (db *Db) ExecuteUpdateByStatement(statement *SqlStatement) int {
 	if statement.IsQuery {
 		return 0
 	}
 	totalAffected := 0
-	for _, sql := range statement.SqlList {
-		result, err := db.DataSource.Exec(sql)
+	for _, q := range statement.SqlList {
+		result, err := db.DataSource.Exec(q)
 		if err != nil {
 			if isConnectionError(err) {
-				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, q)
 				if db.FaultTolerantMgr != nil {
 					db.FaultTolerantMgr.RecordFailedOperation(&FailedOperation{
 						Operation: "ExecuteUpdate",
-						SQL:       sql,
+						SQL:       q,
 						Params:    []any{},
 						TableName: "",
 					})
@@ -225,30 +183,23 @@ func (db *Db) ExecuteUpdateByStatement(statement *SqlStatement) int {
 	return totalAffected
 }
 
-// ExecuteOriginalUpdate 执行批量更新
-/**
- * 执行批量更新
- *
- * @param sql SQL 语句
- * @param multiRowParams 多行参数
- * @return int 影响行数
- */
-func (db *Db) ExecuteOriginalUpdate(sql string, multiRowParams [][]any) int {
+// ExecuteOriginalUpdate 使用 SQL 与多行参数执行批量更新，返回总影响行数。
+func (db *Db) ExecuteOriginalUpdate(query string, multiRowParams [][]any) int {
 	defer func() {
 		if r := recover(); r != nil {
-			LogError("批量更新发生 panic: %v, SQL=%s", r, sql)
+			LogError("批量更新发生 panic: %v, SQL=%s", r, query)
 		}
 	}()
 	totalAffected := 0
 	for _, params := range multiRowParams {
-		result, err := db.DataSource.Exec(sql, params...)
+		result, err := db.DataSource.Exec(query, params...)
 		if err != nil {
 			if isConnectionError(err) {
-				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, query)
 				if db.FaultTolerantMgr != nil {
 					db.FaultTolerantMgr.RecordFailedOperation(&FailedOperation{
 						Operation: "ExecuteUpdate",
-						SQL:       sql,
+						SQL:       query,
 						Params:    toAnySlice(params),
 						TableName: "",
 					})
@@ -265,13 +216,7 @@ func (db *Db) ExecuteOriginalUpdate(sql string, multiRowParams [][]any) int {
 	return totalAffected
 }
 
-// ExecuteWithConnection 提供连接回调
-/**
- * 提供直接使用 Connection 的回调入口
- *
- * @param fn 回调函数
- * @return error 执行错误
- */
+// ExecuteWithConnection 提供对低级 *sql.Conn 的回调入口。
 func (db *Db) ExecuteWithConnection(fn func(*sql.Conn) error) error {
 	conn, err := db.DataSource.Conn(context.TODO())
 	if err != nil {
@@ -281,46 +226,25 @@ func (db *Db) ExecuteWithConnection(fn func(*sql.Conn) error) error {
 	return fn(conn)
 }
 
-// ExecuteQuerySingle 单行查询
-/**
- * 单行查询（带参数，返回非空结果，找不到返回类型默认值）
- *
- * @param sql SQL 语句
- * @param params 参数
- * @param returnType 返回类型
- * @return any 结果
- */
-func (db *Db) ExecuteQuerySingle(sql string, params []any, returnType any) any {
-	results := db.ExecuteQuery(sql, [][]any{params}, returnType)
+// ExecuteQuerySingle 执行单行查询并返回结果，找不到时返回类型默认值。
+func (db *Db) ExecuteQuerySingle(query string, params []any, returnType any) any {
+	results := db.ExecuteQuery(query, [][]any{params}, returnType)
 	if len(results) > 0 {
 		return results[0]
 	}
 	return getDefaultValue(returnType)
 }
 
-// ExecuteQuerySingleOrNull 单行查询，返回可空
-/**
- * 单行查询（带参数，返回可空结果，找不到返回 null）
- *
- * @param sql SQL 语句
- * @param params 参数
- * @param returnType 返回类型
- * @return any 结果或 nil
- */
-func (db *Db) ExecuteQuerySingleOrNull(sql string, params []any, returnType any) any {
-	results := db.ExecuteQuery(sql, [][]any{params}, returnType)
+// ExecuteQuerySingleOrNull 执行单行查询并返回结果或 nil。
+func (db *Db) ExecuteQuerySingleOrNull(query string, params []any, returnType any) any {
+	results := db.ExecuteQuery(query, [][]any{params}, returnType)
 	if len(results) > 0 {
 		return results[0]
 	}
 	return nil
 }
 
-// Close 关闭数据库连接
-/**
- * 关闭数据库连接
- *
- * @return error 关闭错误
- */
+// Close 关闭底层数据库连接，并在需要时停止容错管理器。
 func (db *Db) Close() error {
 	if db.FaultTolerantMgr != nil {
 		db.FaultTolerantMgr.Stop()
@@ -328,9 +252,7 @@ func (db *Db) Close() error {
 	return db.DataSource.Close()
 }
 
-/**
- * EnableFaultTolerance 启用容错管理器
- */
+// EnableFaultTolerance 启用容错管理器。
 func (db *Db) EnableFaultTolerance(dbConfig *DbConnectionConfig) {
 	if db == nil || dbConfig == nil {
 		LogWarn("容错管理器启用失败: db 或 dbConfig 为空")
@@ -344,9 +266,7 @@ func (db *Db) EnableFaultTolerance(dbConfig *DbConnectionConfig) {
 	LogInfo("容错管理器已启用")
 }
 
-/**
- * DisableFaultTolerance 停用容错管理器
- */
+// DisableFaultTolerance 停用容错管理器。
 func (db *Db) DisableFaultTolerance() {
 	if db.FaultTolerantMgr == nil {
 		return
@@ -356,9 +276,7 @@ func (db *Db) DisableFaultTolerance() {
 	LogInfo("容错管理器已停用")
 }
 
-/**
- * toAnySlice 将 []any 转为 []any
- */
+// toAnySlice 辅助函数，将 []any 复制为新的 []any 切片。
 func toAnySlice(params []any) []any {
 	if len(params) == 0 {
 		return []any{}
@@ -370,12 +288,7 @@ func toAnySlice(params []any) []any {
 	return result
 }
 
-/**
- * 获取类型的默认值
- *
- * @param t 类型
- * @return any 默认值
- */
+// getDefaultValue 返回常见类型的默认 Go 值（用于单行查询未命中时）。
 func getDefaultValue(t any) any {
 	switch t.(type) {
 	case int:
