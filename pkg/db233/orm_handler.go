@@ -47,8 +47,9 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interfac
 	}
 
 	for rows.Next() {
-		// 创建新实例
-		newInstance := reflect.New(structType).Elem()
+		// 创建新实例（值 + 指针）
+		newInstancePtr := reflect.New(structType)
+		newInstance := newInstancePtr.Elem()
 
 		// 准备扫描目标
 		scanTargets := make([]interface{}, len(columns))
@@ -82,7 +83,8 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType interface{}) []interfac
 			}
 		}
 
-		results = append(results, newInstance.Interface())
+		// 返回指针类型，确保实现 IDbEntity 的指针接收者方法
+		results = append(results, newInstancePtr.Interface())
 	}
 
 	return results

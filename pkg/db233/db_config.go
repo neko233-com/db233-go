@@ -285,6 +285,19 @@ func (c *DbConnectionConfig) CreateDb(dbId int, dbGroup *DbGroup) (*Db, error) {
 	if err != nil {
 		return nil, err
 	}
+	db := NewDbWithType(dataSource, dbId, dbGroup, c.DatabaseType)
+	db.EnableFaultTolerance(c)
+	return db, nil
+}
+
+/**
+ * CreateDbWithoutFaultTolerance 创建 Db 实例（不启用容错）
+ */
+func (c *DbConnectionConfig) CreateDbWithoutFaultTolerance(dbId int, dbGroup *DbGroup) (*Db, error) {
+	dataSource, err := c.CreateDataSource()
+	if err != nil {
+		return nil, err
+	}
 
 	return NewDbWithType(dataSource, dbId, dbGroup, c.DatabaseType), nil
 }

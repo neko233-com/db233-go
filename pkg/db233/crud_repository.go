@@ -234,7 +234,11 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		// 友好的错误提示
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
-			return NewQueryExceptionWithCause(err, fmt.Sprintf("数据库连接已关闭或不可用，请检查网络连接"))
+			r.recordFailedOperation("Save", tableName, sql, finalValues, uidValue)
+			if r.db.FaultTolerantMgr != nil {
+				r.db.FaultTolerantMgr.CheckAndReconnect()
+			}
+			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
 		} else {
 			LogError("保存实体失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
 			return NewQueryExceptionWithCause(err, fmt.Sprintf("保存实体到表 %s 失败", tableName))
@@ -747,7 +751,21 @@ func (r *BaseCrudRepository) DeleteById(id interface{}, entityType IDbEntity) er
 	sql := "DELETE FROM " + tableName + " WHERE " + uidColumn + " = ?"
 	LogDebug("执行 DELETE: 表=%s, 主键列=%s, ID=%v, SQL=%s", tableName, uidColumn, id, sql)
 
-	affectedRows := r.db.ExecuteOriginalUpdate(sql, [][]interface{}{{id}})
+	result, err := r.db.DataSource.Exec(sql, id)
+	if err != nil {
+		if isConnectionError(err) {
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
+			r.recordFailedOperation("Delete", tableName, sql, []interface{}{id}, id)
+			if r.db.FaultTolerantMgr != nil {
+				r.db.FaultTolerantMgr.CheckAndReconnect()
+			}
+			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+		}
+		LogError("删除实体失败: 表=%s, ID=%v, 错误=%v, SQL=%s", tableName, id, err, sql)
+		return NewQueryExceptionWithCause(err, fmt.Sprintf("删除表 %s 中 ID=%v 的记录失败", tableName, id))
+	}
+
+	affectedRows, _ := result.RowsAffected()
 	if affectedRows == 0 {
 		LogWarn("删除无影响: 表=%s, ID=%v, 可能记录不存在", tableName, id)
 	} else {
@@ -934,6 +952,14 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 
 	result, err := r.db.DataSource.Exec(sql, values...)
 	if err != nil {
+		if isConnectionError(err) {
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
+			r.recordFailedOperation("Update", tableName, sql, values, id)
+			if r.db.FaultTolerantMgr != nil {
+				r.db.FaultTolerantMgr.CheckAndReconnect()
+			}
+			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+		}
 		LogError("更新实体失败: 表=%s, ID=%v, 错误=%v, SQL=%s", tableName, id, err, sql)
 		return NewQueryExceptionWithCause(err, fmt.Sprintf("更新表 %s 中 ID=%v 的记录失败", tableName, id))
 	}
@@ -1000,4 +1026,20 @@ func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 
 	LogDebug("计数成功: 表=%s, 总数=%d", tableName, count)
 	return count, nil
+}
+
+/**
+ * 记录失败操作（连接异常时）
+ */
+func (r *BaseCrudRepository) recordFailedOperation(operation string, tableName string, sql string, params []interface{}, primaryKey any) {
+	if r == nil || r.db == nil || r.db.FaultTolerantMgr == nil {
+		return
+	}
+	r.db.FaultTolerantMgr.RecordFailedOperation(&FailedOperation{
+		Operation:  operation,
+		SQL:        sql,
+		Params:     toAnySlice(params),
+		TableName:  tableName,
+		PrimaryKey: primaryKey,
+	})
 }

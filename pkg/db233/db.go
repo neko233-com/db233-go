@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"context"
 	"database/sql"
 	"log"
 )
@@ -78,6 +79,8 @@ type Db struct {
 	DbId         int
 	DbGroup      *DbGroup
 	DatabaseType EnumDatabaseType // 数据库类型，默认为 MySQL
+	// FaultTolerantMgr 容错管理器（可选）
+	FaultTolerantMgr *FaultTolerantManager
 }
 
 /**
@@ -136,6 +139,11 @@ func (db *Db) GetDataSource() *sql.DB {
  * @return []interface{} 结果列表
  */
 func (db *Db) ExecuteQuery(sql string, paramsArray [][]interface{}, returnType interface{}) []interface{} {
+	defer func() {
+		if r := recover(); r != nil {
+			LogError("查询执行发生 panic: %v, SQL=%s", r, sql)
+		}
+	}()
 	var results []interface{}
 	for _, params := range paramsArray {
 		rows, err := db.DataSource.Query(sql, params...)
@@ -143,6 +151,9 @@ func (db *Db) ExecuteQuery(sql string, paramsArray [][]interface{}, returnType i
 			// 友好的错误提示
 			if isConnectionError(err) {
 				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+				if db.FaultTolerantMgr != nil {
+					db.FaultTolerantMgr.CheckAndReconnect()
+				}
 			} else {
 				LogError("查询执行失败: %v (SQL: %s)", err, sql)
 			}
@@ -186,7 +197,20 @@ func (db *Db) ExecuteUpdateByStatement(statement *SqlStatement) int {
 	for _, sql := range statement.SqlList {
 		result, err := db.DataSource.Exec(sql)
 		if err != nil {
-			log.Printf("ExecuteUpdate error: %v", err)
+			if isConnectionError(err) {
+				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+				if db.FaultTolerantMgr != nil {
+					db.FaultTolerantMgr.RecordFailedOperation(&FailedOperation{
+						Operation: "ExecuteUpdate",
+						SQL:       sql,
+						Params:    []any{},
+						TableName: "",
+					})
+					db.FaultTolerantMgr.CheckAndReconnect()
+				}
+			} else {
+				log.Printf("ExecuteUpdate error: %v", err)
+			}
 			continue
 		}
 		affected, _ := result.RowsAffected()
@@ -204,11 +228,29 @@ func (db *Db) ExecuteUpdateByStatement(statement *SqlStatement) int {
  * @return int 影响行数
  */
 func (db *Db) ExecuteOriginalUpdate(sql string, multiRowParams [][]interface{}) int {
+	defer func() {
+		if r := recover(); r != nil {
+			LogError("批量更新发生 panic: %v, SQL=%s", r, sql)
+		}
+	}()
 	totalAffected := 0
 	for _, params := range multiRowParams {
 		result, err := db.DataSource.Exec(sql, params...)
 		if err != nil {
-			log.Printf("ExecuteOriginalUpdate error: %v", err)
+			if isConnectionError(err) {
+				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, sql)
+				if db.FaultTolerantMgr != nil {
+					db.FaultTolerantMgr.RecordFailedOperation(&FailedOperation{
+						Operation: "ExecuteUpdate",
+						SQL:       sql,
+						Params:    toAnySlice(params),
+						TableName: "",
+					})
+					db.FaultTolerantMgr.CheckAndReconnect()
+				}
+			} else {
+				log.Printf("ExecuteOriginalUpdate error: %v", err)
+			}
 			continue
 		}
 		affected, _ := result.RowsAffected()
@@ -225,7 +267,7 @@ func (db *Db) ExecuteOriginalUpdate(sql string, multiRowParams [][]interface{}) 
  * @return error 执行错误
  */
 func (db *Db) ExecuteWithConnection(fn func(*sql.Conn) error) error {
-	conn, err := db.DataSource.Conn(nil)
+	conn, err := db.DataSource.Conn(context.TODO())
 	if err != nil {
 		return err
 	}
@@ -274,7 +316,52 @@ func (db *Db) ExecuteQuerySingleOrNull(sql string, params []interface{}, returnT
  * @return error 关闭错误
  */
 func (db *Db) Close() error {
+	if db.FaultTolerantMgr != nil {
+		db.FaultTolerantMgr.Stop()
+	}
 	return db.DataSource.Close()
+}
+
+/**
+ * EnableFaultTolerance 启用容错管理器
+ */
+func (db *Db) EnableFaultTolerance(dbConfig *DbConnectionConfig) {
+	if db == nil || dbConfig == nil {
+		LogWarn("容错管理器启用失败: db 或 dbConfig 为空")
+		return
+	}
+	if db.FaultTolerantMgr != nil {
+		return
+	}
+	db.FaultTolerantMgr = NewFaultTolerantManager(db, dbConfig)
+	db.FaultTolerantMgr.Start()
+	LogInfo("容错管理器已启用")
+}
+
+/**
+ * DisableFaultTolerance 停用容错管理器
+ */
+func (db *Db) DisableFaultTolerance() {
+	if db.FaultTolerantMgr == nil {
+		return
+	}
+	db.FaultTolerantMgr.Stop()
+	db.FaultTolerantMgr = nil
+	LogInfo("容错管理器已停用")
+}
+
+/**
+ * toAnySlice 将 []interface{} 转为 []any
+ */
+func toAnySlice(params []interface{}) []any {
+	if len(params) == 0 {
+		return []any{}
+	}
+	result := make([]any, 0, len(params))
+	for _, v := range params {
+		result = append(result, v)
+	}
+	return result
 }
 
 /**
