@@ -21,6 +21,9 @@ func (e *TestUpsertEntity) TableName() string {
 func (e *TestUpsertEntity) SerializeBeforeSaveDb() {}
 
 func (e *TestUpsertEntity) DeserializeAfterLoadDb() {}
+func (e *TestUpsertEntity) GetTableMetaData() *db233.TableMetaData {
+	return nil
+}
 
 // TestUpsertSave 测试 upsert 功能
 func TestUpsertSave(t *testing.T) {
@@ -120,7 +123,7 @@ func TestUpsertSave(t *testing.T) {
 
 // TestAutoIncrementEntity 测试自增主键实体
 type TestAutoIncrementEntity struct {
-	ID    int    `db:"id,primary_key,auto_increment"`
+	ID    int    `db:"id" primary_key:"true" auto_increment:"true"`
 	Name  string `db:"name"`
 	Value string `db:"value"`
 }

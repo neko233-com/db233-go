@@ -224,7 +224,7 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 
 // TestDefaultNullEntity 测试默认允许为 null 的实体
 type TestDefaultNullEntity struct {
-	ID           int    `db:"id,primary_key,auto_increment"`
+	ID           int    `db:"id" primary_key:"true" auto_increment:"true"`
 	StringField  string `db:"string_field"`            // 默认允许 null
 	IntField     int    `db:"int_field"`               // 默认允许 null
 	NotNullField string `db:"not_null_field,not_null"` // 明确标记为 not_null

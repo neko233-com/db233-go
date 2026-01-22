@@ -361,3 +361,72 @@ func (s *MySQLStrategy) GenerateModifyColumnSQL(tableName string, field reflect.
 
 	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef), nil
 }
+
+// GetExistingIndexes 获取现有表的索引信息。
+func (s *MySQLStrategy) GetExistingIndexes(db *Db, tableName string) (map[string]*IndexMetaData, error) {
+	query := `
+		SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) as COLUMNS, NON_UNIQUE
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME != 'PRIMARY'
+		GROUP BY INDEX_NAME, NON_UNIQUE
+	`
+
+	rows, err := db.DataSource.Query(query, tableName)
+	if err != nil {
+		return nil, NewQueryExceptionWithCause(err, "获取表索引信息失败")
+	}
+	defer rows.Close()
+
+	indexes := make(map[string]*IndexMetaData)
+	for rows.Next() {
+		var indexName, columnsStr string
+		var nonUnique int
+
+		if err := rows.Scan(&indexName, &columnsStr, &nonUnique); err != nil {
+			return nil, NewQueryExceptionWithCause(err, "扫描索引信息失败")
+		}
+
+		columns := strings.Split(columnsStr, ",")
+		for i := range columns {
+			columns[i] = strings.TrimSpace(columns[i])
+		}
+
+		indexes[indexName] = &IndexMetaData{
+			IndexName: indexName,
+			Columns:   columns,
+			IsUnique:  nonUnique == 0,
+		}
+	}
+
+	return indexes, nil
+}
+
+// GenerateCreateIndexSQL 生成创建索引的 SQL。
+func (s *MySQLStrategy) GenerateCreateIndexSQL(tableName string, index *IndexMetaData) (string, error) {
+	if index == nil || len(index.Columns) == 0 {
+		return "", NewDb233Exception("索引信息无效：索引名为空或没有列")
+	}
+
+	indexType := "INDEX"
+	if index.IsUnique {
+		indexType = "UNIQUE INDEX"
+	}
+
+	quotedColumns := make([]string, len(index.Columns))
+	for i, col := range index.Columns {
+		quotedColumns[i] = fmt.Sprintf("`%s`", col)
+	}
+
+	sql := fmt.Sprintf("CREATE %s `%s` ON `%s` (%s)",
+		indexType, index.IndexName, tableName, strings.Join(quotedColumns, ", "))
+
+	return sql, nil
+}
+
+// GenerateDropIndexSQL 生成删除索引的 SQL。
+func (s *MySQLStrategy) GenerateDropIndexSQL(tableName string, indexName string) (string, error) {
+	if indexName == "" {
+		return "", NewDb233Exception("索引名不能为空")
+	}
+	return fmt.Sprintf("ALTER TABLE `%s` DROP INDEX `%s`", tableName, indexName), nil
+}

@@ -77,7 +77,7 @@ func CleanupTestTables(db *db233.Db) error {
 
 // TestUser 测试用户结构体
 type TestUser struct {
-	ID       int    `db:"id,primary_key,auto_increment"`
+	ID       int    `db:"id" primary_key:"true" auto_increment:"true"`
 	Username string `db:"username"`
 	Email    string `db:"email"`
 	Age      int    `db:"age"`

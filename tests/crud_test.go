@@ -300,7 +300,7 @@ func TestCrudManager_AutoInitEntity(t *testing.T) {
 	cm := db233.GetCrudManagerInstance()
 
 	type TestEntity struct {
-		ID   int    `db:"id,primary_key"`
+		ID   int    `db:"id" primary_key:"true"`
 		Name string `db:"name"`
 		Age  int    `db:"age"`
 	}
@@ -374,7 +374,16 @@ func TestCrudManager_IsPrimaryKey(t *testing.T) {
 	// 测试有 primary_key tag 的字段
 	field1 := reflect.StructField{
 		Name: "ID",
-		Tag:  `db:"id,primary_key"`,
+		Tag:  `db:"id" primary_key:"true"`,
+	}
+	// 字段名为 ID 应该自动识别为主键
+	if !cm.IsPrimaryKey(field1) {
+		t.Error("字段名为 ID 应该自动识别为主键")
+	}
+
+	field2 := reflect.StructField{
+		Name: "TestID",
+		Tag:  `db:"test_id" primary_key:"true"`,
 	}
 	if !cm.IsPrimaryKey(field1) {
 		t.Error("Field with primary_key tag should be primary key")

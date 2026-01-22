@@ -10,7 +10,7 @@ import (
 
 // TestEntityWithComplexTypes 测试包含复杂类型的实体
 type TestEntityWithComplexTypes struct {
-	ID        int            `db:"id,primary_key,auto_increment"`
+	ID        int            `db:"id" primary_key:"true" auto_increment:"true"`
 	Name      string         `db:"name"`
 	Tags      []string       `db:"tags"`       // slice 类型
 	Metadata  map[string]any `db:"metadata"`   // map 类型
@@ -41,6 +41,10 @@ func (e *TestEntityWithComplexTypes) DeserializeAfterLoadDb() {
 	// 可以在这里进行反序列化处理
 }
 
+func (e *TestEntityWithComplexTypes) GetTableMetaData() *db233.TableMetaData {
+	return nil
+}
+
 // TestEntityWithUnexportedFields 测试包含未导出字段的实体
 type TestEntityWithUnexportedFields struct {
 	ID          int    `db:"id,primary_key,auto_increment"`
@@ -59,7 +63,7 @@ func (e *TestEntityWithUnexportedFields) DeserializeAfterLoadDb() {}
 
 // TestEntityWithSkipFields 测试跳过字段
 type TestEntityWithSkipFields struct {
-	ID       int    `db:"id,primary_key,auto_increment"`
+	ID       int    `db:"id" primary_key:"true" auto_increment:"true"`
 	Name     string `db:"name"`
 	SkipMe   string `db:"skip_me,skip"` // 使用 skip 选项
 	IgnoreMe string `db:"-"`            // 使用 - 标记

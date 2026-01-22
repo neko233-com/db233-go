@@ -8,7 +8,7 @@ import (
 
 // TestEntityWithDefaults 测试默认值处理
 type TestEntityWithDefaults struct {
-	ID          int            `db:"id,primary_key,auto_increment"`
+	ID          int            `db:"id" primary_key:"true" auto_increment:"true"`
 	Name        string         `db:"name"`
 	EmptyString string         `db:"empty_string"` // 空字符串字段
 	ZeroInt     int            `db:"zero_int"`     // 零值整数
@@ -31,6 +31,9 @@ func (e *TestEntityWithDefaults) SerializeBeforeSaveDb() {
 }
 
 func (e *TestEntityWithDefaults) DeserializeAfterLoadDb() {}
+func (e *TestEntityWithDefaults) GetTableMetaData() *db233.TableMetaData {
+	return nil
+}
 
 // 设置默认值测试表
 func setupDefaultsTable(db *db233.Db) error {
@@ -118,7 +121,7 @@ func TestDefaultValues(t *testing.T) {
 
 // TestRequiredEntity 测试必填字段实体
 type TestRequiredEntity struct {
-	PlayerID string `db:"player_id,primary_key"`
+	PlayerID string `db:"player_id" primary_key:"true"`
 	Name     string `db:"name"`
 	Data     string `db:"data"`
 	Score    int    `db:"score"`

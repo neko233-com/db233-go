@@ -53,4 +53,19 @@ func (s *PostgreSQLStrategy) GenerateAddColumnSQL(tableName string, colName stri
 	// 实现代码已注释
 	return ""
 }
+
+func (s *PostgreSQLStrategy) GetExistingIndexes(db *Db, tableName string) (map[string]*IndexMetaData, error) {
+	// 实现代码已注释
+	return nil, nil
+}
+
+func (s *PostgreSQLStrategy) GenerateCreateIndexSQL(tableName string, index *IndexMetaData) (string, error) {
+	// 实现代码已注释
+	return "", nil
+}
+
+func (s *PostgreSQLStrategy) GenerateDropIndexSQL(tableName string, indexName string) (string, error) {
+	// 实现代码已注释
+	return "", nil
+}
 */

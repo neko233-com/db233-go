@@ -9,7 +9,7 @@ import (
 
 // IDbEntity 是数据库实体接口。
 // 所有数据库实体必须实现此接口，提供自定义表名。
-// 主键信息通过 struct tag 自动扫描（db:"xxx,primary_key"）。
+// 主键信息通过 struct tag 自动扫描（primary_key:"true" 或字段名为 ID/Id）。
 type IDbEntity interface {
 	// TableName 返回表名。
 	TableName() string
@@ -23,9 +23,13 @@ type IDbEntity interface {
 	// 在数据从数据库加载后调用，可以用于数据转换、解密等操作。
 	// 此方法在 FindById、FindAll、FindByCondition 等查询操作后调用。
 	DeserializeAfterLoadDb()
+}
 
-	// GetTableMetaData 返回表元数据（可选实现）。
-	// 如果实现了此方法，自动迁移时会使用返回的元数据来管理索引。
+// ITableMetaDataProvider 表元数据提供者接口（可选实现）。
+// 如果实体需要管理索引，可以实现此接口。
+// 自动迁移时会检查实体是否实现此接口，如果实现则使用返回的元数据来管理索引。
+type ITableMetaDataProvider interface {
+	// GetTableMetaData 返回表元数据。
 	// 返回 nil 表示不管理索引。
 	GetTableMetaData() *TableMetaData
 }
@@ -322,16 +326,12 @@ func (cm *CrudManager) GetColumnName(field reflect.StructField) string {
 }
 
 // IsPrimaryKey 检查是否为主键。
-// 支持三种标记方式：
-// 1. db:"column_name,primary_key"
-// 2. primary_key:"true"
-// 3. 字段名为 ID 或 Id（默认约定）
+// 支持的标记方式（按优先级）：
+// 1. primary_key:"true" - 独立标签（推荐）
+// 2. 字段名为 ID 或 Id（默认约定）
+// 注意：不再支持 db:"column_name,primary_key" 格式，请使用独立标签。
 func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
-	// 检查 db 标签中的 primary_key 选项
-	if strings.Contains(field.Tag.Get("db"), "primary_key") {
-		return true
-	}
-	// 检查独立的 primary_key 标签
+	// 优先检查独立的 primary_key 标签
 	if field.Tag.Get("primary_key") == "true" {
 		return true
 	}
@@ -343,14 +343,10 @@ func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
 }
 
 // IsAutoIncrement 检查是否为自增字段。
-// 支持两种标记方式：
-// 1. db:"column_name,auto_increment"
-// 2. auto_increment:"true"
+// 支持的标记方式：
+// 1. auto_increment:"true" - 独立标签（推荐）
+// 注意：不再支持 db:"column_name,auto_increment" 格式，请使用独立标签。
 func (cm *CrudManager) IsAutoIncrement(field reflect.StructField) bool {
-	// 检查 db 标签中的 auto_increment 选项
-	if strings.Contains(field.Tag.Get("db"), "auto_increment") {
-		return true
-	}
 	// 检查独立的 auto_increment 标签
 	if field.Tag.Get("auto_increment") == "true" {
 		return true
@@ -434,8 +430,8 @@ func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
 
 		// 检查当前层级的字段是否为主键
 		// 支持三种标记方式：
-		// 1. db:"column_name,primary_key" - 明确指定主键
-		// 2. primary_key:"true" - 独立的主键标签
+		// primary_key:"true" - 独立的主键标签（推荐）
+		// 或字段名为 ID/Id（默认约定）
 		// 3. 字段名为 ID 或 Id - 默认约定
 		if cm.IsPrimaryKey(field) {
 			colName := cm.GetColumnName(field)
@@ -603,7 +599,7 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 	return "VARCHAR(255)"
 }
 
-// AutoMigrateTableSimple 自动迁移表（创建或修改表结构）- 简化版本，使用默认权限。
+// AutoMigrateTableSimple 自动迁移表（创建或修改表结构，包括索引）- 简化版本，使用默认权限。
 func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 	t := reflect.TypeOf(entityType)
 	if t.Kind() == reflect.Ptr {
@@ -629,10 +625,28 @@ func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 		return cm.AutoCreateTable(db, entityType)
 	}
 
-	// 表存在，获取锁后检查并添加缺失的列
+	// 表存在，获取锁后检查并添加缺失的列和索引
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	return cm.alterTableAddMissingColumns(db, t)
+
+	err = cm.alterTableAddMissingColumns(db, t)
+	if err != nil {
+		return err
+	}
+
+	// 迁移索引（如果实体实现了 ITableMetaDataProvider 接口）
+	if entity, ok := entityType.(IDbEntity); ok {
+		metaData := GetTableMetaData(entity)
+		if metaData != nil && len(metaData.Indexes) > 0 {
+			permissions := NewDefaultAutoDbPermission()
+			if err := cm.migrateIndexes(db, tableName, metaData.Indexes, permissions); err != nil {
+				LogError("索引迁移失败: 表=%s, 错误=%v", tableName, err)
+				// 索引迁移失败不影响列迁移，只记录错误
+			}
+		}
+	}
+
+	return nil
 }
 
 // alterTableAddMissingColumns 修改表添加缺失的列。
@@ -838,7 +852,131 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *Aut
 	}
 
 	LogInfo("表迁移完成: 表=%s, 添加列=%d, 删除列=%d", tableName, len(columnsToAdd), len(columnsToDelete))
+
+	// 迁移索引（如果实体实现了 ITableMetaDataProvider 接口）
+	if entity, ok := entityType.(IDbEntity); ok {
+		metaData := GetTableMetaData(entity)
+		if metaData != nil && len(metaData.Indexes) > 0 {
+			if err := cm.migrateIndexes(db, tableName, metaData.Indexes, permissions); err != nil {
+				LogError("索引迁移失败: 表=%s, 错误=%v", tableName, err)
+				// 索引迁移失败不影响列迁移，只记录错误
+			}
+		}
+	}
+
 	return nil
+}
+
+// migrateIndexes 迁移索引（增删改）。
+func (cm *CrudManager) migrateIndexes(db *Db, tableName string, expectedIndexes []*IndexMetaData, permissions *AutoDbPermission) error {
+	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
+
+	// 获取现有索引
+	existingIndexes, err := strategy.GetExistingIndexes(db, tableName)
+	if err != nil {
+		return fmt.Errorf("获取现有索引失败: %w", err)
+	}
+
+	// 构建期望索引的映射（索引名 -> 索引信息）
+	expectedIndexMap := make(map[string]*IndexMetaData)
+	for _, idx := range expectedIndexes {
+		expectedIndexMap[idx.IndexName] = idx
+	}
+
+	// 找出需要添加的索引
+	indexesToAdd := make([]*IndexMetaData, 0)
+	for _, expectedIdx := range expectedIndexes {
+		if _, exists := existingIndexes[expectedIdx.IndexName]; !exists {
+			indexesToAdd = append(indexesToAdd, expectedIdx)
+		} else {
+			// 检查索引是否需要更新（列不同）
+			existingIdx := existingIndexes[expectedIdx.IndexName]
+			if !indexEqual(existingIdx, expectedIdx) {
+				// 先删除旧索引，再添加新索引
+				dropSQL, err := strategy.GenerateDropIndexSQL(tableName, existingIdx.IndexName)
+				if err != nil {
+					LogError("生成删除索引SQL失败: 表=%s, 索引=%s, 错误=%v", tableName, existingIdx.IndexName, err)
+					continue
+				}
+				_, err = db.DataSource.Exec(dropSQL)
+				if err != nil {
+					LogError("删除旧索引失败: 表=%s, 索引=%s, 错误=%v", tableName, existingIdx.IndexName, err)
+					continue
+				}
+				LogInfo("删除旧索引: 表=%s, 索引=%s", tableName, existingIdx.IndexName)
+				indexesToAdd = append(indexesToAdd, expectedIdx)
+			}
+		}
+	}
+
+	// 找出需要删除的索引
+	indexesToDelete := make([]string, 0)
+	for existingName := range existingIndexes {
+		if _, exists := expectedIndexMap[existingName]; !exists {
+			indexesToDelete = append(indexesToDelete, existingName)
+		}
+	}
+
+	// 添加索引
+	if len(indexesToAdd) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
+		for _, idx := range indexesToAdd {
+			createSQL, err := strategy.GenerateCreateIndexSQL(tableName, idx)
+			if err != nil {
+				LogError("生成创建索引SQL失败: 表=%s, 索引=%s, 错误=%v", tableName, idx.IndexName, err)
+				continue
+			}
+
+			_, err = db.DataSource.Exec(createSQL)
+			if err != nil {
+				LogError("创建索引失败: 表=%s, 索引=%s, 错误=%v", tableName, idx.IndexName, err)
+			} else {
+				LogInfo("创建索引成功: 表=%s, 索引=%s, 列=%v", tableName, idx.IndexName, idx.Columns)
+			}
+		}
+	}
+
+	// 删除索引
+	if len(indexesToDelete) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeDeleteColumn) {
+		for _, indexName := range indexesToDelete {
+			dropSQL, err := strategy.GenerateDropIndexSQL(tableName, indexName)
+			if err != nil {
+				LogError("生成删除索引SQL失败: 表=%s, 索引=%s, 错误=%v", tableName, indexName, err)
+				continue
+			}
+
+			_, err = db.DataSource.Exec(dropSQL)
+			if err != nil {
+				LogError("删除索引失败: 表=%s, 索引=%s, 错误=%v", tableName, indexName, err)
+			} else {
+				LogInfo("删除索引成功: 表=%s, 索引=%s", tableName, indexName)
+			}
+		}
+	}
+
+	if len(indexesToAdd) > 0 || len(indexesToDelete) > 0 {
+		LogInfo("索引迁移完成: 表=%s, 添加索引=%d, 删除索引=%d", tableName, len(indexesToAdd), len(indexesToDelete))
+	}
+
+	return nil
+}
+
+// indexEqual 比较两个索引是否相等（索引名和列相同）。
+func indexEqual(idx1, idx2 *IndexMetaData) bool {
+	if idx1 == nil || idx2 == nil {
+		return false
+	}
+	if idx1.IndexName != idx2.IndexName {
+		return false
+	}
+	if len(idx1.Columns) != len(idx2.Columns) {
+		return false
+	}
+	for i, col := range idx1.Columns {
+		if col != idx2.Columns[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // getEntityColumns 获取实体的所有列。

@@ -51,7 +51,7 @@ public class StrengthEntity
 **DB233-Go**
 ```go
 type BasePlayerEntity struct {
-    PlayerID int64 `db:"playerId,primary_key"`
+    PlayerID int64 `db:"playerId" primary_key:"true"`
 }
 
 type StrengthEntity struct {
@@ -143,7 +143,7 @@ func main() {
 
 ```go
 type User struct {
-    ID       int    `db:"id,primary_key,auto_increment"`
+    ID       int    `db:"id" primary_key:"true" auto_increment:"true"`
     Username string `db:"username,not_null"`
     Email    string `db:"email"`
     Age      int    `db:"age"`
@@ -192,7 +192,7 @@ func (e *StrengthEntity) DeserializeAfterLoadDb() {}
    PlayerID int64 `json:"playerId" db:"playerId" primary_key:"true"`
    ```
 
-2. **逗号分隔风格：** `db:"playerId,primary_key"`
+2. **字段名约定：** 字段名为 `ID` 或 `Id` 会自动识别为主键
    ```go
    PlayerID int64 `json:"playerId" db:"playerId,primary_key"`
    ```
@@ -211,27 +211,32 @@ func (e *StrengthEntity) DeserializeAfterLoadDb() {}
 - 字段必须有 `db` 标签才会被处理和映射到数据库列
 - 使用 `db:"-"` 可以明确忽略字段，不会在数据库中创建对应的列
 - 没有 `db` 标签的字段会被自动忽略
-- `db` 标签格式：`db:"列名,选项1,选项2"`
+- `db` 标签格式：`db:"列名"` 或 `db:"列名,选项"`（仅支持 `not_null` 和 `skip` 选项）
   - 列名：数据库列名
-  - 选项：`primary_key`（主键）、`auto_increment`（自增）、`not_null`（非空）、`skip`（跳过）
+  - 选项：`not_null`（非空约束）、`skip`（跳过字段）
   
+**标签风格（统一使用独立标签）：**
+- `db:"列名"` - 指定列名（必需）
+- `primary_key:"true"` - 主键（独立标签）
+- `auto_increment:"true"` - 自增字段（独立标签）
+- `db:"列名,not_null"` - 非空约束（在 db 标签中）
+- `db:"-"` - 忽略字段
+
 **支持的主键定义方式：**
 1. **独立标签（推荐）：** `primary_key:"true"`
    ```go
    PlayerID int64 `db:"playerId" primary_key:"true"`
    ```
-2. **逗号分隔：** `db:"列名,primary_key"`
+2. **字段名约定：** 字段名为 `ID` 或 `Id` 会自动识别为主键
    ```go
-   PlayerID int64 `db:"playerId,primary_key"`
+   ID int64 `db:"id"` // 自动识别为主键
    ```
-3. **字段名约定：** 字段名为 `ID` 或 `Id` 会自动识别为主键
 
-**支持的 db 标签选项：**
-  - `db:"column_name"` - 指定列名
-  - `db:"column_name,primary_key"` - 主键（或使用 `primary_key:"true"`）
-  - `db:"column_name,auto_increment"` - 自增主键（零值会被跳过，由数据库生成）
-  - `db:"column_name,not_null"` - 非空约束
-  - `db:"-"` - 忽略字段
+**自增字段定义方式：**
+- 使用独立标签：`auto_increment:"true"`
+   ```go
+   ID int `db:"id" primary_key:"true" auto_increment:"true"`
+   ```
 
 **⚠️ 主键字段的特殊处理：**
 - 如果主键字段的值为**零值**（int 类型为 0，string 类型为 ""），该字段会被**自动跳过**，不包含在 INSERT 语句中
@@ -253,7 +258,7 @@ func (e *StrengthEntity) DeserializeAfterLoadDb() {}
   
   // ✅ 或者使用自增主键（让数据库生成）
   type RankEntity struct {
-      RankId int `db:"rankId,primary_key,auto_increment"` // 添加 auto_increment
+      RankId int `db:"rankId" primary_key:"true" auto_increment:"true"` // 使用独立标签
   }
   ```
 
@@ -355,7 +360,7 @@ if err != nil {
 ```go
 // 定义实体
 type User struct {
-    ID       int    `db:"id,primary_key,auto_increment"`
+    ID       int    `db:"id" primary_key:"true" auto_increment:"true"`
     Username string `db:"username,not_null"`
     Email    string `db:"email"`
     Age      int    `db:"age"`
@@ -368,7 +373,7 @@ err := cm.AutoCreateTable(db, &User{})
 
 // 后续添加新字段
 type User struct {
-    ID       int    `db:"id,primary_key,auto_increment"`
+    ID       int    `db:"id" primary_key:"true" auto_increment:"true"`
     Username string `db:"username,not_null"`
     Email    string `db:"email"`
     Age      int    `db:"age"`
@@ -393,17 +398,17 @@ err = cm.AutoMigrateTable(db, &User{})
 ```go
 // ❌ 重复代码示例
 type StrengthEntity struct {
-    PlayerID int64 `db:"playerId,primary_key"`
+    PlayerID int64 `db:"playerId" primary_key:"true"`
     // ... 业务字段
 }
 
 type InventoryEntity struct {
-    PlayerID int64 `db:"playerId,primary_key"`  // 重复！
+    PlayerID int64 `db:"playerId" primary_key:"true"`  // 重复！
     // ... 业务字段
 }
 
 type QuestEntity struct {
-    PlayerID int64 `db:"playerId,primary_key"`  // 重复！
+    PlayerID int64 `db:"playerId" primary_key:"true"`  // 重复！
     // ... 业务字段
 }
 ```
@@ -413,7 +418,7 @@ type QuestEntity struct {
 ```go
 // ✅ 使用继承，减少 90% 重复代码
 type BasePlayerEntity struct {
-    PlayerID int64 `db:"playerId,primary_key"`
+    PlayerID int64 `db:"playerId" primary_key:"true"`
 }
 
 type StrengthEntity struct {
@@ -452,7 +457,7 @@ func (b *BaseEntity) BeforeSaveToDb() {
 // 第 2 层：玩家基础实体
 type BasePlayerEntity struct {
     BaseEntity  // 继承第 1 层
-    PlayerID int64 `db:"playerId,primary_key"`
+    PlayerID int64 `db:"playerId" primary_key:"true"`
 }
 
 func (b *BasePlayerEntity) GetPlayerID() int64 {
@@ -577,7 +582,7 @@ foundEntity := found.(*StrengthEntity)
 
 | 功能 | 说明 | 代码示例 |
 |------|------|---------|
-| **自动主键检测** | 无需实现 `GetDbUid()` | `PlayerID int64 \`db:"playerId,primary_key"\`` |
+| **自动主键检测** | 无需实现 `GetDbUid()` | `PlayerID int64 \`db:"playerId" primary_key:"true"\`` |
 | **字段自动继承** | 子类自动拥有父类字段 | `BasePlayerEntity` → `StrengthEntity` |
 | **方法自动继承** | 子类自动拥有父类方法 | `GetPlayerID()`、`SetPlayerID()` |
 | **多层继承** | 支持 3 层或更多 | `BaseEntity` → `BasePlayerEntity` → `StrengthEntity` |
@@ -1342,7 +1347,7 @@ entity := &RankEntity{
 2. **使用自增主键（让数据库生成 ID）：**
 ```go
 type RankEntity struct {
-    RankId int `db:"rankId,primary_key,auto_increment"` // 添加 auto_increment
+    RankId int `db:"rankId" primary_key:"true" auto_increment:"true"` // 使用独立标签
     // ...其他字段
 }
 
@@ -1398,7 +1403,7 @@ repo.Save(user) // UPDATE（不会报错）
 1. ✅ 嵌入字段是否有 `db` 标签？
 ```go
 type BaseEntity struct {
-    PlayerID int64 `db:"playerId,primary_key"` // 必须有 db 标签
+    PlayerID int64 `db:"playerId" primary_key:"true"` // 必须有 db 标签
 }
 ```
 

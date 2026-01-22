@@ -8,7 +8,7 @@ import (
 
 // TestPrimaryKeyAutoDetection 测试主键自动检测
 type TestPrimaryKeyEntity struct {
-	UserID   int64  `db:"user_id,primary_key,auto_increment"` // 自动检测为主键
+	UserID   int64  `db:"user_id" primary_key:"true" auto_increment:"true"` // 自动检测为主键
 	Username string `db:"username"`
 	Email    string `db:"email"`
 	// 没有 db 标签的字段应该被忽略
@@ -180,7 +180,7 @@ func TestDbTagIgnoreFields(t *testing.T) {
 
 // ProductEntity 产品实体（用于测试 UPSERT）
 type ProductEntity struct {
-	ProductID   string  `db:"product_id,primary_key"`
+	ProductID   string  `db:"product_id" primary_key:"true"`
 	ProductName string  `db:"product_name"`
 	Price       float64 `db:"price"`
 }
