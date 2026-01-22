@@ -7,46 +7,30 @@ import (
 	"sync"
 )
 
-/**
- * IDbEntity - 数据库实体接口
- *
- * 所有数据库实体必须实现此接口，提供自定义表名
- * 主键信息通过 struct tag 自动扫描（db:"xxx,primary_key"）
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// IDbEntity 是数据库实体接口。
+// 所有数据库实体必须实现此接口，提供自定义表名。
+// 主键信息通过 struct tag 自动扫描（db:"xxx,primary_key"）。
 type IDbEntity interface {
-	/**
-	 * 获取表名
-	 *
-	 * @return string 表名
-	 */
+	// TableName 返回表名。
 	TableName() string
 
-	/**
-	 * 保存到数据库前的序列化钩子
-	 * 在数据保存到数据库之前调用，可以用于数据转换、加密等操作
-	 * 此方法在 Save 和 Update 操作前调用
-	 */
+	// SerializeBeforeSaveDb 是保存到数据库前的序列化钩子。
+	// 在数据保存到数据库之前调用，可以用于数据转换、加密等操作。
+	// 此方法在 Save 和 Update 操作前调用。
 	SerializeBeforeSaveDb()
 
-	/**
-	 * 从数据库加载后的反序列化钩子
-	 * 在数据从数据库加载后调用，可以用于数据转换、解密等操作
-	 * 此方法在 FindById、FindAll、FindByCondition 等查询操作后调用
-	 */
+	// DeserializeAfterLoadDb 是从数据库加载后的反序列化钩子。
+	// 在数据从数据库加载后调用，可以用于数据转换、解密等操作。
+	// 此方法在 FindById、FindAll、FindByCondition 等查询操作后调用。
 	DeserializeAfterLoadDb()
+
+	// GetTableMetaData 返回表元数据（可选实现）。
+	// 如果实现了此方法，自动迁移时会使用返回的元数据来管理索引。
+	// 返回 nil 表示不管理索引。
+	GetTableMetaData() *TableMetaData
 }
 
-/**
- * CrudManager - CRUD 管理器
- *
- * 管理实体类的元数据，包括表结构、列信息、主键等
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// CrudManager 是 CRUD 管理器，管理实体类的元数据，包括表结构、列信息、主键等。
 type CrudManager struct {
 	// tableName 到主键列名列表的映射
 	tableNamePkColNameListMap map[string][]string
@@ -70,9 +54,7 @@ type CrudManager struct {
 var crudManagerInstance *CrudManager
 var crudManagerOnce sync.Once
 
-/**
- * 获取单例实例
- */
+// GetCrudManagerInstance 获取单例实例。
 func GetCrudManagerInstance() *CrudManager {
 	crudManagerOnce.Do(func() {
 		crudManagerInstance = &CrudManager{
@@ -86,9 +68,7 @@ func GetCrudManagerInstance() *CrudManager {
 	return crudManagerInstance
 }
 
-/**
- * 自动初始化实体
- */
+// AutoInitEntity 自动初始化实体。
 func (cm *CrudManager) AutoInitEntity(entityType any) *CrudManager {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -108,26 +88,20 @@ func (cm *CrudManager) AutoInitEntity(entityType any) *CrudManager {
 	return cm
 }
 
-/**
- * 检查实体注解（Go 中使用 struct tag）
- */
+// checkEntityAnnotation 检查实体注解（Go 中使用 struct tag）。
 func (cm *CrudManager) checkEntityAnnotation(t reflect.Type) error {
 	// Go 中没有注解，但我们可以使用 struct tag
 	// 这里简化处理，假设所有 struct 都是实体
 	return nil
 }
 
-/**
- * 初始化实体类元数据
- */
+// initEntityClassMetadata 初始化实体类元数据。
 func (cm *CrudManager) initEntityClassMetadata(entityTypes []reflect.Type) {
 	cm.initTableColumnMetadataByClass(entityTypes)
 	cm.initTablePrimaryKeyMetadataByClass(entityTypes)
 }
 
-/**
- * 懒初始化或抛出错误
- */
+// AutoLazyInitOrThrowError 懒初始化或抛出错误。
 func (cm *CrudManager) AutoLazyInitOrThrowError(obj any) error {
 	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Interface {
 		return NewDb233Exception("对象类型错误，不能是接口")
@@ -140,9 +114,7 @@ func (cm *CrudManager) AutoLazyInitOrThrowError(obj any) error {
 	return cm.configClassLazy(obj)
 }
 
-/**
- * 配置类懒初始化
- */
+// configClassLazy 配置类懒初始化。
 func (cm *CrudManager) configClassLazy(obj any) error {
 	t := reflect.TypeOf(obj)
 	if t.Kind() == reflect.Ptr {
@@ -170,17 +142,12 @@ func (cm *CrudManager) configClassLazy(obj any) error {
 	return nil
 }
 
-/**
- * 是否不包含实体
- */
+// IsNotContainsEntity 检查是否不包含实体。
 func (cm *CrudManager) IsNotContainsEntity(obj any) bool {
 	return !cm.IsContainsEntity(obj)
 }
 
-/**
- * 是否包含实体
- */
-// IsContainsEntity 检查是否包含实体（并发安全）
+// IsContainsEntity 检查是否包含实体（并发安全）。
 func (cm *CrudManager) IsContainsEntity(obj any) bool {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -192,9 +159,7 @@ func (cm *CrudManager) IsContainsEntity(obj any) bool {
 	return cm.metadataClassSet[t]
 }
 
-/**
- * 初始化表列元数据（支持嵌入结构体）
- */
+// initTableColumnMetadataByClass 初始化表列元数据，支持嵌入结构体。
 func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type) {
 	for _, t := range entityTypes {
 		tableName := cm.GetTableName(t)
@@ -206,9 +171,7 @@ func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type
 	}
 }
 
-/**
- * 递归收集列名（支持嵌入结构体）
- */
+// collectColumnsRecursive 递归收集列名，支持嵌入结构体。
 func (cm *CrudManager) collectColumnsRecursive(t reflect.Type, colList *[]string) {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -239,9 +202,7 @@ func (cm *CrudManager) collectColumnsRecursive(t reflect.Type, colList *[]string
 	}
 }
 
-/**
- * 初始化表主键元数据（支持嵌入结构体）
- */
+// initTablePrimaryKeyMetadataByClass 初始化表主键元数据，支持嵌入结构体。
 func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.Type) {
 	for _, t := range entityTypes {
 		tableName := cm.GetTableName(t)
@@ -255,9 +216,7 @@ func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.
 	}
 }
 
-/**
- * 递归收集主键列名（支持嵌入结构体）
- */
+// collectPrimaryKeysRecursive 递归收集主键列名，支持嵌入结构体。
 func (cm *CrudManager) collectPrimaryKeysRecursive(t reflect.Type, pkList *[]string) {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -290,22 +249,16 @@ func (cm *CrudManager) collectPrimaryKeysRecursive(t reflect.Type, pkList *[]str
 	}
 }
 
-/**
- * 获取表名（从 IDbEntity 接口）
- *
- * @param entity 实现了 IDbEntity 接口的实体
- * @return string 表名
- */
+// GetTableNameFromEntity 获取表名（从 IDbEntity 接口）。
+// entity: 实现了 IDbEntity 接口的实体。
+// 返回: 表名。
 func (cm *CrudManager) GetTableNameFromEntity(entity IDbEntity) string {
 	return entity.TableName()
 }
 
-/**
- * 获取表名（从 reflect.Type，内部会尝试创建实例并检查 IDbEntity 接口）
- *
- * @param t 实体类型
- * @return string 表名
- */
+// GetTableName 获取表名（从 reflect.Type，内部会尝试创建实例并检查 IDbEntity 接口）。
+// t: 实体类型。
+// 返回: 表名。
 func (cm *CrudManager) GetTableName(t reflect.Type) string {
 	// 尝试创建实例并检查是否实现了 IDbEntity 接口
 	if t.Kind() == reflect.Struct {
@@ -338,9 +291,7 @@ func (cm *CrudManager) GetTableName(t reflect.Type) string {
 	return StringUtilsInstance.CamelToSnake(t.Name())
 }
 
-/**
- * 获取列名
- */
+// GetColumnName 获取列名。
 func (cm *CrudManager) GetColumnName(field reflect.StructField) string {
 	// 优先使用 db 标签
 	if dbTag := field.Tag.Get("db"); dbTag != "" {
@@ -370,13 +321,11 @@ func (cm *CrudManager) GetColumnName(field reflect.StructField) string {
 	return ""
 }
 
-/**
- * 是否为主键
- * 支持三种标记方式：
- * 1. db:"column_name,primary_key"
- * 2. primary_key:"true"
- * 3. 字段名为 ID 或 Id（默认约定）
- */
+// IsPrimaryKey 检查是否为主键。
+// 支持三种标记方式：
+// 1. db:"column_name,primary_key"
+// 2. primary_key:"true"
+// 3. 字段名为 ID 或 Id（默认约定）
 func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
 	// 检查 db 标签中的 primary_key 选项
 	if strings.Contains(field.Tag.Get("db"), "primary_key") {
@@ -393,12 +342,10 @@ func (cm *CrudManager) IsPrimaryKey(field reflect.StructField) bool {
 	return false
 }
 
-/**
- * 是否为自增字段
- * 支持两种标记方式：
- * 1. db:"column_name,auto_increment"
- * 2. auto_increment:"true"
- */
+// IsAutoIncrement 检查是否为自增字段。
+// 支持两种标记方式：
+// 1. db:"column_name,auto_increment"
+// 2. auto_increment:"true"
 func (cm *CrudManager) IsAutoIncrement(field reflect.StructField) bool {
 	// 检查 db 标签中的 auto_increment 选项
 	if strings.Contains(field.Tag.Get("db"), "auto_increment") {
@@ -411,12 +358,9 @@ func (cm *CrudManager) IsAutoIncrement(field reflect.StructField) bool {
 	return false
 }
 
-/** GetPrimaryKeyColumnName
- * 获取实体的主键列名（自动扫描 struct tag，支持嵌入结构体，带缓存）
- *
- * @param entity 实体实例
- * @return string 主键列名，如果未找到则返回 "id"
- */
+// GetPrimaryKeyColumnName 获取实体的主键列名（自动扫描 struct tag，支持嵌入结构体，带缓存）。
+// entity: 实体实例。
+// 返回: 主键列名，如果未找到则返回 "id"。
 func (cm *CrudManager) GetPrimaryKeyColumnName(entity any) string {
 	t := reflect.TypeOf(entity)
 	if t.Kind() == reflect.Ptr {
@@ -453,21 +397,16 @@ func (cm *CrudManager) GetPrimaryKeyColumnName(entity any) string {
 	return "id"
 }
 
-/**
- * findPrimaryKeyColumnRecursive 递归查找主键列名（支持嵌入结构体）
- *
- * 功能说明：
- * 1. 类似 JPA 的 @Id 继承机制，自动从父类（嵌入结构体）中查找主键
- * 2. 支持多层嵌套的结构体继承
- * 3. 优先查找嵌入结构体中的主键，然后查找当前层级的主键
- *
- * 使用场景：
- * - BaseEntity 中定义 ID，子类自动继承
- * - 多层继承：BaseEntity -> AbstractPlayerEntity -> ConcretePlayerEntity
- *
- * @param t 结构体类型
- * @return string 主键列名，未找到返回空字符串
- */
+// findPrimaryKeyColumnRecursive 递归查找主键列名，支持嵌入结构体。
+// 功能说明：
+// 1. 类似 JPA 的 @Id 继承机制，自动从父类（嵌入结构体）中查找主键
+// 2. 支持多层嵌套的结构体继承
+// 3. 优先查找嵌入结构体中的主键，然后查找当前层级的主键
+// 使用场景：
+// - BaseEntity 中定义 ID，子类自动继承
+// - 多层继承：BaseEntity -> AbstractPlayerEntity -> ConcretePlayerEntity
+// t: 结构体类型。
+// 返回: 主键列名，未找到返回空字符串。
 func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
 	// 遍历当前类型的所有字段
 	for i := 0; i < t.NumField(); i++ {
@@ -511,12 +450,9 @@ func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
 	return ""
 }
 
-/**
- * 获取实体的主键值（自动从 struct 字段读取，支持嵌入结构体）
- *
- * @param entity 实体实例
- * @return any 主键值，如果未找到则返回 nil
- */
+// GetPrimaryKeyValue 获取实体的主键值（自动从 struct 字段读取，支持嵌入结构体）。
+// entity: 实体实例。
+// 返回: 主键值，如果未找到则返回 nil。
 func (cm *CrudManager) GetPrimaryKeyValue(entity any) any {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
@@ -526,9 +462,7 @@ func (cm *CrudManager) GetPrimaryKeyValue(entity any) any {
 	return cm.findPrimaryKeyValueRecursive(v, v.Type())
 }
 
-/**
- * 递归查找主键值（支持嵌入结构体）
- */
+// findPrimaryKeyValueRecursive 递归查找主键值，支持嵌入结构体。
 func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type) any {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -568,9 +502,7 @@ func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.T
 	return nil
 }
 
-/**
- * 获取表到主键列列表的映射
- */
+// GetTableToPkColListMap 获取表到主键列列表的映射。
 func (cm *CrudManager) GetTableToPkColListMap() map[string][]string {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -581,18 +513,14 @@ func (cm *CrudManager) GetTableToPkColListMap() map[string][]string {
 	return result
 }
 
-/**
- * ClearPrimaryKeyCache 清除主键缓存（用于测试）
- */
+// ClearPrimaryKeyCache 清除主键缓存（用于测试）。
 func (cm *CrudManager) ClearPrimaryKeyCache() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.typeToPrimaryKeyColumnCache = make(map[reflect.Type]string)
 }
 
-/**
- * 自动创建表
- */
+// AutoCreateTable 自动创建表。
 func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -652,38 +580,30 @@ func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
 	return nil
 }
 
-/**
- * 检查表是否存在（已废弃，使用策略模式）
- * @deprecated 使用 ITableCreationStrategy.TableExists 代替
- */
+// tableExists 检查表是否存在（已废弃，使用策略模式）。
+// Deprecated: 使用 ITableCreationStrategy.TableExists 代替。
 func (cm *CrudManager) tableExists(db *Db, tableName string) (bool, error) {
 	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
 	return strategy.TableExists(db, tableName)
 }
 
-/**
- * 生成建表SQL（已废弃，使用策略模式）
- * @deprecated 使用 ITableCreationStrategy.GenerateCreateTableSQL 代替
- */
+// generateCreateTableSQL 生成建表SQL（已废弃，使用策略模式）。
+// Deprecated: 使用 ITableCreationStrategy.GenerateCreateTableSQL 代替。
 func (cm *CrudManager) generateCreateTableSQL(t reflect.Type) (string, error) {
 	// 此方法已废弃，保留仅为向后兼容
 	// 实际应该通过 AutoCreateTable 调用策略
 	return "", NewDb233Exception("此方法已废弃，请使用 AutoCreateTable")
 }
 
-/**
- * 获取SQL类型（已废弃，使用策略模式）
- * @deprecated 使用 ITableCreationStrategy.GetSQLType 代替
- */
+// getSQLType 获取SQL类型（已废弃，使用策略模式）。
+// Deprecated: 使用 ITableCreationStrategy.GetSQLType 代替。
 func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 	// 此方法已废弃，保留仅为向后兼容
 	// 实际应该通过策略获取
 	return "VARCHAR(255)"
 }
 
-/**
- * 自动迁移表（创建或修改表结构）- 简化版本，使用默认权限
- */
+// AutoMigrateTableSimple 自动迁移表（创建或修改表结构）- 简化版本，使用默认权限。
 func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 	t := reflect.TypeOf(entityType)
 	if t.Kind() == reflect.Ptr {
@@ -715,9 +635,7 @@ func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 	return cm.alterTableAddMissingColumns(db, t)
 }
 
-/**
- * 修改表添加缺失的列
- */
+// alterTableAddMissingColumns 修改表添加缺失的列。
 func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error {
 	tableName := cm.GetTableName(t)
 	if tableName == "" {
@@ -797,18 +715,14 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 	return nil
 }
 
-/**
- * 获取现有表的列信息（已废弃，使用策略模式）
- * @deprecated 使用 ITableCreationStrategy.GetExistingColumns 代替
- */
+// getExistingColumns 获取现有表的列信息（已废弃，使用策略模式）。
+// Deprecated: 使用 ITableCreationStrategy.GetExistingColumns 代替。
 func (cm *CrudManager) getExistingColumns(db *Db, tableName string) (map[string]bool, error) {
 	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
 	return strategy.GetExistingColumns(db, tableName)
 }
 
-/**
- * AutoCreateTableWithPermissions 带权限控制的自动创建表
- */
+// AutoCreateTableWithPermissions 带权限控制的自动创建表。
 func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType any, permissions *AutoDbPermission) error {
 	if permissions == nil {
 		permissions = NewDefaultAutoDbPermission()
@@ -823,9 +737,7 @@ func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType any, pe
 	return cm.AutoCreateTable(db, entityType)
 }
 
-/**
- * AutoMigrateTable 自动迁移表（支持创建列、更新列、删除列）
- */
+// AutoMigrateTable 自动迁移表（支持创建列、更新列、删除列）。
 func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *AutoDbPermission) error {
 	if permissions == nil {
 		permissions = NewDefaultAutoDbPermission()
@@ -929,9 +841,7 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *Aut
 	return nil
 }
 
-/**
- * getEntityColumns 获取实体的所有列
- */
+// getEntityColumns 获取实体的所有列。
 func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.StructField {
 	columns := make(map[string]reflect.StructField)
 
@@ -968,9 +878,7 @@ func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.Struc
 	return columns
 }
 
-/**
- * AutoMigrateAllTablesConcurrently 并发迁移所有表
- */
+// AutoMigrateAllTablesConcurrently 并发迁移所有表。
 func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []any, permissions *AutoDbPermission) error {
 	if permissions == nil {
 		permissions = NewSafeAutoDbPermission()

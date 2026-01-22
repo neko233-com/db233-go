@@ -9,14 +9,8 @@ import (
 	"time"
 )
 
-/**
- * MonitoringReportGenerator - 监控报告生成器
- *
- * 生成详细的监控报告，支持多种格式输出
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// MonitoringReportGenerator - 监控报告生成器
+// 生成详细的监控报告，支持多种格式输出
 type MonitoringReportGenerator struct {
 	name string
 
@@ -34,9 +28,7 @@ type MonitoringReportGenerator struct {
 	outputFormats []string
 }
 
-/**
- * ReportData - 报告数据结构
- */
+// ReportData - 报告数据结构
 type ReportData struct {
 	Title       string         `json:"title"`
 	GeneratedAt time.Time      `json:"generated_at"`
@@ -46,9 +38,7 @@ type ReportData struct {
 	Charts      map[string]any `json:"charts,omitempty"`
 }
 
-/**
- * ReportSummary - 报告摘要
- */
+// ReportSummary - 报告摘要
 type ReportSummary struct {
 	TotalDatabases   int     `json:"total_databases"`
 	HealthyDatabases int     `json:"healthy_databases"`
@@ -59,18 +49,14 @@ type ReportSummary struct {
 	HealthScore      float64 `json:"health_score"`
 }
 
-/**
- * ReportDetails - 报告详情
- */
+// ReportDetails - 报告详情
 type ReportDetails struct {
 	Databases []DatabaseReport `json:"databases"`
 	Alerts    []AlertReport    `json:"alerts"`
 	Trends    []TrendReport    `json:"trends"`
 }
 
-/**
- * DatabaseReport - 数据库报告
- */
+// DatabaseReport - 数据库报告
 type DatabaseReport struct {
 	Name         string            `json:"name"`
 	Status       string            `json:"status"`
@@ -80,9 +66,7 @@ type DatabaseReport struct {
 	HealthChecks []HealthReport    `json:"health_checks"`
 }
 
-/**
- * PerformanceReport - 性能报告
- */
+// PerformanceReport - 性能报告
 type PerformanceReport struct {
 	TotalQueries    int64   `json:"total_queries"`
 	SuccessRate     float64 `json:"success_rate"`
@@ -92,9 +76,7 @@ type PerformanceReport struct {
 	QPS             float64 `json:"qps"`
 }
 
-/**
- * ConnectionReport - 连接报告
- */
+// ConnectionReport - 连接报告
 type ConnectionReport struct {
 	ActiveConnections    int64   `json:"active_connections"`
 	IdleConnections      int64   `json:"idle_connections"`
@@ -103,9 +85,7 @@ type ConnectionReport struct {
 	ConnectionEfficiency float64 `json:"connection_efficiency"`
 }
 
-/**
- * HealthReport - 健康报告
- */
+// HealthReport - 健康报告
 type HealthReport struct {
 	CheckType    string    `json:"check_type"`
 	Status       string    `json:"status"`
@@ -114,9 +94,7 @@ type HealthReport struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
-/**
- * AlertReport - 告警报告
- */
+// AlertReport - 告警报告
 type AlertReport struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -130,9 +108,7 @@ type AlertReport struct {
 	Duration  string    `json:"duration,omitempty"`
 }
 
-/**
- * TrendReport - 趋势报告
- */
+// TrendReport - 趋势报告
 type TrendReport struct {
 	Metric string       `json:"metric"`
 	Period string       `json:"period"`
@@ -141,17 +117,13 @@ type TrendReport struct {
 	Change float64      `json:"change_percent"`
 }
 
-/**
- * TrendPoint - 趋势数据点
- */
+// TrendPoint - 趋势数据点
 type TrendPoint struct {
 	Timestamp time.Time `json:"timestamp"`
 	Value     float64   `json:"value"`
 }
 
-/**
- * 创建监控报告生成器
- */
+// 创建监控报告生成器
 func NewMonitoringReportGenerator(name string) *MonitoringReportGenerator {
 	return &MonitoringReportGenerator{
 		name:                name,
@@ -167,72 +139,52 @@ func NewMonitoringReportGenerator(name string) *MonitoringReportGenerator {
 	}
 }
 
-/**
- * 添加性能监控器
- */
+// 添加性能监控器
 func (rg *MonitoringReportGenerator) AddPerformanceMonitor(name string, monitor *PerformanceMonitor) {
 	rg.performanceMonitors[name] = monitor
 }
 
-/**
- * 添加连接池监控器
- */
+// 添加连接池监控器
 func (rg *MonitoringReportGenerator) AddConnectionMonitor(name string, monitor *ConnectionPoolMonitor) {
 	rg.connectionMonitors[name] = monitor
 }
 
-/**
- * 添加健康检查器
- */
+// 添加健康检查器
 func (rg *MonitoringReportGenerator) AddHealthChecker(name string, checker *HealthChecker) {
 	rg.healthCheckers[name] = checker
 }
 
-/**
- * 添加指标收集器
- */
+// 添加指标收集器
 func (rg *MonitoringReportGenerator) AddMetricsCollector(name string, collector *MetricsCollector) {
 	rg.metricsCollectors[name] = collector
 }
 
-/**
- * 添加告警管理器
- */
+// 添加告警管理器
 func (rg *MonitoringReportGenerator) AddAlertManager(name string, manager *AlertManager) {
 	rg.alertManagers[name] = manager
 }
 
-/**
- * 设置报告标题
- */
+// 设置报告标题
 func (rg *MonitoringReportGenerator) SetReportTitle(title string) {
 	rg.reportTitle = title
 }
 
-/**
- * 设置报告周期
- */
+// 设置报告周期
 func (rg *MonitoringReportGenerator) SetReportPeriod(period time.Duration) {
 	rg.reportPeriod = period
 }
 
-/**
- * 设置是否包含图表
- */
+// 设置是否包含图表
 func (rg *MonitoringReportGenerator) SetIncludeCharts(include bool) {
 	rg.includeCharts = include
 }
 
-/**
- * 设置输出格式
- */
+// 设置输出格式
 func (rg *MonitoringReportGenerator) SetOutputFormats(formats []string) {
 	rg.outputFormats = formats
 }
 
-/**
- * 生成报告数据
- */
+// 生成报告数据
 func (rg *MonitoringReportGenerator) GenerateReportData() *ReportData {
 	report := &ReportData{
 		Title:       rg.reportTitle,
@@ -249,9 +201,7 @@ func (rg *MonitoringReportGenerator) GenerateReportData() *ReportData {
 	return report
 }
 
-/**
- * 生成摘要
- */
+// 生成摘要
 func (rg *MonitoringReportGenerator) generateSummary() ReportSummary {
 	summary := ReportSummary{}
 
@@ -324,9 +274,7 @@ func (rg *MonitoringReportGenerator) generateSummary() ReportSummary {
 	return summary
 }
 
-/**
- * 生成详情
- */
+// 生成详情
 func (rg *MonitoringReportGenerator) generateDetails() ReportDetails {
 	details := ReportDetails{
 		Databases: rg.generateDatabaseReports(),
@@ -337,9 +285,7 @@ func (rg *MonitoringReportGenerator) generateDetails() ReportDetails {
 	return details
 }
 
-/**
- * 生成数据库报告
- */
+// 生成数据库报告
 func (rg *MonitoringReportGenerator) generateDatabaseReports() []DatabaseReport {
 	reports := make([]DatabaseReport, 0)
 
@@ -389,9 +335,7 @@ func (rg *MonitoringReportGenerator) generateDatabaseReports() []DatabaseReport 
 	return reports
 }
 
-/**
- * 提取性能报告
- */
+// 提取性能报告
 func (rg *MonitoringReportGenerator) extractPerformanceReport(data map[string]any) PerformanceReport {
 	report := PerformanceReport{}
 
@@ -423,9 +367,7 @@ func (rg *MonitoringReportGenerator) extractPerformanceReport(data map[string]an
 	return report
 }
 
-/**
- * 提取连接报告
- */
+// 提取连接报告
 func (rg *MonitoringReportGenerator) extractConnectionReport(data map[string]any) ConnectionReport {
 	report := ConnectionReport{}
 
@@ -454,9 +396,7 @@ func (rg *MonitoringReportGenerator) extractConnectionReport(data map[string]any
 	return report
 }
 
-/**
- * 生成告警报告
- */
+// 生成告警报告
 func (rg *MonitoringReportGenerator) generateAlertReports() []AlertReport {
 	reports := make([]AlertReport, 0)
 
@@ -515,9 +455,7 @@ func (rg *MonitoringReportGenerator) generateAlertReports() []AlertReport {
 	return reports
 }
 
-/**
- * 生成趋势报告
- */
+// 生成趋势报告
 func (rg *MonitoringReportGenerator) generateTrendReports() []TrendReport {
 	reports := make([]TrendReport, 0)
 
@@ -573,9 +511,7 @@ func (rg *MonitoringReportGenerator) generateTrendReports() []TrendReport {
 	return reports
 }
 
-/**
- * 生成图表数据
- */
+// 生成图表数据
 func (rg *MonitoringReportGenerator) generateCharts() map[string]any {
 	charts := make(map[string]any)
 
@@ -591,9 +527,7 @@ func (rg *MonitoringReportGenerator) generateCharts() map[string]any {
 	return charts
 }
 
-/**
- * 生成性能图表
- */
+// 生成性能图表
 func (rg *MonitoringReportGenerator) generatePerformanceChart() map[string]any {
 	chart := map[string]any{
 		"type":   "line",
@@ -627,9 +561,7 @@ func (rg *MonitoringReportGenerator) generatePerformanceChart() map[string]any {
 	return chart
 }
 
-/**
- * 生成连接图表
- */
+// 生成连接图表
 func (rg *MonitoringReportGenerator) generateConnectionChart() map[string]any {
 	chart := map[string]any{
 		"type":  "bar",
@@ -651,9 +583,7 @@ func (rg *MonitoringReportGenerator) generateConnectionChart() map[string]any {
 	return chart
 }
 
-/**
- * 生成健康图表
- */
+// 生成健康图表
 func (rg *MonitoringReportGenerator) generateHealthChart() map[string]any {
 	chart := map[string]any{
 		"type":  "pie",
@@ -681,9 +611,7 @@ func (rg *MonitoringReportGenerator) generateHealthChart() map[string]any {
 	return chart
 }
 
-/**
- * 计算健康评分
- */
+// 计算健康评分
 func (rg *MonitoringReportGenerator) calculateHealthScore(report *DatabaseReport) float64 {
 	score := 0.0
 
@@ -721,9 +649,7 @@ func (rg *MonitoringReportGenerator) calculateHealthScore(report *DatabaseReport
 	return score
 }
 
-/**
- * 工具方法
- */
+// 工具方法
 func (rg *MonitoringReportGenerator) boolToStatus(healthy bool) string {
 	if healthy {
 		return "healthy"
@@ -768,9 +694,7 @@ func (rg *MonitoringReportGenerator) alertStatusToString(status AlertStatus) str
 	}
 }
 
-/**
- * 导出报告
- */
+// 导出报告
 func (rg *MonitoringReportGenerator) ExportReport(filename string, format string) error {
 	report := rg.GenerateReportData()
 
@@ -784,9 +708,7 @@ func (rg *MonitoringReportGenerator) ExportReport(filename string, format string
 	}
 }
 
-/**
- * 导出JSON报告
- */
+// 导出JSON报告
 func (rg *MonitoringReportGenerator) exportJSONReport(report *ReportData, filename string) error {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -805,9 +727,7 @@ func (rg *MonitoringReportGenerator) exportJSONReport(report *ReportData, filena
 	return nil
 }
 
-/**
- * 导出文本报告
- */
+// 导出文本报告
 func (rg *MonitoringReportGenerator) exportTextReport(report *ReportData, filename string) error {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -826,9 +746,7 @@ func (rg *MonitoringReportGenerator) exportTextReport(report *ReportData, filena
 	return nil
 }
 
-/**
- * 生成文本报告
- */
+// 生成文本报告
 func (rg *MonitoringReportGenerator) generateTextReport(report *ReportData) string {
 	var sb strings.Builder
 

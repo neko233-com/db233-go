@@ -6,15 +6,9 @@ import (
 	"sync"
 )
 
-/**
- * EntityCacheManager - 实体缓存管理器
- *
- * 对应 Kotlin 版本的 EntityCacheManager
- * 缓存实体的元数据信息，如列名、SQL等
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// EntityCacheManager - 实体缓存管理器
+// 对应 Kotlin 版本的 EntityCacheManager
+// 缓存实体的元数据信息，如列名、SQL等
 type EntityCacheManager struct {
 	// 类型到选择列名SQL的映射
 	typeToSelectColumnNameSqlMap map[reflect.Type]string
@@ -26,15 +20,11 @@ type EntityCacheManager struct {
 	mu sync.RWMutex
 }
 
-/**
- * 单例实例
- */
+// 单例实例
 var entityCacheManagerInstance *EntityCacheManager
 var entityCacheManagerOnce sync.Once
 
-/**
- * 获取单例实例
- */
+// 获取单例实例
 func GetEntityCacheManagerInstance() *EntityCacheManager {
 	entityCacheManagerOnce.Do(func() {
 		entityCacheManagerInstance = &EntityCacheManager{
@@ -45,9 +35,7 @@ func GetEntityCacheManagerInstance() *EntityCacheManager {
 	return entityCacheManagerInstance
 }
 
-/**
- * 获取或创建选择列名CSV
- */
+// 获取或创建选择列名CSV
 func (ecm *EntityCacheManager) GetOrCreateSelectColumnNameCsv(entityType reflect.Type, colNameToValueMap map[string]any) string {
 	ecm.mu.Lock()
 	defer ecm.mu.Unlock()
@@ -68,9 +56,7 @@ func (ecm *EntityCacheManager) GetOrCreateSelectColumnNameCsv(entityType reflect
 	return result
 }
 
-/**
- * 获取或创建所有列名CSV
- */
+// 获取或创建所有列名CSV
 func (ecm *EntityCacheManager) GetOrCreateAllColumnNameCsv(entityType reflect.Type, columnNameCreator func() []string) string {
 	ecm.mu.Lock()
 	defer ecm.mu.Unlock()
@@ -86,9 +72,7 @@ func (ecm *EntityCacheManager) GetOrCreateAllColumnNameCsv(entityType reflect.Ty
 	return result
 }
 
-/**
- * 获取缓存的列名SQL
- */
+// 获取缓存的列名SQL
 func (ecm *EntityCacheManager) GetSelectColumnNameSql(entityType reflect.Type) (string, bool) {
 	ecm.mu.RLock()
 	defer ecm.mu.RUnlock()
@@ -97,9 +81,7 @@ func (ecm *EntityCacheManager) GetSelectColumnNameSql(entityType reflect.Type) (
 	return sql, exists
 }
 
-/**
- * 获取缓存的所有列名CSV
- */
+// 获取缓存的所有列名CSV
 func (ecm *EntityCacheManager) GetAllColumnNameCsv(entityType reflect.Type) (string, bool) {
 	ecm.mu.RLock()
 	defer ecm.mu.RUnlock()
@@ -108,9 +90,7 @@ func (ecm *EntityCacheManager) GetAllColumnNameCsv(entityType reflect.Type) (str
 	return csv, exists
 }
 
-/**
- * 清除指定类型的缓存
- */
+// 清除指定类型的缓存
 func (ecm *EntityCacheManager) ClearCache(entityType reflect.Type) {
 	ecm.mu.Lock()
 	defer ecm.mu.Unlock()
@@ -119,9 +99,7 @@ func (ecm *EntityCacheManager) ClearCache(entityType reflect.Type) {
 	delete(ecm.typeToAllColumnNameCsvMap, entityType)
 }
 
-/**
- * 清除所有缓存
- */
+// 清除所有缓存
 func (ecm *EntityCacheManager) ClearAllCache() {
 	ecm.mu.Lock()
 	defer ecm.mu.Unlock()
@@ -130,9 +108,7 @@ func (ecm *EntityCacheManager) ClearAllCache() {
 	ecm.typeToAllColumnNameCsvMap = make(map[reflect.Type]string)
 }
 
-/**
- * 获取缓存大小
- */
+// 获取缓存大小
 func (ecm *EntityCacheManager) GetCacheSize() (selectCacheSize, allColumnCacheSize int) {
 	ecm.mu.RLock()
 	defer ecm.mu.RUnlock()

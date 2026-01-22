@@ -8,14 +8,8 @@ import (
 	"sync"
 )
 
-/**
- * ConfigManager - 配置管理器
- *
- * 提供统一的配置管理功能，支持从文件、环境变量等多种方式加载配置
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// ConfigManager - 配置管理器
+// 提供统一的配置管理功能，支持从文件、环境变量等多种方式加载配置
 type ConfigManager struct {
 	configs map[string]any
 	mu      sync.RWMutex
@@ -24,9 +18,7 @@ type ConfigManager struct {
 var configManagerInstance *ConfigManager
 var configManagerOnce sync.Once
 
-/**
- * 获取配置管理器单例实例
- */
+// 获取配置管理器单例实例
 func GetConfigManager() *ConfigManager {
 	configManagerOnce.Do(func() {
 		configManagerInstance = &ConfigManager{
@@ -36,9 +28,7 @@ func GetConfigManager() *ConfigManager {
 	return configManagerInstance
 }
 
-/**
- * 从JSON文件加载配置
- */
+// 从JSON文件加载配置
 func (cm *ConfigManager) LoadFromFile(filename string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -62,9 +52,7 @@ func (cm *ConfigManager) LoadFromFile(filename string) error {
 	return nil
 }
 
-/**
- * 从环境变量加载配置
- */
+// 从环境变量加载配置
 func (cm *ConfigManager) LoadFromEnv(prefix string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -84,9 +72,7 @@ func (cm *ConfigManager) LoadFromEnv(prefix string) {
 	LogInfo("配置已从环境变量加载，前缀: %s", prefix)
 }
 
-/**
- * 获取字符串配置值
- */
+// 获取字符串配置值
 func (cm *ConfigManager) GetString(key string, defaultValue string) string {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -99,9 +85,7 @@ func (cm *ConfigManager) GetString(key string, defaultValue string) string {
 	return defaultValue
 }
 
-/**
- * 获取整数配置值
- */
+// 获取整数配置值
 func (cm *ConfigManager) GetInt(key string, defaultValue int) int {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -119,9 +103,7 @@ func (cm *ConfigManager) GetInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
-/**
- * 获取布尔配置值
- */
+// 获取布尔配置值
 func (cm *ConfigManager) GetBool(key string, defaultValue bool) bool {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -134,9 +116,7 @@ func (cm *ConfigManager) GetBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-/**
- * 设置配置值
- */
+// 设置配置值
 func (cm *ConfigManager) Set(key string, value any) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -145,9 +125,7 @@ func (cm *ConfigManager) Set(key string, value any) {
 	LogDebug("配置已设置: %s = %v", key, value)
 }
 
-/**
- * 获取所有配置
- */
+// 获取所有配置
 func (cm *ConfigManager) GetAll() map[string]any {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -159,9 +137,7 @@ func (cm *ConfigManager) GetAll() map[string]any {
 	return result
 }
 
-/**
- * 清除所有配置
- */
+// 清除所有配置
 func (cm *ConfigManager) Clear() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -170,30 +146,22 @@ func (cm *ConfigManager) Clear() {
 	LogInfo("所有配置已清除")
 }
 
-/**
- * 便捷方法：获取默认配置管理器的字符串值
- */
+// 便捷方法：获取默认配置管理器的字符串值
 func GetConfigString(key string, defaultValue string) string {
 	return GetConfigManager().GetString(key, defaultValue)
 }
 
-/**
- * 便捷方法：获取默认配置管理器的整数值
- */
+// 便捷方法：获取默认配置管理器的整数值
 func GetConfigInt(key string, defaultValue int) int {
 	return GetConfigManager().GetInt(key, defaultValue)
 }
 
-/**
- * 便捷方法：获取默认配置管理器的布尔值
- */
+// 便捷方法：获取默认配置管理器的布尔值
 func GetConfigBool(key string, defaultValue bool) bool {
 	return GetConfigManager().GetBool(key, defaultValue)
 }
 
-/**
- * 便捷方法：设置默认配置管理器的值
- */
+// 便捷方法：设置默认配置管理器的值
 func SetConfig(key string, value any) {
 	GetConfigManager().Set(key, value)
 }

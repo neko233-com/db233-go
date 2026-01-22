@@ -9,103 +9,64 @@ import (
 	"time"
 )
 
-/**
- * CrudRepository - CRUD 存储库接口
- *
- * 提供基本的 CRUD 操作
- * 所有实体必须实现 IDbEntity 接口
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// CrudRepository 是 CRUD 存储库接口，提供基本的 CRUD 操作。
+// 所有实体必须实现 IDbEntity 接口。
 type CrudRepository interface {
-	/**
-	 * 获取绑定的数据源
-	 */
+	// GetBindingDataSource 返回绑定的数据源。
 	GetBindingDataSource() *sql.DB
 
-	/**
-	 * 获取数据库实例
-	 */
+	// GetDb 返回数据库实例。
 	GetDb() *Db
 
-	/**
-	 * 保存实体（必须实现 IDbEntity 接口）
-	 */
+	// Save 保存实体（必须实现 IDbEntity 接口）。
 	Save(entity IDbEntity) error
 
-	/**
-	 * 批量保存实体（必须实现 IDbEntity 接口）
-	 */
+	// SaveBatch 批量保存实体（必须实现 IDbEntity 接口）。
 	SaveBatch(entities []IDbEntity) error
 
-	/**
-	 * 根据主键删除
-	 */
+	// DeleteById 根据主键删除。
 	DeleteById(id any, entityType IDbEntity) error
 
-	/**
-	 * 根据主键查找
-	 */
+	// FindById 根据主键查找。
 	FindById(id any, entityType IDbEntity) (IDbEntity, error)
 
-	/**
-	 * 查找所有
-	 */
+	// FindAll 查找所有记录。
 	FindAll(entityType IDbEntity) ([]IDbEntity, error)
 
-	/**
-	 * 根据条件查找
-	 */
+	// FindByCondition 根据条件查找。
 	FindByCondition(condition string, params []any, entityType IDbEntity) ([]IDbEntity, error)
 
-	/**
-	 * 更新实体（必须实现 IDbEntity 接口）
-	 */
+	// Update 更新实体（必须实现 IDbEntity 接口）。
 	Update(entity IDbEntity) error
 
-	/**
-	 * 批量更新（必须实现 IDbEntity 接口）
-	 */
+	// UpdateBatch 批量更新（必须实现 IDbEntity 接口）。
 	UpdateBatch(entities []IDbEntity) error
 
-	/**
-	 * 统计数量
-	 */
+	// Count 统计数量。
 	Count(entityType IDbEntity) (int64, error)
 }
 
-/**
- * BaseCrudRepository - 基础 CRUD 实现
- */
+// BaseCrudRepository - 基础 CRUD 实现
 type BaseCrudRepository struct {
 	db *Db
 }
 
-/**
- * 创建基础 CRUD 存储库
- */
+// 创建基础 CRUD 存储库
 func NewBaseCrudRepository(db *Db) *BaseCrudRepository {
 	return &BaseCrudRepository{db: db}
 }
 
-/**
- * 获取绑定的数据源
- */
+// 获取绑定的数据源
 func (r *BaseCrudRepository) GetBindingDataSource() *sql.DB {
 	return r.db.GetDataSource()
 }
 
-/**
- * 获取数据库实例
- */
+// 获取数据库实例
 func (r *BaseCrudRepository) GetDb() *Db {
 	return r.db
 }
 
-/**
- * 保存实体
- */
+// 保存实体
 func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	// 参数验证
 	if entity == nil {
@@ -264,9 +225,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	return nil
 }
 
-/**
- * 设置主键值（支持嵌入结构体和多种主键标签方式）
- */
+// 设置主键值（支持嵌入结构体和多种主键标签方式）
 func (r *BaseCrudRepository) setPrimaryKeyValue(entity any, id int64) {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
@@ -277,9 +236,7 @@ func (r *BaseCrudRepository) setPrimaryKeyValue(entity any, id int64) {
 	r.setPrimaryKeyValueRecursive(v, v.Type(), id, cm)
 }
 
-/**
- * 递归设置主键值
- */
+// 递归设置主键值
 func (r *BaseCrudRepository) setPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type, id int64, cm *CrudManager) bool {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -326,12 +283,9 @@ func (r *BaseCrudRepository) setPrimaryKeyValueRecursive(v reflect.Value, t refl
 	return false
 }
 
-/**
- * 获取表名
- *
- * @param entity 实现了 IDbEntity 接口的实体
- * @return string 表名
- */
+// getTableName 获取表名。
+// entity: 实现了 IDbEntity 接口的实体。
+// 返回: 表名。
 func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 	// 直接调用 TableName() 方法
 	tableName := entity.TableName()
@@ -347,9 +301,7 @@ func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 	return StringUtilsInstance.CamelToSnake(t.Name())
 }
 
-/**
- * 获取字段（支持嵌入结构体）
- */
+// 获取字段（支持嵌入结构体）
 func (r *BaseCrudRepository) getFields(entity any) map[string]any {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
@@ -366,9 +318,7 @@ func (r *BaseCrudRepository) getFields(entity any) map[string]any {
 	return fields
 }
 
-/**
- * 递归扫描字段（处理嵌入结构体）
- */
+// 递归扫描字段（处理嵌入结构体）
 func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type, entityTypeName string, fields map[string]any) {
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
@@ -467,9 +417,7 @@ func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type
 	}
 }
 
-/**
- * 判断是否为复杂类型（需要序列化）
- */
+// 判断是否为复杂类型（需要序列化）
 func (r *BaseCrudRepository) isComplexType(kind reflect.Kind, fieldType reflect.Type) bool {
 	switch kind {
 	case reflect.Map, reflect.Slice, reflect.Array:
@@ -501,9 +449,7 @@ func (r *BaseCrudRepository) isComplexType(kind reflect.Kind, fieldType reflect.
 	}
 }
 
-/**
- * 序列化复杂类型为 JSON 字符串
- */
+// 序列化复杂类型为 JSON 字符串
 func (r *BaseCrudRepository) serializeComplexType(value any, fieldType reflect.Type) (string, error) {
 	// 如果值已经是字符串，直接返回
 	if str, ok := value.(string); ok {
@@ -524,10 +470,8 @@ func (r *BaseCrudRepository) serializeComplexType(value any, fieldType reflect.T
 	return string(jsonBytes), nil
 }
 
-/**
- * 获取默认值（如果值为空）
- * 对于空值字段，根据类型提供合理的默认值，确保数据库 INSERT 不会因为缺少字段而失败
- */
+// getDefaultValueIfEmpty 获取默认值（如果值为空）。
+// 对于空值字段，根据类型提供合理的默认值，确保数据库 INSERT 不会因为缺少字段而失败。
 func (r *BaseCrudRepository) getDefaultValueIfEmpty(value any, fieldName string) any {
 	if value == nil {
 		// nil 值，返回空字符串（数据库可以处理）
@@ -592,9 +536,7 @@ func (r *BaseCrudRepository) getDefaultValueIfEmpty(value any, fieldName string)
 	}
 }
 
-/**
- * 检查主键字段是否为自增主键
- */
+// 检查主键字段是否为自增主键
 func (r *BaseCrudRepository) isAutoIncrementPrimaryKey(entity any, pkColumnName string) bool {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
@@ -605,9 +547,7 @@ func (r *BaseCrudRepository) isAutoIncrementPrimaryKey(entity any, pkColumnName 
 	return r.findAutoIncrementFieldRecursive(t, pkColumnName)
 }
 
-/**
- * 递归查找字段是否有 auto_increment 标签
- */
+// 递归查找字段是否有 auto_increment 标签
 func (r *BaseCrudRepository) findAutoIncrementFieldRecursive(t reflect.Type, targetColumnName string) bool {
 	cm := GetCrudManagerInstance()
 
@@ -638,9 +578,7 @@ func (r *BaseCrudRepository) findAutoIncrementFieldRecursive(t reflect.Type, tar
 	return false
 }
 
-/**
- * 判断值是否为零值
- */
+// 判断值是否为零值
 func (r *BaseCrudRepository) isZeroValue(value any) bool {
 	if value == nil {
 		return true
@@ -695,9 +633,7 @@ func (r *BaseCrudRepository) isZeroValue(value any) bool {
 	return false
 }
 
-/**
- * 批量保存实体（真正的批量INSERT，一次SQL插入多条）
- */
+// 批量保存实体（真正的批量INSERT，一次SQL插入多条）
 func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 	// 参数验证
 	if entities == nil {
@@ -1131,9 +1067,7 @@ func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 	return count, nil
 }
 
-/**
- * 记录失败操作（连接异常时）
- */
+// 记录失败操作（连接异常时）
 func (r *BaseCrudRepository) recordFailedOperation(operation string, tableName string, sql string, params []any, primaryKey any) {
 	if r == nil || r.db == nil || r.db.FaultTolerantMgr == nil {
 		return

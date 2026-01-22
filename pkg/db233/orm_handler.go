@@ -10,24 +10,13 @@ import (
 	"time"
 )
 
-/**
- * OrmHandler - ORM 处理类
- *
- * 对应 Java 版本的 OrmHandler
- * 使用反射将数据库结果映射到结构体
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// OrmHandler 是 ORM 处理类，对应 Java 版本的 OrmHandler，使用反射将数据库结果映射到结构体。
 type OrmHandler struct{}
 
-/**
- * 批量 ORM 映射
- *
- * @param rows 数据库结果集
- * @param returnType 返回类型
- * @return []any 映射后的对象列表
- */
+// OrmBatch 批量 ORM 映射。
+// rows: 数据库结果集。
+// returnType: 返回类型。
+// 返回: 映射后的对象列表。
 func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 	defer rows.Close()
 
@@ -90,14 +79,11 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 	return results
 }
 
-/**
- * findFieldByColumnName 根据列名查找字段（支持嵌入结构体递归查找）
- *
- * @param structValue 结构体值
- * @param structType 结构体类型
- * @param columnName 列名
- * @return reflect.Value 找到的字段值
- */
+// findFieldByColumnName 根据列名查找字段，支持嵌入结构体递归查找。
+// structValue: 结构体值。
+// structType: 结构体类型。
+// columnName: 列名。
+// 返回: 找到的字段值。
 func (o *OrmHandler) findFieldByColumnName(structValue reflect.Value, structType reflect.Type, columnName string) reflect.Value {
 	// 首先尝试直接匹配字段名
 	field := structValue.FieldByName(columnName)
@@ -161,13 +147,10 @@ func (o *OrmHandler) findFieldByColumnName(structValue reflect.Value, structType
 	return reflect.Value{}
 }
 
-/**
- * 单行 ORM 映射
- *
- * @param rows 数据库结果集
- * @param returnType 返回类型
- * @return any 映射后的对象
- */
+// OrmSingle 单行 ORM 映射。
+// rows: 数据库结果集。
+// returnType: 返回类型。
+// 返回: 映射后的对象。
 func (o *OrmHandler) OrmSingle(rows *sql.Rows, returnType any) any {
 	results := o.OrmBatch(rows, returnType)
 	if len(results) > 0 {
@@ -176,11 +159,8 @@ func (o *OrmHandler) OrmSingle(rows *sql.Rows, returnType any) any {
 	return nil
 }
 
-/**
- * convertValue 将数据库值转换为目标类型
- *
- * 处理 MySQL 返回的 []uint8 (byte array) 到各种 Go 类型的转换
- */
+// convertValue 将数据库值转换为目标类型。
+// 处理 MySQL 返回的 []uint8 (byte array) 到各种 Go 类型的转换。
 func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Type) (reflect.Value, error) {
 	// 如果源值是 nil，返回零值
 	if !sourceVal.IsValid() || (sourceVal.Kind() == reflect.Interface && sourceVal.IsNil()) {
@@ -223,9 +203,7 @@ func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Ty
 	return reflect.Value{}, fmt.Errorf("无法转换类型: %s -> %s", sourceVal.Type(), targetType)
 }
 
-/**
- * convertFromBytes 从字节数组转换到目标类型
- */
+// convertFromBytes 从字节数组转换到目标类型。
 func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (reflect.Value, error) {
 	if len(data) == 0 {
 		return reflect.Zero(targetType), nil
@@ -296,9 +274,7 @@ func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (ref
 	}
 }
 
-/**
- * parseTime 解析时间字符串
- */
+// parseTime 解析时间字符串。
 func (o *OrmHandler) parseTime(str string) (time.Time, error) {
 	// 常见的时间格式
 	formats := []string{
@@ -320,7 +296,5 @@ func (o *OrmHandler) parseTime(str string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("无法解析时间字符串: %s", str)
 }
 
-/**
- * 单例实例
- */
+// OrmHandlerInstance 是单例实例。
 var OrmHandlerInstance = &OrmHandler{}

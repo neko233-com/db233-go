@@ -4,15 +4,9 @@ import (
 	"time"
 )
 
-/**
- * ExecuteSqlContext - SQL 执行上下文
- *
- * 对应 Kotlin 版本的 ExecuteSqlContext
- * 包含 SQL 执行的上下文信息
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// ExecuteSqlContext - SQL 执行上下文
+// 对应 Kotlin 版本的 ExecuteSqlContext
+// 包含 SQL 执行的上下文信息
 type ExecuteSqlContext struct {
 	// SQL 语句
 	Sql string
@@ -45,9 +39,7 @@ type ExecuteSqlContext struct {
 	Attributes map[string]any
 }
 
-/**
- * 创建新的 SQL 执行上下文
- */
+// 创建新的 SQL 执行上下文
 func NewExecuteSqlContext(sql string, params []any) *ExecuteSqlContext {
 	return &ExecuteSqlContext{
 		Sql:        sql,
@@ -57,48 +49,36 @@ func NewExecuteSqlContext(sql string, params []any) *ExecuteSqlContext {
 	}
 }
 
-/**
- * 标记执行开始
- */
+// 标记执行开始
 func (ctx *ExecuteSqlContext) MarkStart() {
 	ctx.StartTime = time.Now()
 }
 
-/**
- * 标记执行结束
- */
+// 标记执行结束
 func (ctx *ExecuteSqlContext) MarkEnd() {
 	ctx.EndTime = time.Now()
 	ctx.Duration = ctx.EndTime.Sub(ctx.StartTime)
 }
 
-/**
- * 设置执行结果
- */
+// 设置执行结果
 func (ctx *ExecuteSqlContext) SetResult(result any, affectedRows int) {
 	ctx.Result = result
 	ctx.AffectedRows = affectedRows
 	ctx.MarkEnd()
 }
 
-/**
- * 设置执行错误
- */
+// 设置执行错误
 func (ctx *ExecuteSqlContext) SetError(err error) {
 	ctx.Error = err
 	ctx.MarkEnd()
 }
 
-/**
- * 获取属性
- */
+// 获取属性
 func (ctx *ExecuteSqlContext) GetAttribute(key string) any {
 	return ctx.Attributes[key]
 }
 
-/**
- * 设置属性
- */
+// 设置属性
 func (ctx *ExecuteSqlContext) SetAttribute(key string, value any) {
 	ctx.Attributes[key] = value
 }

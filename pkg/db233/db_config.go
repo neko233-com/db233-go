@@ -6,14 +6,8 @@ import (
 	"time"
 )
 
-/**
- * DbConnectionConfig - 数据库连接配置
- *
- * 支持 MySQL 和 PostgreSQL 的完整配置
- *
- * @author neko233-com
- * @since 2026-01-08
- */
+// DbConnectionConfig - 数据库连接配置
+// 支持 MySQL 和 PostgreSQL 的完整配置
 type DbConnectionConfig struct {
 	// 基础配置
 	DatabaseType EnumDatabaseType `json:"databaseType" yaml:"databaseType"` // 数据库类型
@@ -51,9 +45,7 @@ type DbConnectionConfig struct {
 	ApplicationName string            `json:"applicationName" yaml:"applicationName"` // 应用名称（PostgreSQL）
 }
 
-/**
- * NewDefaultMySQLConfig 创建默认 MySQL 配置
- */
+// NewDefaultMySQLConfig 创建默认 MySQL 配置
 func NewDefaultMySQLConfig(host string, port int, username, password, database string) *DbConnectionConfig {
 	return &DbConnectionConfig{
 		DatabaseType:    EnumDatabaseTypeMySQL,
@@ -77,9 +69,7 @@ func NewDefaultMySQLConfig(host string, port int, username, password, database s
 	}
 }
 
-/**
- * NewDefaultPostgreSQLConfig 创建默认 PostgreSQL 配置
- */
+// NewDefaultPostgreSQLConfig 创建默认 PostgreSQL 配置
 func NewDefaultPostgreSQLConfig(host string, port int, username, password, database string) *DbConnectionConfig {
 	return &DbConnectionConfig{
 		DatabaseType:    EnumDatabaseTypePostgreSQL,
@@ -101,9 +91,7 @@ func NewDefaultPostgreSQLConfig(host string, port int, username, password, datab
 	}
 }
 
-/**
- * BuildDSN 构建数据源连接字符串
- */
+// BuildDSN 构建数据源连接字符串
 func (c *DbConnectionConfig) BuildDSN() string {
 	switch c.DatabaseType {
 	case EnumDatabaseTypeMySQL:
@@ -115,10 +103,8 @@ func (c *DbConnectionConfig) BuildDSN() string {
 	}
 }
 
-/**
- * buildMySQLDSN 构建 MySQL DSN
- * 格式: username:password@tcp(host:port)/database?charset=utf8mb4&parseTime=True&loc=Local
- */
+// buildMySQLDSN 构建 MySQL DSN
+// 格式: username:password@tcp(host:port)/database?charset=utf8mb4&parseTime=True&loc=Local
 func (c *DbConnectionConfig) buildMySQLDSN() string {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
 		c.Username, c.Password, c.Host, c.Port, c.Database)
@@ -173,10 +159,8 @@ func (c *DbConnectionConfig) buildMySQLDSN() string {
 	return dsn
 }
 
-/**
- * buildPostgreSQLDSN 构建 PostgreSQL DSN
- * 格式: host=localhost port=5432 user=postgres password=postgres dbname=mydb sslmode=disable
- */
+// buildPostgreSQLDSN 构建 PostgreSQL DSN
+// 格式: host=localhost port=5432 user=postgres password=postgres dbname=mydb sslmode=disable
 func (c *DbConnectionConfig) buildPostgreSQLDSN() string {
 	params := make(map[string]string)
 
@@ -229,9 +213,7 @@ func (c *DbConnectionConfig) buildPostgreSQLDSN() string {
 	return dsn
 }
 
-/**
- * CreateDataSource 创建数据源
- */
+// CreateDataSource 创建数据源
 func (c *DbConnectionConfig) CreateDataSource() (*sql.DB, error) {
 	dsn := c.BuildDSN()
 
@@ -277,9 +259,7 @@ func (c *DbConnectionConfig) CreateDataSource() (*sql.DB, error) {
 	return dataSource, nil
 }
 
-/**
- * CreateDb 创建 Db 实例
- */
+// CreateDb 创建 Db 实例
 func (c *DbConnectionConfig) CreateDb(dbId int, dbGroup *DbGroup) (*Db, error) {
 	dataSource, err := c.CreateDataSource()
 	if err != nil {
@@ -290,9 +270,7 @@ func (c *DbConnectionConfig) CreateDb(dbId int, dbGroup *DbGroup) (*Db, error) {
 	return db, nil
 }
 
-/**
- * CreateDbWithoutFaultTolerance 创建 Db 实例（不启用容错）
- */
+// CreateDbWithoutFaultTolerance 创建 Db 实例（不启用容错）
 func (c *DbConnectionConfig) CreateDbWithoutFaultTolerance(dbId int, dbGroup *DbGroup) (*Db, error) {
 	dataSource, err := c.CreateDataSource()
 	if err != nil {

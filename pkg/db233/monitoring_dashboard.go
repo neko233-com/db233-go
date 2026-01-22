@@ -6,14 +6,8 @@ import (
 	"time"
 )
 
-/**
- * MonitoringDashboard - 监控仪表板
- *
- * 整合所有监控组件，提供统一的监控界面和数据展示
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// MonitoringDashboard - 监控仪表板
+// 整合所有监控组件，提供统一的监控界面和数据展示
 type MonitoringDashboard struct {
 	name string
 
@@ -44,9 +38,7 @@ type MonitoringDashboard struct {
 	stopChan chan bool
 }
 
-/**
- * DashboardSnapshot - 仪表板快照
- */
+// DashboardSnapshot - 仪表板快照
 type DashboardSnapshot struct {
 	Timestamp    time.Time
 	Summary      DashboardSummary
@@ -56,9 +48,7 @@ type DashboardSnapshot struct {
 	Performance  map[string]PerformanceSummary
 }
 
-/**
- * DashboardSummary - 仪表板摘要
- */
+// DashboardSummary - 仪表板摘要
 type DashboardSummary struct {
 	TotalDatabases    int
 	HealthyDatabases  int
@@ -70,9 +60,7 @@ type DashboardSummary struct {
 	ErrorRate         float64
 }
 
-/**
- * AlertSummary - 告警摘要
- */
+// AlertSummary - 告警摘要
 type AlertSummary struct {
 	ID        string
 	Name      string
@@ -82,9 +70,7 @@ type AlertSummary struct {
 	Timestamp time.Time
 }
 
-/**
- * HealthSummary - 健康摘要
- */
+// HealthSummary - 健康摘要
 type HealthSummary struct {
 	Status       string
 	Score        float64
@@ -92,9 +78,7 @@ type HealthSummary struct {
 	ResponseTime time.Duration
 }
 
-/**
- * PerformanceSummary - 性能摘要
- */
+// PerformanceSummary - 性能摘要
 type PerformanceSummary struct {
 	TotalQueries    int64
 	SuccessRate     float64
@@ -103,9 +87,7 @@ type PerformanceSummary struct {
 	QPS             float64
 }
 
-/**
- * 创建监控仪表板
- */
+// 创建监控仪表板
 func NewMonitoringDashboard(name string) *MonitoringDashboard {
 	dashboard := &MonitoringDashboard{
 		name:                name,
@@ -127,9 +109,7 @@ func NewMonitoringDashboard(name string) *MonitoringDashboard {
 	return dashboard
 }
 
-/**
- * 添加性能监控器
- */
+// 添加性能监控器
 func (md *MonitoringDashboard) AddPerformanceMonitor(name string, monitor *PerformanceMonitor) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -140,9 +120,7 @@ func (md *MonitoringDashboard) AddPerformanceMonitor(name string, monitor *Perfo
 	LogInfo("性能监控器已添加到仪表板: %s -> %s", md.name, name)
 }
 
-/**
- * 添加连接池监控器
- */
+// 添加连接池监控器
 func (md *MonitoringDashboard) AddConnectionMonitor(name string, monitor *ConnectionPoolMonitor) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -153,9 +131,7 @@ func (md *MonitoringDashboard) AddConnectionMonitor(name string, monitor *Connec
 	LogInfo("连接池监控器已添加到仪表板: %s -> %s", md.name, name)
 }
 
-/**
- * 添加健康检查器
- */
+// 添加健康检查器
 func (md *MonitoringDashboard) AddHealthChecker(name string, checker *HealthChecker) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -166,9 +142,7 @@ func (md *MonitoringDashboard) AddHealthChecker(name string, checker *HealthChec
 	LogInfo("健康检查器已添加到仪表板: %s -> %s", md.name, name)
 }
 
-/**
- * 添加告警管理器
- */
+// 添加告警管理器
 func (md *MonitoringDashboard) AddAlertManager(name string, manager *AlertManager) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -179,9 +153,7 @@ func (md *MonitoringDashboard) AddAlertManager(name string, manager *AlertManage
 	LogInfo("告警管理器已添加到仪表板: %s -> %s", md.name, name)
 }
 
-/**
- * 添加指标收集器
- */
+// 添加指标收集器
 func (md *MonitoringDashboard) AddMetricsCollector(name string, collector *MetricsCollector) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -192,9 +164,7 @@ func (md *MonitoringDashboard) AddMetricsCollector(name string, collector *Metri
 	LogInfo("指标收集器已添加到仪表板: %s -> %s", md.name, name)
 }
 
-/**
- * 添加指标聚合器
- */
+// 添加指标聚合器
 func (md *MonitoringDashboard) AddMetricsAggregator(name string, aggregator *MetricsAggregator) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -204,36 +174,28 @@ func (md *MonitoringDashboard) AddMetricsAggregator(name string, aggregator *Met
 	LogInfo("指标聚合器已添加到仪表板: %s -> %s", md.name, name)
 }
 
-/**
- * 设置自动刷新间隔
- */
+// 设置自动刷新间隔
 func (md *MonitoringDashboard) SetRefreshInterval(interval time.Duration) {
 	md.mu.Lock()
 	defer md.mu.Unlock()
 	md.refreshInterval = interval
 }
 
-/**
- * 启用自动刷新
- */
+// 启用自动刷新
 func (md *MonitoringDashboard) EnableAutoRefresh() {
 	md.mu.Lock()
 	defer md.mu.Unlock()
 	md.autoRefresh = true
 }
 
-/**
- * 禁用自动刷新
- */
+// 禁用自动刷新
 func (md *MonitoringDashboard) DisableAutoRefresh() {
 	md.mu.Lock()
 	defer md.mu.Unlock()
 	md.autoRefresh = false
 }
 
-/**
- * 启用仪表板
- */
+// 启用仪表板
 func (md *MonitoringDashboard) Enable() {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -241,9 +203,7 @@ func (md *MonitoringDashboard) Enable() {
 	LogInfo("监控仪表板已启用: %s", md.name)
 }
 
-/**
- * 禁用仪表板
- */
+// 禁用仪表板
 func (md *MonitoringDashboard) Disable() {
 	md.mu.Lock()
 	defer md.mu.Unlock()
@@ -251,9 +211,7 @@ func (md *MonitoringDashboard) Disable() {
 	LogInfo("监控仪表板已禁用: %s", md.name)
 }
 
-/**
- * 启动仪表板
- */
+// 启动仪表板
 func (md *MonitoringDashboard) Start() {
 	LogInfo("监控仪表板启动: %s", md.name)
 
@@ -275,9 +233,7 @@ func (md *MonitoringDashboard) Start() {
 	}
 }
 
-/**
- * 停止仪表板
- */
+// 停止仪表板
 func (md *MonitoringDashboard) Stop() {
 	select {
 	case md.stopChan <- true:
@@ -287,9 +243,7 @@ func (md *MonitoringDashboard) Stop() {
 	}
 }
 
-/**
- * 刷新快照
- */
+// 刷新快照
 func (md *MonitoringDashboard) refreshSnapshot() {
 	if !md.enabled {
 		return
@@ -344,9 +298,7 @@ func (md *MonitoringDashboard) refreshSnapshot() {
 	md.lastUpdate = time.Now()
 }
 
-/**
- * 生成摘要
- */
+// 生成摘要
 func (md *MonitoringDashboard) generateSummary() DashboardSummary {
 	summary := DashboardSummary{}
 
@@ -424,9 +376,7 @@ func (md *MonitoringDashboard) generateSummary() DashboardSummary {
 	return summary
 }
 
-/**
- * 生成告警摘要
- */
+// 生成告警摘要
 func (md *MonitoringDashboard) generateAlertSummaries() []AlertSummary {
 	summaries := make([]AlertSummary, 0)
 
@@ -449,9 +399,7 @@ func (md *MonitoringDashboard) generateAlertSummaries() []AlertSummary {
 	return summaries
 }
 
-/**
- * 生成健康摘要
- */
+// 生成健康摘要
 func (md *MonitoringDashboard) generateHealthSummary(name string, checker *HealthChecker) HealthSummary {
 	result := checker.Check()
 
@@ -471,9 +419,7 @@ func (md *MonitoringDashboard) generateHealthSummary(name string, checker *Healt
 	return summary
 }
 
-/**
- * 生成性能摘要
- */
+// 生成性能摘要
 func (md *MonitoringDashboard) generatePerformanceSummary(monitor *PerformanceMonitor) PerformanceSummary {
 	report := monitor.GetDetailedReport()
 
@@ -505,9 +451,7 @@ func (md *MonitoringDashboard) generatePerformanceSummary(monitor *PerformanceMo
 	return summary
 }
 
-/**
- * 获取当前快照
- */
+// 获取当前快照
 func (md *MonitoringDashboard) GetCurrentSnapshot() *DashboardSnapshot {
 	md.mu.RLock()
 	defer md.mu.RUnlock()
@@ -522,9 +466,7 @@ func (md *MonitoringDashboard) GetCurrentSnapshot() *DashboardSnapshot {
 	return md.lastSnapshot
 }
 
-/**
- * 获取仪表板状态
- */
+// 获取仪表板状态
 func (md *MonitoringDashboard) GetStatus() map[string]any {
 	md.mu.RLock()
 	defer md.mu.RUnlock()
@@ -545,16 +487,12 @@ func (md *MonitoringDashboard) GetStatus() map[string]any {
 	}
 }
 
-/**
- * 生成报告
- */
+// 生成报告
 func (md *MonitoringDashboard) GenerateReport(filename string, format string) error {
 	return md.reportGenerator.ExportReport(filename, format)
 }
 
-/**
- * 获取组件状态
- */
+// 获取组件状态
 func (md *MonitoringDashboard) GetComponentStatus(componentType, name string) any {
 	md.mu.RLock()
 	defer md.mu.RUnlock()
@@ -589,9 +527,7 @@ func (md *MonitoringDashboard) GetComponentStatus(componentType, name string) an
 	return nil
 }
 
-/**
- * 工具方法
- */
+// 工具方法
 func (md *MonitoringDashboard) alertSeverityToString(severity AlertSeverity) string {
 	switch severity {
 	case Info:
@@ -618,9 +554,7 @@ func (md *MonitoringDashboard) alertStatusToString(status AlertStatus) string {
 	}
 }
 
-/**
- * 重置仪表板
- */
+// 重置仪表板
 func (md *MonitoringDashboard) Reset() {
 	md.mu.Lock()
 	defer md.mu.Unlock()

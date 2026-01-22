@@ -6,14 +6,8 @@ import (
 	"sync"
 )
 
-/**
- * DbGroup 数据库组 - Go 版
- *
- * 对应 Kotlin 版本的 DbGroup，用于管理同一配置下的多个数据库实例
- *
- * @author neko233-com
- * @since 2025-12-28
- */
+// DbGroup 数据库组 - Go 版
+// 对应 Kotlin 版本的 DbGroup，用于管理同一配置下的多个数据库实例
 type DbGroup struct {
 	DbGroupConfig            *DbGroupConfig
 	GroupName                string
@@ -26,13 +20,10 @@ type DbGroup struct {
 	mu                       sync.Mutex
 }
 
-/**
- * 创建 DbGroup
- *
- * @param config DbGroupConfig 配置
- * @return *DbGroup 实例
- * @return error 创建错误
- */
+// 创建 DbGroup
+// config: DbGroupConfig 配置
+// 返回: *DbGroup 实例
+// 返回: error 创建错误
 func NewDbGroup(config *DbGroupConfig) (*DbGroup, error) {
 	if config.GroupName == "" {
 		return nil, fmt.Errorf("groupName 不能为空")
@@ -67,11 +58,8 @@ func NewDbGroup(config *DbGroupConfig) (*DbGroup, error) {
 }
 
 // Init 初始化
-/**
- * 初始化 DbGroup，创建所有数据库连接
- *
- * @return error 初始化错误
- */
+// 初始化 DbGroup，创建所有数据库连接
+// 返回: error 初始化错误
 func (dg *DbGroup) Init() error {
 	dg.mu.Lock()
 	defer dg.mu.Unlock()
@@ -90,13 +78,10 @@ func (dg *DbGroup) Init() error {
 	return nil
 }
 
-/**
- * 根据配置创建 Db 实例
- *
- * @param cfg 数据库配置
- * @return *Db 实例
- * @return error 创建错误
- */
+// 根据配置创建 Db 实例
+// cfg: 数据库配置
+// 返回: *Db 实例
+// 返回: error 创建错误
 func (dg *DbGroup) createDbByConfig(cfg *DbConfig) (*Db, error) {
 	// 合并配置
 	config := make(map[string]any)
@@ -118,23 +103,17 @@ func (dg *DbGroup) createDbByConfig(cfg *DbConfig) (*Db, error) {
 }
 
 // GetDefaultDb 获取默认 Db
-/**
- * 获取默认数据库实例（dbId = 0）
- *
- * @return *Db 默认数据库实例
- */
+// 获取默认数据库实例（dbId = 0）
+// 返回: *Db 默认数据库实例
 func (dg *DbGroup) GetDefaultDb() *Db {
 	return dg.DbMap[0]
 }
 
 // GetDbByShardingId 根据分片 ID 获取 Db
-/**
- * 根据分片 ID 获取对应的数据库实例
- *
- * @param shardingId 分片键
- * @return *Db 数据库实例
- * @return error 未找到错误
- */
+// 根据分片 ID 获取对应的数据库实例
+// shardingId: 分片键
+// 返回: *Db 数据库实例
+// 返回: error 未找到错误
 func (dg *DbGroup) GetDbByShardingId(shardingId int64) (*Db, error) {
 	dbId := dg.ShardingDbStrategy.CalculateDbId(shardingId)
 	if db, exists := dg.DbMap[dbId]; exists {
@@ -144,13 +123,10 @@ func (dg *DbGroup) GetDbByShardingId(shardingId int64) (*Db, error) {
 }
 
 // GetDbByDbId 根据 dbId 获取 Db
-/**
- * 根据数据库 ID 直接获取数据库实例
- *
- * @param dbId 数据库 ID
- * @return *Db 数据库实例
- * @return error 未找到错误
- */
+// 根据数据库 ID 直接获取数据库实例
+// dbId: 数据库 ID
+// 返回: *Db 数据库实例
+// 返回: error 未找到错误
 func (dg *DbGroup) GetDbByDbId(dbId int) (*Db, error) {
 	if db, exists := dg.DbMap[dbId]; exists {
 		return db, nil
@@ -159,9 +135,7 @@ func (dg *DbGroup) GetDbByDbId(dbId int) (*Db, error) {
 }
 
 // Destroy 销毁
-/**
- * 销毁 DbGroup，关闭所有数据库连接
- */
+// 销毁 DbGroup，关闭所有数据库连接
 func (dg *DbGroup) Destroy() {
 	for _, db := range dg.DbMap {
 		db.Close()
@@ -169,9 +143,7 @@ func (dg *DbGroup) Destroy() {
 }
 
 // Shutdown 关闭
-/**
- * 关闭 DbGroup（同 Destroy）
- */
+// 关闭 DbGroup（同 Destroy）
 func (dg *DbGroup) Shutdown() {
 	dg.Destroy()
 }

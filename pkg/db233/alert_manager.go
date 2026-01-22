@@ -6,14 +6,8 @@ import (
 	"time"
 )
 
-/**
- * AlertManager - 告警管理器
- *
- * 基于阈值的监控告警系统，支持多种告警类型和通知机制
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// AlertManager - 告警管理器
+// 基于阈值的监控告警系统，支持多种告警类型和通知机制
 type AlertManager struct {
 	name string
 
@@ -41,9 +35,7 @@ type AlertManager struct {
 	stopChan chan bool
 }
 
-/**
- * AlertRule - 告警规则
- */
+// AlertRule - 告警规则
 type AlertRule struct {
 	ID          string
 	Name        string
@@ -56,9 +48,7 @@ type AlertRule struct {
 	Enabled     bool
 }
 
-/**
- * AlertCondition - 告警条件
- */
+// AlertCondition - 告警条件
 type AlertCondition int
 
 const (
@@ -70,9 +60,7 @@ const (
 	LessThanOrEqual
 )
 
-/**
- * AlertSeverity - 告警严重程度
- */
+// AlertSeverity - 告警严重程度
 type AlertSeverity int
 
 const (
@@ -82,9 +70,7 @@ const (
 	Critical
 )
 
-/**
- * Alert - 告警实例
- */
+// Alert - 告警实例
 type Alert struct {
 	ID          string
 	RuleID      string
@@ -101,9 +87,7 @@ type Alert struct {
 	Duration    *time.Duration
 }
 
-/**
- * AlertStatus - 告警状态
- */
+// AlertStatus - 告警状态
 type AlertStatus int
 
 const (
@@ -111,17 +95,13 @@ const (
 	Resolved
 )
 
-/**
- * AlertNotifier - 告警通知器接口
- */
+// AlertNotifier - 告警通知器接口
 type AlertNotifier interface {
 	Notify(alert *Alert) error
 	GetName() string
 }
 
-/**
- * 创建告警管理器
- */
+// 创建告警管理器
 func NewAlertManager(name string) *AlertManager {
 	return &AlertManager{
 		name:           name,
@@ -136,9 +116,7 @@ func NewAlertManager(name string) *AlertManager {
 	}
 }
 
-/**
- * 添加告警规则
- */
+// 添加告警规则
 func (am *AlertManager) AddAlertRule(rule AlertRule) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -156,9 +134,7 @@ func (am *AlertManager) AddAlertRule(rule AlertRule) {
 	LogInfo("告警规则已添加: %s (%s)", rule.Name, rule.ID)
 }
 
-/**
- * 移除告警规则
- */
+// 移除告警规则
 func (am *AlertManager) RemoveAlertRule(ruleID string) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -172,9 +148,7 @@ func (am *AlertManager) RemoveAlertRule(ruleID string) {
 	}
 }
 
-/**
- * 添加通知器
- */
+// 添加通知器
 func (am *AlertManager) AddNotifier(notifier AlertNotifier) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -182,27 +156,21 @@ func (am *AlertManager) AddNotifier(notifier AlertNotifier) {
 	LogInfo("告警通知器已添加: %s -> %s", am.name, notifier.GetName())
 }
 
-/**
- * 设置最大历史记录大小
- */
+// 设置最大历史记录大小
 func (am *AlertManager) SetMaxHistorySize(size int) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.maxHistorySize = size
 }
 
-/**
- * 设置冷却周期
- */
+// 设置冷却周期
 func (am *AlertManager) SetCooldownPeriod(period time.Duration) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.cooldownPeriod = period
 }
 
-/**
- * 启用告警管理器
- */
+// 启用告警管理器
 func (am *AlertManager) Enable() {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -210,9 +178,7 @@ func (am *AlertManager) Enable() {
 	LogInfo("告警管理器已启用: %s", am.name)
 }
 
-/**
- * 禁用告警管理器
- */
+// 禁用告警管理器
 func (am *AlertManager) Disable() {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -220,9 +186,7 @@ func (am *AlertManager) Disable() {
 	LogInfo("告警管理器已禁用: %s", am.name)
 }
 
-/**
- * 检查指标并触发告警
- */
+// 检查指标并触发告警
 func (am *AlertManager) CheckMetric(metricName string, value any) {
 	if !am.enabled {
 		return
@@ -262,9 +226,7 @@ func (am *AlertManager) CheckMetric(metricName string, value any) {
 	}
 }
 
-/**
- * 评估告警条件
- */
+// 评估告警条件
 func (am *AlertManager) evaluateCondition(value any, condition AlertCondition, threshold any) bool {
 	// 类型转换和比较
 	switch condition {
@@ -285,9 +247,7 @@ func (am *AlertManager) evaluateCondition(value any, condition AlertCondition, t
 	}
 }
 
-/**
- * 比较两个值
- */
+// 比较两个值
 func (am *AlertManager) compareValues(a, b any) int {
 	switch va := a.(type) {
 	case int:
@@ -330,9 +290,7 @@ func (am *AlertManager) compareValues(a, b any) int {
 	return 0
 }
 
-/**
- * 触发告警
- */
+// 触发告警
 func (am *AlertManager) triggerAlert(rule *AlertRule, metricName string, value any, timestamp time.Time) {
 	alertID := fmt.Sprintf("%s_%s", rule.ID, metricName)
 
@@ -365,9 +323,7 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, metricName string, value a
 	LogWarn("告警触发: %s - %s (值: %v, 阈值: %v)", alert.Name, alert.Metric, alert.Value, alert.Threshold)
 }
 
-/**
- * 解决告警
- */
+// 解决告警
 func (am *AlertManager) resolveAlert(alert *Alert, resolvedAt time.Time) {
 	alert.Status = Resolved
 	alert.ResolvedAt = &resolvedAt
@@ -380,9 +336,7 @@ func (am *AlertManager) resolveAlert(alert *Alert, resolvedAt time.Time) {
 	LogInfo("告警已解决: %s - 持续时间: %v", alert.Name, duration)
 }
 
-/**
- * 将告警添加到历史记录
- */
+// 将告警添加到历史记录
 func (am *AlertManager) addToHistory(alert *Alert) {
 	am.alertHistory = append(am.alertHistory, alert)
 
@@ -392,9 +346,7 @@ func (am *AlertManager) addToHistory(alert *Alert) {
 	}
 }
 
-/**
- * 条件转换为字符串
- */
+// 条件转换为字符串
 func (am *AlertManager) conditionToString(condition AlertCondition) string {
 	switch condition {
 	case GreaterThan:
@@ -414,9 +366,7 @@ func (am *AlertManager) conditionToString(condition AlertCondition) string {
 	}
 }
 
-/**
- * 获取活跃告警
- */
+// 获取活跃告警
 func (am *AlertManager) GetActiveAlerts() []*Alert {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
@@ -429,9 +379,7 @@ func (am *AlertManager) GetActiveAlerts() []*Alert {
 	return alerts
 }
 
-/**
- * 获取告警历史
- */
+// 获取告警历史
 func (am *AlertManager) GetAlertHistory(limit int) []*Alert {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
@@ -446,9 +394,7 @@ func (am *AlertManager) GetAlertHistory(limit int) []*Alert {
 	return history
 }
 
-/**
- * 获取告警统计
- */
+// 获取告警统计
 func (am *AlertManager) GetAlertStats() map[string]any {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
@@ -471,9 +417,7 @@ func (am *AlertManager) GetAlertStats() map[string]any {
 	return stats
 }
 
-/**
- * 严重程度转换为字符串
- */
+// 严重程度转换为字符串
 func (am *AlertManager) severityToString(severity AlertSeverity) string {
 	switch severity {
 	case Info:
@@ -489,9 +433,7 @@ func (am *AlertManager) severityToString(severity AlertSeverity) string {
 	}
 }
 
-/**
- * 获取告警规则
- */
+// 获取告警规则
 func (am *AlertManager) GetAlertRules() []AlertRule {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
@@ -502,16 +444,12 @@ func (am *AlertManager) GetAlertRules() []AlertRule {
 	return rules
 }
 
-/**
- * 停止告警管理器
- */
+// 停止告警管理器
 func (am *AlertManager) Stop() {
 	am.stopChan <- true
 }
 
-/**
- * 获取管理器状态
- */
+// 获取管理器状态
 func (am *AlertManager) GetStatus() map[string]any {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
@@ -528,9 +466,7 @@ func (am *AlertManager) GetStatus() map[string]any {
 	}
 }
 
-/**
- * 获取指标数据（实现MetricsDataSource接口）
- */
+// 获取指标数据（实现MetricsDataSource接口）
 func (am *AlertManager) GetMetrics() map[string]any {
 	stats := am.GetAlertStats()
 
@@ -561,30 +497,22 @@ func (am *AlertManager) GetMetrics() map[string]any {
 	return metrics
 }
 
-/**
- * 获取数据源名称
- */
+// 获取数据源名称
 func (am *AlertManager) GetName() string {
 	return fmt.Sprintf("alert_manager_%s", am.name)
 }
 
-/**
- * 日志通知器 - 简单的日志通知器实现
- */
+// 日志通知器 - 简单的日志通知器实现
 type LogAlertNotifier struct {
 	name string
 }
 
-/**
- * 创建日志通知器
- */
+// 创建日志通知器
 func NewLogAlertNotifier(name string) *LogAlertNotifier {
 	return &LogAlertNotifier{name: name}
 }
 
-/**
- * 发送通知
- */
+// 发送通知
 func (n *LogAlertNotifier) Notify(alert *Alert) error {
 	severity := ""
 	switch alert.Severity {
@@ -604,9 +532,7 @@ func (n *LogAlertNotifier) Notify(alert *Alert) error {
 	return nil
 }
 
-/**
- * 获取通知器名称
- */
+// 获取通知器名称
 func (n *LogAlertNotifier) GetName() string {
 	return n.name
 }

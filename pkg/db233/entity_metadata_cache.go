@@ -6,14 +6,8 @@ import (
 	"sync"
 )
 
-/**
- * EntityMetadata - 实体元数据
- *
- * 缓存实体的结构信息，避免重复反射
- *
- * @author neko233-com
- * @since 2026-01-08
- */
+// EntityMetadata - 实体元数据
+// 缓存实体的结构信息，避免重复反射
 type EntityMetadata struct {
 	// 实体类型
 	EntityType reflect.Type
@@ -40,14 +34,8 @@ type EntityMetadata struct {
 	HasAutoIncrement bool
 }
 
-/**
- * EntityMetadataCache - 实体元数据缓存
- *
- * 线程安全的实体元数据缓存，提高性能
- *
- * @author neko233-com
- * @since 2026-01-08
- */
+// EntityMetadataCache - 实体元数据缓存
+// 线程安全的实体元数据缓存，提高性能
 type EntityMetadataCache struct {
 	// 类型到元数据的映射
 	cache map[reflect.Type]*EntityMetadata
@@ -61,9 +49,7 @@ var (
 	entityMetadataCacheOnce     sync.Once
 )
 
-/**
- * GetEntityMetadataCacheInstance 获取单例实例
- */
+// GetEntityMetadataCacheInstance 获取单例实例
 func GetEntityMetadataCacheInstance() *EntityMetadataCache {
 	entityMetadataCacheOnce.Do(func() {
 		entityMetadataCacheInstance = &EntityMetadataCache{
@@ -73,13 +59,10 @@ func GetEntityMetadataCacheInstance() *EntityMetadataCache {
 	return entityMetadataCacheInstance
 }
 
-/**
- * GetOrBuild 获取或构建实体元数据
- *
- * @param entity 实体实例（可以是指针或值）
- * @return *EntityMetadata 实体元数据
- * @return error 错误信息
- */
+// GetOrBuild 获取或构建实体元数据
+// entity: 实体实例（可以是指针或值）
+// 返回: *EntityMetadata 实体元数据
+// 返回: error 错误信息
 func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
 	t := reflect.TypeOf(entity)
 	if t.Kind() == reflect.Ptr {
@@ -114,9 +97,7 @@ func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
 	return metadata, nil
 }
 
-/**
- * buildMetadata 构建实体元数据（支持嵌入结构体）
- */
+// buildMetadata 构建实体元数据（支持嵌入结构体）
 func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type) (*EntityMetadata, error) {
 	metadata := &EntityMetadata{
 		EntityType:         entityType,
@@ -154,12 +135,10 @@ func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type)
 	return metadata, nil
 }
 
-/**
- * scanFields 扫描字段（递归处理嵌入结构体）
- * @param t 类型
- * @param metadata 元数据
- * @param parentIndex 父字段索引路径（用于嵌入字段）
- */
+// scanFields 扫描字段（递归处理嵌入结构体）
+// t: 类型
+// metadata: 元数据
+// parentIndex: 父字段索引路径（用于嵌入字段）
 func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadata, parentIndex []int) {
 	cm := GetCrudManagerInstance()
 
@@ -223,27 +202,21 @@ func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadat
 	}
 }
 
-/**
- * Clear 清空缓存
- */
+// Clear 清空缓存
 func (c *EntityMetadataCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cache = make(map[reflect.Type]*EntityMetadata)
 }
 
-/**
- * Remove 移除指定类型的缓存
- */
+// Remove 移除指定类型的缓存
 func (c *EntityMetadataCache) Remove(entityType reflect.Type) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.cache, entityType)
 }
 
-/**
- * containsOption 检查 db 标签是否包含指定选项
- */
+// containsOption 检查 db 标签是否包含指定选项
 func containsOption(dbTag, option string) bool {
 	if dbTag == "" {
 		return false
@@ -258,9 +231,7 @@ func containsOption(dbTag, option string) bool {
 	return false
 }
 
-/**
- * splitDbTag 分割 db 标签
- */
+// splitDbTag 分割 db 标签
 func splitDbTag(dbTag string) []string {
 	if dbTag == "" {
 		return []string{}
@@ -275,9 +246,7 @@ func splitDbTag(dbTag string) []string {
 	return parts
 }
 
-/**
- * splitString 分割字符串
- */
+// splitString 分割字符串
 func splitString(s, sep string) []string {
 	result := make([]string, 0)
 	start := 0
@@ -292,9 +261,7 @@ func splitString(s, sep string) []string {
 	return result
 }
 
-/**
- * trimSpace 去除首尾空格
- */
+// trimSpace 去除首尾空格
 func trimSpace(s string) string {
 	start := 0
 	end := len(s)

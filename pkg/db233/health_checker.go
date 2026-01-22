@@ -5,23 +5,15 @@ import (
 	"time"
 )
 
-/**
- * HealthChecker - 健康检查器
- *
- * 提供数据库连接和服务的健康检查功能
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// HealthChecker - 健康检查器
+// 提供数据库连接和服务的健康检查功能
 type HealthChecker struct {
 	db         *Db
 	timeout    time.Duration
 	checkQuery string
 }
 
-/**
- * HealthCheckResult - 健康检查结果
- */
+// HealthCheckResult - 健康检查结果
 type HealthCheckResult struct {
 	Healthy      bool
 	Message      string
@@ -30,9 +22,7 @@ type HealthCheckResult struct {
 	Error        error
 }
 
-/**
- * 创建健康检查器
- */
+// 创建健康检查器
 func NewHealthChecker(db *Db) *HealthChecker {
 	return &HealthChecker{
 		db:         db,
@@ -41,23 +31,17 @@ func NewHealthChecker(db *Db) *HealthChecker {
 	}
 }
 
-/**
- * 设置超时时间
- */
+// 设置超时时间
 func (hc *HealthChecker) SetTimeout(timeout time.Duration) {
 	hc.timeout = timeout
 }
 
-/**
- * 设置健康检查查询
- */
+// 设置健康检查查询
 func (hc *HealthChecker) SetCheckQuery(query string) {
 	hc.checkQuery = query
 }
 
-/**
- * 执行健康检查
- */
+// 执行健康检查
 func (hc *HealthChecker) Check() *HealthCheckResult {
 	start := time.Now()
 
@@ -86,9 +70,7 @@ func (hc *HealthChecker) Check() *HealthCheckResult {
 	return result
 }
 
-/**
- * 执行异步健康检查
- */
+// 执行异步健康检查
 func (hc *HealthChecker) CheckAsync() chan *HealthCheckResult {
 	resultChan := make(chan *HealthCheckResult, 1)
 
@@ -100,9 +82,7 @@ func (hc *HealthChecker) CheckAsync() chan *HealthCheckResult {
 	return resultChan
 }
 
-/**
- * 批量健康检查
- */
+// 批量健康检查
 func CheckMultipleHealth(checkers map[string]*HealthChecker) map[string]*HealthCheckResult {
 	results := make(map[string]*HealthCheckResult)
 
@@ -131,9 +111,7 @@ func CheckMultipleHealth(checkers map[string]*HealthChecker) map[string]*HealthC
 	return results
 }
 
-/**
- * 数据库连接池健康检查
- */
+// 数据库连接池健康检查
 func (hc *HealthChecker) CheckConnectionPool() *HealthCheckResult {
 	result := &HealthCheckResult{
 		Timestamp: time.Now(),
@@ -171,9 +149,7 @@ func (hc *HealthChecker) CheckConnectionPool() *HealthCheckResult {
 	return result
 }
 
-/**
- * 综合健康检查（包括连接和连接池）
- */
+// 综合健康检查（包括连接和连接池）
 func (hc *HealthChecker) ComprehensiveCheck() map[string]*HealthCheckResult {
 	results := make(map[string]*HealthCheckResult)
 
@@ -202,9 +178,7 @@ func (hc *HealthChecker) ComprehensiveCheck() map[string]*HealthCheckResult {
 	return results
 }
 
-/**
- * 定期健康检查调度器
- */
+// 定期健康检查调度器
 type HealthCheckScheduler struct {
 	checkers   map[string]*HealthChecker
 	interval   time.Duration
@@ -212,9 +186,7 @@ type HealthCheckScheduler struct {
 	lastResult map[string]*HealthCheckResult
 }
 
-/**
- * 创建健康检查调度器
- */
+// 创建健康检查调度器
 func NewHealthCheckScheduler(interval time.Duration) *HealthCheckScheduler {
 	return &HealthCheckScheduler{
 		checkers: make(map[string]*HealthChecker),
@@ -223,16 +195,12 @@ func NewHealthCheckScheduler(interval time.Duration) *HealthCheckScheduler {
 	}
 }
 
-/**
- * 添加健康检查器
- */
+// 添加健康检查器
 func (hcs *HealthCheckScheduler) AddChecker(name string, checker *HealthChecker) {
 	hcs.checkers[name] = checker
 }
 
-/**
- * 启动定期检查
- */
+// 启动定期检查
 func (hcs *HealthCheckScheduler) Start() {
 	LogInfo("健康检查调度器启动，检查间隔: %v", hcs.interval)
 
@@ -262,16 +230,12 @@ func (hcs *HealthCheckScheduler) Start() {
 	}()
 }
 
-/**
- * 停止定期检查
- */
+// 停止定期检查
 func (hcs *HealthCheckScheduler) Stop() {
 	hcs.stopChan <- true
 }
 
-/**
- * 获取指标数据（实现MetricsDataSource接口）
- */
+// 获取指标数据（实现MetricsDataSource接口）
 func (hc *HealthChecker) GetMetrics() map[string]any {
 	metrics := make(map[string]any)
 
@@ -318,9 +282,7 @@ func (hc *HealthChecker) GetMetrics() map[string]any {
 	return metrics
 }
 
-/**
- * 获取数据源名称
- */
+// 获取数据源名称
 func (hc *HealthChecker) GetName() string {
 	return "health_checker"
 }

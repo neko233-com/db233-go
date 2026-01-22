@@ -6,14 +6,8 @@ import (
 	"time"
 )
 
-/**
- * ConnectionPoolMonitor - 连接池监控器
- *
- * 监控数据库连接池的状态和性能指标
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// ConnectionPoolMonitor - 连接池监控器
+// 监控数据库连接池的状态和性能指标
 type ConnectionPoolMonitor struct {
 	dbGroupName string
 	db          *Db
@@ -43,9 +37,7 @@ type ConnectionPoolMonitor struct {
 	enabled bool
 }
 
-/**
- * 创建连接池监控器
- */
+// 创建连接池监控器
 func NewConnectionPoolMonitor(dbGroupName string, db *Db) *ConnectionPoolMonitor {
 	return &ConnectionPoolMonitor{
 		dbGroupName:        dbGroupName,
@@ -55,9 +47,7 @@ func NewConnectionPoolMonitor(dbGroupName string, db *Db) *ConnectionPoolMonitor
 	}
 }
 
-/**
- * 启用监控
- */
+// 启用监控
 func (cpm *ConnectionPoolMonitor) Enable() {
 	cpm.mu.Lock()
 	defer cpm.mu.Unlock()
@@ -65,9 +55,7 @@ func (cpm *ConnectionPoolMonitor) Enable() {
 	LogInfo("连接池监控已启用: %s", cpm.dbGroupName)
 }
 
-/**
- * 禁用监控
- */
+// 禁用监控
 func (cpm *ConnectionPoolMonitor) Disable() {
 	cpm.mu.Lock()
 	defer cpm.mu.Unlock()
@@ -75,18 +63,14 @@ func (cpm *ConnectionPoolMonitor) Disable() {
 	LogInfo("连接池监控已禁用: %s", cpm.dbGroupName)
 }
 
-/**
- * 设置慢查询阈值
- */
+// 设置慢查询阈值
 func (cpm *ConnectionPoolMonitor) SetSlowQueryThreshold(threshold time.Duration) {
 	cpm.mu.Lock()
 	defer cpm.mu.Unlock()
 	cpm.slowQueryThreshold = threshold
 }
 
-/**
- * 记录连接获取
- */
+// 记录连接获取
 func (cpm *ConnectionPoolMonitor) RecordConnectionAcquired(waitTime time.Duration) {
 	if !cpm.enabled {
 		return
@@ -103,9 +87,7 @@ func (cpm *ConnectionPoolMonitor) RecordConnectionAcquired(waitTime time.Duratio
 	}
 }
 
-/**
- * 记录连接释放
- */
+// 记录连接释放
 func (cpm *ConnectionPoolMonitor) RecordConnectionReleased() {
 	if !cpm.enabled {
 		return
@@ -118,9 +100,7 @@ func (cpm *ConnectionPoolMonitor) RecordConnectionReleased() {
 	cpm.idleConnections++
 }
 
-/**
- * 记录查询执行
- */
+// 记录查询执行
 func (cpm *ConnectionPoolMonitor) RecordQueryExecution(executionTime time.Duration, success bool) {
 	if !cpm.enabled {
 		return
@@ -142,9 +122,7 @@ func (cpm *ConnectionPoolMonitor) RecordQueryExecution(executionTime time.Durati
 	}
 }
 
-/**
- * 更新连接池统计信息
- */
+// 更新连接池统计信息
 func (cpm *ConnectionPoolMonitor) UpdatePoolStats(total, active, idle, waiting, max, min int64) {
 	if !cpm.enabled {
 		return
@@ -161,9 +139,7 @@ func (cpm *ConnectionPoolMonitor) UpdatePoolStats(total, active, idle, waiting, 
 	cpm.minConnections = min
 }
 
-/**
- * 获取监控报告
- */
+// 获取监控报告
 func (cpm *ConnectionPoolMonitor) GetReport() map[string]any {
 	cpm.mu.RLock()
 	defer cpm.mu.RUnlock()
@@ -199,9 +175,7 @@ func (cpm *ConnectionPoolMonitor) GetReport() map[string]any {
 	return report
 }
 
-/**
- * 重置统计信息
- */
+// 重置统计信息
 func (cpm *ConnectionPoolMonitor) Reset() {
 	cpm.mu.Lock()
 	defer cpm.mu.Unlock()
@@ -215,9 +189,7 @@ func (cpm *ConnectionPoolMonitor) Reset() {
 	LogInfo("连接池监控统计已重置: %s", cpm.dbGroupName)
 }
 
-/**
- * 获取指标数据（实现MetricsDataSource接口）
- */
+// 获取指标数据（实现MetricsDataSource接口）
 func (cpm *ConnectionPoolMonitor) GetMetrics() map[string]any {
 	report := cpm.GetReport()
 
@@ -274,9 +246,7 @@ func (cpm *ConnectionPoolMonitor) GetMetrics() map[string]any {
 	return metrics
 }
 
-/**
- * 获取数据源名称
- */
+// 获取数据源名称
 func (cpm *ConnectionPoolMonitor) GetName() string {
 	return fmt.Sprintf("connection_pool_monitor_%s", cpm.dbGroupName)
 }

@@ -6,14 +6,8 @@ import (
 	"time"
 )
 
-/**
- * MetricsAggregator - 指标聚合器
- *
- * 聚合多个监控数据源的指标，提供统一的指标查询和计算接口
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// MetricsAggregator - 指标聚合器
+// 聚合多个监控数据源的指标，提供统一的指标查询和计算接口
 type MetricsAggregator struct {
 	name string
 
@@ -35,9 +29,7 @@ type MetricsAggregator struct {
 	enabled bool
 }
 
-/**
- * AggregatedMetric - 聚合指标
- */
+// AggregatedMetric - 聚合指标
 type AggregatedMetric struct {
 	Name       string
 	Value      any
@@ -53,9 +45,7 @@ type AggregatedMetric struct {
 	DataPoints []float64
 }
 
-/**
- * AggregationRule - 聚合规则
- */
+// AggregationRule - 聚合规则
 type AggregationRule struct {
 	MetricPattern string
 	Aggregation   AggregationType
@@ -63,9 +53,7 @@ type AggregationRule struct {
 	Enabled       bool
 }
 
-/**
- * AggregationType - 聚合类型
- */
+// AggregationType - 聚合类型
 type AggregationType int
 
 const (
@@ -78,9 +66,7 @@ const (
 	Rate
 )
 
-/**
- * 创建指标聚合器
- */
+// 创建指标聚合器
 func NewMetricsAggregator(name string) *MetricsAggregator {
 	return &MetricsAggregator{
 		name:              name,
@@ -93,9 +79,7 @@ func NewMetricsAggregator(name string) *MetricsAggregator {
 	}
 }
 
-/**
- * 添加数据源
- */
+// 添加数据源
 func (ma *MetricsAggregator) AddDataSource(source MetricsDataSource) {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
@@ -103,9 +87,7 @@ func (ma *MetricsAggregator) AddDataSource(source MetricsDataSource) {
 	LogInfo("数据源已添加到聚合器: %s -> %s", ma.name, source.GetName())
 }
 
-/**
- * 添加聚合规则
- */
+// 添加聚合规则
 func (ma *MetricsAggregator) AddAggregationRule(name string, rule AggregationRule) {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
@@ -113,18 +95,14 @@ func (ma *MetricsAggregator) AddAggregationRule(name string, rule AggregationRul
 	LogInfo("聚合规则已添加: %s -> %s", ma.name, name)
 }
 
-/**
- * 设置缓存持续时间
- */
+// 设置缓存持续时间
 func (ma *MetricsAggregator) SetCacheDuration(duration time.Duration) {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	ma.cacheDuration = duration
 }
 
-/**
- * 启用聚合器
- */
+// 启用聚合器
 func (ma *MetricsAggregator) Enable() {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
@@ -132,9 +110,7 @@ func (ma *MetricsAggregator) Enable() {
 	LogInfo("指标聚合器已启用: %s", ma.name)
 }
 
-/**
- * 禁用聚合器
- */
+// 禁用聚合器
 func (ma *MetricsAggregator) Disable() {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
@@ -142,9 +118,7 @@ func (ma *MetricsAggregator) Disable() {
 	LogInfo("指标聚合器已禁用: %s", ma.name)
 }
 
-/**
- * 获取聚合指标
- */
+// 获取聚合指标
 func (ma *MetricsAggregator) GetAggregatedMetric(name string) (AggregatedMetric, bool) {
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
@@ -153,9 +127,7 @@ func (ma *MetricsAggregator) GetAggregatedMetric(name string) (AggregatedMetric,
 	return metric, exists
 }
 
-/**
- * 获取所有聚合指标
- */
+// 获取所有聚合指标
 func (ma *MetricsAggregator) GetAllAggregatedMetrics() map[string]AggregatedMetric {
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
@@ -168,9 +140,7 @@ func (ma *MetricsAggregator) GetAllAggregatedMetrics() map[string]AggregatedMetr
 	return result
 }
 
-/**
- * 获取聚合指标值
- */
+// 获取聚合指标值
 func (ma *MetricsAggregator) GetAggregatedValue(name string) any {
 	if metric, exists := ma.GetAggregatedMetric(name); exists {
 		return metric.Value
@@ -178,9 +148,7 @@ func (ma *MetricsAggregator) GetAggregatedValue(name string) any {
 	return nil
 }
 
-/**
- * 刷新聚合指标
- */
+// 刷新聚合指标
 func (ma *MetricsAggregator) RefreshMetrics() error {
 	if !ma.enabled {
 		return nil
@@ -237,9 +205,7 @@ func (ma *MetricsAggregator) RefreshMetrics() error {
 	return nil
 }
 
-/**
- * 查找匹配的指标
- */
+// 查找匹配的指标
 func (ma *MetricsAggregator) findMatchingMetrics(pattern string, allMetrics map[string][]any) []any {
 	matching := make([]any, 0)
 
@@ -252,9 +218,7 @@ func (ma *MetricsAggregator) findMatchingMetrics(pattern string, allMetrics map[
 	return matching
 }
 
-/**
- * 检查指标名称是否匹配模式
- */
+// 检查指标名称是否匹配模式
 func (ma *MetricsAggregator) matchesPattern(metricName, pattern string) bool {
 	// 简单模式匹配，支持通配符 *
 	if pattern == "*" {
@@ -270,9 +234,7 @@ func (ma *MetricsAggregator) matchesPattern(metricName, pattern string) bool {
 	return metricName == pattern
 }
 
-/**
- * 聚合指标值
- */
+// 聚合指标值
 func (ma *MetricsAggregator) aggregateMetrics(name string, values []any, aggType AggregationType) AggregatedMetric {
 	metric := AggregatedMetric{
 		Name:       name,
@@ -337,9 +299,7 @@ func (ma *MetricsAggregator) aggregateMetrics(name string, values []any, aggType
 	return metric
 }
 
-/**
- * 转换为float64
- */
+// 转换为float64
 func (ma *MetricsAggregator) toFloat64(value any) (float64, bool) {
 	switch v := value.(type) {
 	case int:
@@ -355,9 +315,7 @@ func (ma *MetricsAggregator) toFloat64(value any) (float64, bool) {
 	}
 }
 
-/**
- * 计算百分位数
- */
+// 计算百分位数
 func (ma *MetricsAggregator) calculatePercentile(sortedValues []float64, percentile int) float64 {
 	if len(sortedValues) == 0 {
 		return 0
@@ -379,9 +337,7 @@ func (ma *MetricsAggregator) calculatePercentile(sortedValues []float64, percent
 	return sortedValues[lower]*(1-weight) + sortedValues[upper]*weight
 }
 
-/**
- * 获取聚合器状态
- */
+// 获取聚合器状态
 func (ma *MetricsAggregator) GetStatus() map[string]any {
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
@@ -397,9 +353,7 @@ func (ma *MetricsAggregator) GetStatus() map[string]any {
 	}
 }
 
-/**
- * 获取指标摘要
- */
+// 获取指标摘要
 func (ma *MetricsAggregator) GetMetricsSummary() map[string]any {
 	summary := map[string]any{
 		"total_metrics": len(ma.aggregatedMetrics),
@@ -423,9 +377,7 @@ func (ma *MetricsAggregator) GetMetricsSummary() map[string]any {
 	return summary
 }
 
-/**
- * 重置聚合器
- */
+// 重置聚合器
 func (ma *MetricsAggregator) Reset() {
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
@@ -436,9 +388,7 @@ func (ma *MetricsAggregator) Reset() {
 	LogInfo("指标聚合器已重置: %s", ma.name)
 }
 
-/**
- * 创建预定义的聚合规则
- */
+// 创建预定义的聚合规则
 func CreateDefaultAggregationRules() map[string]AggregationRule {
 	rules := make(map[string]AggregationRule)
 
@@ -477,9 +427,7 @@ func CreateDefaultAggregationRules() map[string]AggregationRule {
 	return rules
 }
 
-/**
- * 快速创建聚合器（带默认规则）
- */
+// 快速创建聚合器（带默认规则）
 func NewDefaultMetricsAggregator(name string) *MetricsAggregator {
 	aggregator := NewMetricsAggregator(name)
 

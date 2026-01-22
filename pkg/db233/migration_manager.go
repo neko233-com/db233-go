@@ -10,23 +10,15 @@ import (
 	"time"
 )
 
-/**
- * MigrationManager - 数据迁移管理器
- *
- * 管理数据库模式迁移，支持版本控制和回滚
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// MigrationManager - 数据迁移管理器
+// 管理数据库模式迁移，支持版本控制和回滚
 type MigrationManager struct {
 	db            *Db
 	tableName     string
 	migrationsDir string
 }
 
-/**
- * Migration - 迁移记录
- */
+// Migration - 迁移记录
 type Migration struct {
 	Version   int64
 	Name      string
@@ -35,9 +27,7 @@ type Migration struct {
 	AppliedAt *time.Time
 }
 
-/**
- * 创建迁移管理器
- */
+// 创建迁移管理器
 func NewMigrationManager(db *Db, migrationsDir string) *MigrationManager {
 	return &MigrationManager{
 		db:            db,
@@ -46,9 +36,7 @@ func NewMigrationManager(db *Db, migrationsDir string) *MigrationManager {
 	}
 }
 
-/**
- * 初始化迁移表
- */
+// 初始化迁移表
 func (mm *MigrationManager) Init() error {
 	createTableSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
@@ -67,9 +55,7 @@ func (mm *MigrationManager) Init() error {
 	return nil
 }
 
-/**
- * 创建新的迁移文件
- */
+// 创建新的迁移文件
 func (mm *MigrationManager) CreateMigration(name string) error {
 	version := time.Now().Unix()
 	upFile := filepath.Join(mm.migrationsDir, fmt.Sprintf("%d_%s.up.sql", version, name))
@@ -97,9 +83,7 @@ func (mm *MigrationManager) CreateMigration(name string) error {
 	return nil
 }
 
-/**
- * 执行上迁
- */
+// 执行上迁
 func (mm *MigrationManager) Up(steps int) error {
 	// 获取待应用的迁移
 	pendingMigrations, err := mm.getPendingMigrations()
@@ -129,9 +113,7 @@ func (mm *MigrationManager) Up(steps int) error {
 	return nil
 }
 
-/**
- * 执行下迁
- */
+// 执行下迁
 func (mm *MigrationManager) Down(steps int) error {
 	// 获取已应用的迁移
 	appliedMigrations, err := mm.getAppliedMigrations()
@@ -166,9 +148,7 @@ func (mm *MigrationManager) Down(steps int) error {
 	return nil
 }
 
-/**
- * 迁移到指定版本
- */
+// 迁移到指定版本
 func (mm *MigrationManager) MigrateToVersion(targetVersion int64) error {
 	currentVersion, err := mm.getCurrentVersion()
 	if err != nil {
@@ -189,16 +169,12 @@ func (mm *MigrationManager) MigrateToVersion(targetVersion int64) error {
 	}
 }
 
-/**
- * 获取当前版本
- */
+// 获取当前版本
 func (mm *MigrationManager) GetCurrentVersion() (int64, error) {
 	return mm.getCurrentVersion()
 }
 
-/**
- * 获取迁移状态
- */
+// 获取迁移状态
 func (mm *MigrationManager) GetStatus() ([]Migration, error) {
 	allMigrations, err := mm.getAllMigrations()
 	if err != nil {
@@ -226,9 +202,7 @@ func (mm *MigrationManager) GetStatus() ([]Migration, error) {
 	return allMigrations, nil
 }
 
-/**
- * 应用单个迁移
- */
+// 应用单个迁移
 func (mm *MigrationManager) applyMigration(migration Migration, isUp bool) error {
 	var sql string
 	var operation string
@@ -273,9 +247,7 @@ func (mm *MigrationManager) applyMigration(migration Migration, isUp bool) error
 	return nil
 }
 
-/**
- * 获取待应用的迁移
- */
+// 获取待应用的迁移
 func (mm *MigrationManager) getPendingMigrations() ([]Migration, error) {
 	allMigrations, err := mm.getAllMigrations()
 	if err != nil {
@@ -302,9 +274,7 @@ func (mm *MigrationManager) getPendingMigrations() ([]Migration, error) {
 	return pending, nil
 }
 
-/**
- * 获取已应用的迁移
- */
+// 获取已应用的迁移
 func (mm *MigrationManager) getAppliedMigrations() ([]Migration, error) {
 	query := fmt.Sprintf("SELECT version, name, applied_at FROM %s ORDER BY version", mm.tableName)
 	rows, err := mm.db.DataSource.Query(query)
@@ -328,9 +298,7 @@ func (mm *MigrationManager) getAppliedMigrations() ([]Migration, error) {
 	return migrations, nil
 }
 
-/**
- * 获取所有迁移文件
- */
+// 获取所有迁移文件
 func (mm *MigrationManager) getAllMigrations() ([]Migration, error) {
 	files, err := ioutil.ReadDir(mm.migrationsDir)
 	if err != nil {
@@ -357,9 +325,7 @@ func (mm *MigrationManager) getAllMigrations() ([]Migration, error) {
 	return migrations, nil
 }
 
-/**
- * 解析迁移文件名
- */
+// 解析迁移文件名
 func (mm *MigrationManager) parseMigrationFile(filename string) (Migration, error) {
 	// 文件名格式: {version}_{name}.up.sql
 	parts := strings.Split(strings.TrimSuffix(filename, ".up.sql"), "_")
@@ -397,9 +363,7 @@ func (mm *MigrationManager) parseMigrationFile(filename string) (Migration, erro
 	}, nil
 }
 
-/**
- * 获取已应用的版本
- */
+// 获取已应用的版本
 func (mm *MigrationManager) getAppliedVersions() ([]int64, error) {
 	query := fmt.Sprintf("SELECT version FROM %s ORDER BY version", mm.tableName)
 	rows, err := mm.db.DataSource.Query(query)
@@ -421,9 +385,7 @@ func (mm *MigrationManager) getAppliedVersions() ([]int64, error) {
 	return versions, nil
 }
 
-/**
- * 获取当前版本
- */
+// 获取当前版本
 func (mm *MigrationManager) getCurrentVersion() (int64, error) {
 	query := fmt.Sprintf("SELECT COALESCE(MAX(version), 0) FROM %s", mm.tableName)
 	row := mm.db.DataSource.QueryRow(query)
@@ -437,9 +399,7 @@ func (mm *MigrationManager) getCurrentVersion() (int64, error) {
 	return version, nil
 }
 
-/**
- * 上迁到指定版本
- */
+// 上迁到指定版本
 func (mm *MigrationManager) upToVersion(targetVersion int64) error {
 	pendingMigrations, err := mm.getPendingMigrations()
 	if err != nil {
@@ -464,9 +424,7 @@ func (mm *MigrationManager) upToVersion(targetVersion int64) error {
 	return nil
 }
 
-/**
- * 下迁到指定版本
- */
+// 下迁到指定版本
 func (mm *MigrationManager) downToVersion(targetVersion int64) error {
 	appliedMigrations, err := mm.getAppliedMigrations()
 	if err != nil {

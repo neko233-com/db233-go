@@ -2,12 +2,7 @@ package db233
 
 import "strings"
 
-/**
- * Utils - 共享工具函数
- *
- * @author neko233-com
- * @since 2026-01-08
- */
+// Utils - 共享工具函数
 
 // isConnectionError 检查是否为连接错误
 func isConnectionError(err error) bool {

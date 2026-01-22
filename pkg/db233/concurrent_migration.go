@@ -6,12 +6,7 @@ import (
 	"sync"
 )
 
-/**
- * ConcurrentMigrationConfig - 并发迁移配置
- *
- * @author neko233-com
- * @since 2026-01-08
- */
+// ConcurrentMigrationConfig - 并发迁移配置
 type ConcurrentMigrationConfig struct {
 	// 最大并发协程数（0 表示不限制）
 	MaxConcurrency int
@@ -23,9 +18,7 @@ type ConcurrentMigrationConfig struct {
 	EnableConcurrent bool
 }
 
-/**
- * NewDefaultConcurrentMigrationConfig 创建默认并发迁移配置
- */
+// NewDefaultConcurrentMigrationConfig 创建默认并发迁移配置
 func NewDefaultConcurrentMigrationConfig() *ConcurrentMigrationConfig {
 	return &ConcurrentMigrationConfig{
 		MaxConcurrency:   10,                        // 默认最多 10 个并发
@@ -34,21 +27,13 @@ func NewDefaultConcurrentMigrationConfig() *ConcurrentMigrationConfig {
 	}
 }
 
-/**
- * ConcurrentMigrationManager - 并发迁移管理器
- *
- * 支持多协程并发迁移表，提高 I/O 操作效率
- *
- * @author neko233-com
- * @since 2026-01-08
- */
+// ConcurrentMigrationManager - 并发迁移管理器
+// 支持多协程并发迁移表，提高 I/O 操作效率
 type ConcurrentMigrationManager struct {
 	config *ConcurrentMigrationConfig
 }
 
-/**
- * NewConcurrentMigrationManager 创建并发迁移管理器
- */
+// NewConcurrentMigrationManager 创建并发迁移管理器
 func NewConcurrentMigrationManager(config *ConcurrentMigrationConfig) *ConcurrentMigrationManager {
 	if config == nil {
 		config = NewDefaultConcurrentMigrationConfig()
@@ -58,13 +43,10 @@ func NewConcurrentMigrationManager(config *ConcurrentMigrationConfig) *Concurren
 	}
 }
 
-/**
- * MigrateTablesBatch 批量迁移表（支持并发）
- *
- * @param db 数据库连接
- * @param entities 实体列表
- * @return 迁移结果（表名到错误的映射，成功的表为 nil）
- */
+// MigrateTablesBatch 批量迁移表（支持并发）
+// db: 数据库连接
+// entities: 实体列表
+// 返回: 迁移结果（表名到错误的映射，成功的表为 nil）
 func (m *ConcurrentMigrationManager) MigrateTablesBatch(db *Db, entities []any) map[string]error {
 	if len(entities) == 0 {
 		return make(map[string]error)
@@ -79,9 +61,7 @@ func (m *ConcurrentMigrationManager) MigrateTablesBatch(db *Db, entities []any) 
 	return m.migrateTablesConcurrent(db, entities)
 }
 
-/**
- * migrateTablesSequential 顺序迁移表
- */
+// migrateTablesSequential 顺序迁移表
 func (m *ConcurrentMigrationManager) migrateTablesSequential(db *Db, entities []any) map[string]error {
 	results := make(map[string]error)
 
@@ -100,9 +80,7 @@ func (m *ConcurrentMigrationManager) migrateTablesSequential(db *Db, entities []
 	return results
 }
 
-/**
- * migrateTablesConcurrent 并发迁移表
- */
+// migrateTablesConcurrent 并发迁移表
 func (m *ConcurrentMigrationManager) migrateTablesConcurrent(db *Db, entities []any) map[string]error {
 	results := make(map[string]error)
 	resultsMu := sync.Mutex{}
@@ -153,9 +131,7 @@ func (m *ConcurrentMigrationManager) migrateTablesConcurrent(db *Db, entities []
 	return results
 }
 
-/**
- * migrateTable 迁移单个表
- */
+// migrateTable 迁移单个表
 func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity any) error {
 	// 获取元数据
 	metadata, err := GetEntityMetadataCacheInstance().GetOrBuild(entity)
@@ -186,9 +162,7 @@ func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity any) error {
 	return m.updateTableStructure(db, entity, metadata, strategy)
 }
 
-/**
- * createTable 创建表
- */
+// createTable 创建表
 func (m *ConcurrentMigrationManager) createTable(db *Db, entity any, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
 	createSQL, err := strategy.GenerateCreateTableSQL(metadata.TableName, metadata.EntityType, metadata.PrimaryKeyColumn)
 	if err != nil {
@@ -205,9 +179,7 @@ func (m *ConcurrentMigrationManager) createTable(db *Db, entity any, metadata *E
 	return nil
 }
 
-/**
- * updateTableStructure 更新表结构
- */
+// updateTableStructure 更新表结构
 func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity any, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
 	// 获取现有列
 	existingColumns, err := strategy.GetExistingColumns(db, metadata.TableName)
@@ -279,9 +251,7 @@ func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity any, me
 	return nil
 }
 
-/**
- * getTableName 获取表名
- */
+// getTableName 获取表名
 func (m *ConcurrentMigrationManager) getTableName(entity any) string {
 	if dbEntity, ok := entity.(IDbEntity); ok {
 		return dbEntity.TableName()

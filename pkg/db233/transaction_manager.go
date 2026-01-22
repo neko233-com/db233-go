@@ -7,14 +7,8 @@ import (
 	"time"
 )
 
-/**
- * TransactionManager - 事务管理器
- *
- * 提供事务管理和分布式事务支持
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// TransactionManager - 事务管理器
+// 提供事务管理和分布式事务支持
 type TransactionManager struct {
 	db *Db
 	tx *sql.Tx
@@ -35,18 +29,14 @@ type TransactionManager struct {
 	readOnly  bool
 }
 
-/**
- * TransactionOptions - 事务选项
- */
+// TransactionOptions - 事务选项
 type TransactionOptions struct {
 	Isolation sql.IsolationLevel
 	ReadOnly  bool
 	Timeout   time.Duration
 }
 
-/**
- * 创建事务管理器
- */
+// 创建事务管理器
 func NewTransactionManager(db *Db) *TransactionManager {
 	return &TransactionManager{
 		db:        db,
@@ -55,9 +45,7 @@ func NewTransactionManager(db *Db) *TransactionManager {
 	}
 }
 
-/**
- * 开始事务
- */
+// 开始事务
 func (tm *TransactionManager) Begin(opts ...TransactionOptions) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -100,9 +88,7 @@ func (tm *TransactionManager) Begin(opts ...TransactionOptions) error {
 	return nil
 }
 
-/**
- * 提交事务
- */
+// 提交事务
 func (tm *TransactionManager) Commit() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -123,9 +109,7 @@ func (tm *TransactionManager) Commit() error {
 	return nil
 }
 
-/**
- * 回滚事务
- */
+// 回滚事务
 func (tm *TransactionManager) Rollback() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -146,9 +130,7 @@ func (tm *TransactionManager) Rollback() error {
 	return nil
 }
 
-/**
- * 创建保存点
- */
+// 创建保存点
 func (tm *TransactionManager) Savepoint(name string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -174,9 +156,7 @@ func (tm *TransactionManager) Savepoint(name string) error {
 	return nil
 }
 
-/**
- * 回滚到保存点
- */
+// 回滚到保存点
 func (tm *TransactionManager) RollbackToSavepoint(name string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -207,9 +187,7 @@ func (tm *TransactionManager) RollbackToSavepoint(name string) error {
 	return nil
 }
 
-/**
- * 释放保存点
- */
+// 释放保存点
 func (tm *TransactionManager) ReleaseSavepoint(name string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -235,9 +213,7 @@ func (tm *TransactionManager) ReleaseSavepoint(name string) error {
 	return nil
 }
 
-/**
- * 执行事务中的查询
- */
+// 执行事务中的查询
 func (tm *TransactionManager) Query(query string, args ...any) (*sql.Rows, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -249,9 +225,7 @@ func (tm *TransactionManager) Query(query string, args ...any) (*sql.Rows, error
 	return tm.tx.Query(query, args...)
 }
 
-/**
- * 执行事务中的查询（带上下文）
- */
+// 执行事务中的查询（带上下文）
 func (tm *TransactionManager) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -263,9 +237,7 @@ func (tm *TransactionManager) QueryContext(ctx context.Context, query string, ar
 	return tm.tx.QueryContext(ctx, query, args...)
 }
 
-/**
- * 执行事务中的语句
- */
+// 执行事务中的语句
 func (tm *TransactionManager) Exec(query string, args ...any) (sql.Result, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -277,9 +249,7 @@ func (tm *TransactionManager) Exec(query string, args ...any) (sql.Result, error
 	return tm.tx.Exec(query, args...)
 }
 
-/**
- * 执行事务中的语句（带上下文）
- */
+// 执行事务中的语句（带上下文）
 func (tm *TransactionManager) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -291,18 +261,14 @@ func (tm *TransactionManager) ExecContext(ctx context.Context, query string, arg
 	return tm.tx.ExecContext(ctx, query, args...)
 }
 
-/**
- * 检查事务是否活跃
- */
+// 检查事务是否活跃
 func (tm *TransactionManager) IsActive() bool {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	return tm.isActive
 }
 
-/**
- * 获取事务持续时间
- */
+// 获取事务持续时间
 func (tm *TransactionManager) GetDuration() time.Duration {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -314,9 +280,7 @@ func (tm *TransactionManager) GetDuration() time.Duration {
 	return time.Since(tm.startTime)
 }
 
-/**
- * 获取保存点列表
- */
+// 获取保存点列表
 func (tm *TransactionManager) GetSavepoints() []string {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -326,9 +290,7 @@ func (tm *TransactionManager) GetSavepoints() []string {
 	return result
 }
 
-/**
- * 重置事务状态
- */
+// 重置事务状态
 func (tm *TransactionManager) reset() {
 	tm.tx = nil
 	tm.isActive = false
@@ -336,9 +298,7 @@ func (tm *TransactionManager) reset() {
 	tm.savepoints = nil
 }
 
-/**
- * 使用事务执行函数（编程式事务）
- */
+// 使用事务执行函数（编程式事务）
 func (tm *TransactionManager) ExecuteInTransaction(fn func(*TransactionManager) error, opts ...TransactionOptions) error {
 	// 开始事务
 	err := tm.Begin(opts...)
@@ -361,9 +321,7 @@ func (tm *TransactionManager) ExecuteInTransaction(fn func(*TransactionManager) 
 	return tm.Commit()
 }
 
-/**
- * 声明式事务装饰器
- */
+// 声明式事务装饰器
 func WithTransaction(db *Db, fn func(*TransactionManager) error, opts ...TransactionOptions) error {
 	tm := NewTransactionManager(db)
 	return tm.ExecuteInTransaction(fn, opts...)

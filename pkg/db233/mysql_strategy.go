@@ -9,33 +9,22 @@ import (
 	"time"
 )
 
-/**
- * MySQL 建表策略
- *
- * @author neko233-com
- * @since 2026-01-04
- */
+// MySQL 建表策略
 type MySQLStrategy struct {
 	cm *CrudManager
 }
 
-/**
- * 创建 MySQL 策略实例
- */
+// 创建 MySQL 策略实例
 func NewMySQLStrategy(cm *CrudManager) *MySQLStrategy {
 	return &MySQLStrategy{cm: cm}
 }
 
-/**
- * 获取数据库类型
- */
+// 获取数据库类型
 func (s *MySQLStrategy) GetDatabaseType() EnumDatabaseType {
 	return EnumDatabaseTypeMySQL
 }
 
-/**
- * 生成建表 SQL（支持嵌入结构体）
- */
+// 生成建表 SQL（支持嵌入结构体）
 func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType reflect.Type, uidColumn string) (string, error) {
 	if tableName == "" {
 		return "", NewDb233Exception("无法获取表名")
@@ -61,9 +50,7 @@ func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType refl
 	return createSQL, nil
 }
 
-/**
- * 递归收集字段用于建表（支持嵌入结构体）
- */
+// 递归收集字段用于建表（支持嵌入结构体）
 func (s *MySQLStrategy) collectFieldsForCreateTable(entityType reflect.Type, tableName string, uidColumn string, columns *[]string, primaryKeys *[]string) {
 	for i := 0; i < entityType.NumField(); i++ {
 		field := entityType.Field(i)
@@ -130,9 +117,7 @@ func (s *MySQLStrategy) collectFieldsForCreateTable(entityType reflect.Type, tab
 	}
 }
 
-/**
- * 获取 SQL 类型
- */
+// 获取 SQL 类型
 func (s *MySQLStrategy) GetSQLType(field reflect.StructField) string {
 	fieldType := field.Type
 
@@ -206,9 +191,7 @@ func (s *MySQLStrategy) GetSQLType(field reflect.StructField) string {
 	return "VARCHAR(255)"
 }
 
-/**
- * 判断是否为复杂类型（用于 SQL 类型判断）
- */
+// 判断是否为复杂类型（用于 SQL 类型判断）
 func (s *MySQLStrategy) isComplexTypeForSQL(kind reflect.Kind, fieldType reflect.Type) bool {
 	switch kind {
 	case reflect.Map, reflect.Slice, reflect.Array:
@@ -225,9 +208,7 @@ func (s *MySQLStrategy) isComplexTypeForSQL(kind reflect.Kind, fieldType reflect
 	}
 }
 
-/**
- * 检查表是否存在
- */
+// 检查表是否存在
 func (s *MySQLStrategy) TableExists(db *Db, tableName string) (bool, error) {
 	query := "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?"
 	row := db.DataSource.QueryRow(query, tableName)
@@ -241,9 +222,7 @@ func (s *MySQLStrategy) TableExists(db *Db, tableName string) (bool, error) {
 	return count > 0, nil
 }
 
-/**
- * 获取现有表的列信息
- */
+// 获取现有表的列信息
 func (s *MySQLStrategy) GetExistingColumns(db *Db, tableName string) (map[string]bool, error) {
 	query := "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
 	rows, err := db.DataSource.Query(query, tableName)
@@ -264,9 +243,7 @@ func (s *MySQLStrategy) GetExistingColumns(db *Db, tableName string) (map[string
 	return columns, nil
 }
 
-/**
- * 生成添加列的 SQL (old version - kept for backward compatibility)
- */
+// 生成添加列的 SQL (old version - kept for backward compatibility)
 func (s *MySQLStrategy) GenerateAddColumnSQLOld(tableName string, colName string, colType string, field reflect.StructField, isPrimaryKey bool) string {
 	dbTag := field.Tag.Get("db")
 	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
@@ -288,9 +265,7 @@ func (s *MySQLStrategy) GenerateAddColumnSQLOld(tableName string, colName string
 	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef)
 }
 
-/**
- * 生成添加列的 SQL (new interface version)
- */
+// 生成添加列的 SQL (new interface version)
 func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, field reflect.StructField, colName string) (string, error) {
 	colType := s.GetSQLType(field)
 	dbTag := field.Tag.Get("db")
@@ -316,9 +291,7 @@ func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, field reflect.Str
 	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef), nil
 }
 
-/**
- * 获取表的所有列信息
- */
+// 获取表的所有列信息
 func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (map[string]ColumnInfo, error) {
 	query := `
 		SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT
@@ -359,16 +332,12 @@ func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (map[string]Co
 	return columns, nil
 }
 
-/**
- * 生成删除列的 SQL
- */
+// 生成删除列的 SQL
 func (s *MySQLStrategy) GenerateDropColumnSQL(tableName string, colName string) (string, error) {
 	return fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`", tableName, colName), nil
 }
 
-/**
- * 生成修改列的 SQL
- */
+// 生成修改列的 SQL
 func (s *MySQLStrategy) GenerateModifyColumnSQL(tableName string, field reflect.StructField, colName string) (string, error) {
 	colType := s.GetSQLType(field)
 	dbTag := field.Tag.Get("db")

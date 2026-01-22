@@ -9,14 +9,8 @@ import (
 	"time"
 )
 
-/**
- * MetricsCollector - 监控数据收集器
- *
- * 收集和存储历史监控数据，支持趋势分析和数据导出
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// MetricsCollector - 监控数据收集器
+// 收集和存储历史监控数据，支持趋势分析和数据导出
 type MetricsCollector struct {
 	name string
 
@@ -39,9 +33,7 @@ type MetricsCollector struct {
 	lastUpdate time.Time
 }
 
-/**
- * MetricPoint - 监控数据点
- */
+// MetricPoint - 监控数据点
 type MetricPoint struct {
 	Timestamp time.Time
 	Name      string
@@ -49,17 +41,13 @@ type MetricPoint struct {
 	Tags      map[string]string
 }
 
-/**
- * MetricsDataSource - 监控数据源接口
- */
+// MetricsDataSource - 监控数据源接口
 type MetricsDataSource interface {
 	GetMetrics() map[string]any
 	GetName() string
 }
 
-/**
- * 创建监控数据收集器
- */
+// 创建监控数据收集器
 func NewMetricsCollector(name string) *MetricsCollector {
 	return &MetricsCollector{
 		name:               name,
@@ -73,9 +61,7 @@ func NewMetricsCollector(name string) *MetricsCollector {
 	}
 }
 
-/**
- * 添加数据源
- */
+// 添加数据源
 func (mc *MetricsCollector) AddDataSource(source MetricsDataSource) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -83,27 +69,21 @@ func (mc *MetricsCollector) AddDataSource(source MetricsDataSource) {
 	LogInfo("数据源已添加: %s -> %s", mc.name, source.GetName())
 }
 
-/**
- * 设置最大数据点数量
- */
+// 设置最大数据点数量
 func (mc *MetricsCollector) SetMaxPoints(maxPoints int) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.maxPoints = maxPoints
 }
 
-/**
- * 设置收集间隔
- */
+// 设置收集间隔
 func (mc *MetricsCollector) SetCollectionInterval(interval time.Duration) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.collectionInterval = interval
 }
 
-/**
- * 启用收集器
- */
+// 启用收集器
 func (mc *MetricsCollector) Enable() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -111,9 +91,7 @@ func (mc *MetricsCollector) Enable() {
 	LogInfo("监控数据收集器已启用: %s", mc.name)
 }
 
-/**
- * 禁用收集器
- */
+// 禁用收集器
 func (mc *MetricsCollector) Disable() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -121,9 +99,7 @@ func (mc *MetricsCollector) Disable() {
 	LogInfo("监控数据收集器已禁用: %s", mc.name)
 }
 
-/**
- * 启动数据收集
- */
+// 启动数据收集
 func (mc *MetricsCollector) Start() {
 	LogInfo("监控数据收集器启动: %s, 间隔: %v", mc.name, mc.collectionInterval)
 
@@ -143,9 +119,7 @@ func (mc *MetricsCollector) Start() {
 	}()
 }
 
-/**
- * 停止数据收集
- */
+// 停止数据收集
 func (mc *MetricsCollector) Stop() {
 	select {
 	case mc.stopChan <- true:
@@ -155,9 +129,7 @@ func (mc *MetricsCollector) Stop() {
 	}
 }
 
-/**
- * 收集监控数据
- */
+// 收集监控数据
 func (mc *MetricsCollector) collectMetrics() {
 	if !mc.enabled {
 		return
@@ -202,9 +174,7 @@ func (mc *MetricsCollector) collectMetrics() {
 	}
 }
 
-/**
- * 获取指定指标的历史数据
- */
+// 获取指定指标的历史数据
 func (mc *MetricsCollector) GetMetricHistory(metricName string, duration time.Duration) []MetricPoint {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
@@ -226,9 +196,7 @@ func (mc *MetricsCollector) GetMetricHistory(metricName string, duration time.Du
 	return result
 }
 
-/**
- * 获取所有指标名称
- */
+// 获取所有指标名称
 func (mc *MetricsCollector) GetMetricNames() []string {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
@@ -241,9 +209,7 @@ func (mc *MetricsCollector) GetMetricNames() []string {
 	return names
 }
 
-/**
- * 获取最新数据点
- */
+// 获取最新数据点
 func (mc *MetricsCollector) GetLatestMetrics() map[string]MetricPoint {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
@@ -260,9 +226,7 @@ func (mc *MetricsCollector) GetLatestMetrics() map[string]MetricPoint {
 	return result
 }
 
-/**
- * 计算指标统计信息
- */
+// 计算指标统计信息
 func (mc *MetricsCollector) GetMetricStats(metricName string, duration time.Duration) map[string]any {
 	points := mc.GetMetricHistory(metricName, duration)
 
@@ -304,9 +268,7 @@ func (mc *MetricsCollector) GetMetricStats(metricName string, duration time.Dura
 	return stats
 }
 
-/**
- * 计算数值统计
- */
+// 计算数值统计
 func (mc *MetricsCollector) calculateStats(values []float64) (min, max, avg, p95, p99 float64) {
 	if len(values) == 0 {
 		return 0, 0, 0, 0, 0
@@ -346,9 +308,7 @@ func (mc *MetricsCollector) calculateStats(values []float64) (min, max, avg, p95
 	return min, max, avg, p95, p99
 }
 
-/**
- * 导出数据到文件
- */
+// 导出数据到文件
 func (mc *MetricsCollector) ExportToFile(filename string) error {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
@@ -378,9 +338,7 @@ func (mc *MetricsCollector) ExportToFile(filename string) error {
 	return nil
 }
 
-/**
- * 从文件导入数据
- */
+// 从文件导入数据
 func (mc *MetricsCollector) ImportFromFile(filename string) error {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -438,9 +396,7 @@ func (mc *MetricsCollector) ImportFromFile(filename string) error {
 	return nil
 }
 
-/**
- * 清理过期数据
- */
+// 清理过期数据
 func (mc *MetricsCollector) CleanupExpiredData(maxAge time.Duration) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -465,9 +421,7 @@ func (mc *MetricsCollector) CleanupExpiredData(maxAge time.Duration) {
 	}
 }
 
-/**
- * 获取收集器状态
- */
+// 获取收集器状态
 func (mc *MetricsCollector) GetStatus() map[string]any {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
@@ -489,9 +443,7 @@ func (mc *MetricsCollector) GetStatus() map[string]any {
 	}
 }
 
-/**
- * 重置收集器
- */
+// 重置收集器
 func (mc *MetricsCollector) Reset() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()

@@ -7,14 +7,8 @@ import (
 	"time"
 )
 
-/**
- * PerformanceMonitor - 性能监控器
- *
- * 提供详细的性能监控和指标收集功能
- *
- * @author SolarisNeko
- * @since 2025-12-29
- */
+// PerformanceMonitor - 性能监控器
+// 提供详细的性能监控和指标收集功能
 type PerformanceMonitor struct {
 	dbGroupName string
 	db          *Db
@@ -67,9 +61,7 @@ type PerformanceMonitor struct {
 	enabled bool
 }
 
-/**
- * ErrorRecord - 错误记录
- */
+// ErrorRecord - 错误记录
 type ErrorRecord struct {
 	Timestamp time.Time
 	Error     error
@@ -77,9 +69,7 @@ type ErrorRecord struct {
 	Duration  time.Duration
 }
 
-/**
- * TimeWindowStats - 时间窗口统计
- */
+// TimeWindowStats - 时间窗口统计
 type TimeWindowStats struct {
 	StartTime       time.Time
 	EndTime         time.Time
@@ -91,9 +81,7 @@ type TimeWindowStats struct {
 	ResponseTimes   []time.Duration
 }
 
-/**
- * 创建性能监控器
- */
+// 创建性能监控器
 func NewPerformanceMonitor(dbGroupName string, db *Db) *PerformanceMonitor {
 	pm := &PerformanceMonitor{
 		dbGroupName:            dbGroupName,
@@ -117,9 +105,7 @@ func NewPerformanceMonitor(dbGroupName string, db *Db) *PerformanceMonitor {
 	return pm
 }
 
-/**
- * 启用监控
- */
+// 启用监控
 func (pm *PerformanceMonitor) Enable() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -127,9 +113,7 @@ func (pm *PerformanceMonitor) Enable() {
 	LogInfo("性能监控已启用: %s", pm.dbGroupName)
 }
 
-/**
- * 禁用监控
- */
+// 禁用监控
 func (pm *PerformanceMonitor) Disable() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -137,27 +121,21 @@ func (pm *PerformanceMonitor) Disable() {
 	LogInfo("性能监控已禁用: %s", pm.dbGroupName)
 }
 
-/**
- * 设置慢查询阈值
- */
+// 设置慢查询阈值
 func (pm *PerformanceMonitor) SetSlowQueryThreshold(threshold time.Duration) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.slowQueryThreshold = threshold
 }
 
-/**
- * 设置非常慢查询阈值
- */
+// 设置非常慢查询阈值
 func (pm *PerformanceMonitor) SetVerySlowQueryThreshold(threshold time.Duration) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.verySlowQueryThreshold = threshold
 }
 
-/**
- * 记录查询执行
- */
+// 记录查询执行
 func (pm *PerformanceMonitor) RecordQuery(query string, duration time.Duration, success bool, err error) {
 	if !pm.enabled {
 		return
@@ -219,9 +197,7 @@ func (pm *PerformanceMonitor) RecordQuery(query string, duration time.Duration, 
 	pm.updateTimeWindowStats(duration)
 }
 
-/**
- * 记录连接获取
- */
+// 记录连接获取
 func (pm *PerformanceMonitor) RecordConnectionAcquired(waitTime time.Duration) {
 	if !pm.enabled {
 		return
@@ -238,9 +214,7 @@ func (pm *PerformanceMonitor) RecordConnectionAcquired(waitTime time.Duration) {
 	}
 }
 
-/**
- * 记录连接释放
- */
+// 记录连接释放
 func (pm *PerformanceMonitor) RecordConnectionReleased() {
 	if !pm.enabled {
 		return
@@ -252,9 +226,7 @@ func (pm *PerformanceMonitor) RecordConnectionReleased() {
 	pm.connectionReleased++
 }
 
-/**
- * 记录事务开始
- */
+// 记录事务开始
 func (pm *PerformanceMonitor) RecordTransactionStart() {
 	if !pm.enabled {
 		return
@@ -267,9 +239,7 @@ func (pm *PerformanceMonitor) RecordTransactionStart() {
 	pm.activeTransactions++
 }
 
-/**
- * 记录事务结束
- */
+// 记录事务结束
 func (pm *PerformanceMonitor) RecordTransactionEnd(duration time.Duration, committed bool) {
 	if !pm.enabled {
 		return
@@ -288,9 +258,7 @@ func (pm *PerformanceMonitor) RecordTransactionEnd(duration time.Duration, commi
 	}
 }
 
-/**
- * 更新时间窗口统计
- */
+// 更新时间窗口统计
 func (pm *PerformanceMonitor) updateTimeWindowStats(duration time.Duration) {
 	now := time.Now()
 
@@ -330,9 +298,7 @@ func (pm *PerformanceMonitor) updateTimeWindowStats(duration time.Duration) {
 	}
 }
 
-/**
- * 获取详细监控报告
- */
+// 获取详细监控报告
 func (pm *PerformanceMonitor) GetDetailedReport() map[string]any {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -438,9 +404,7 @@ func (pm *PerformanceMonitor) GetDetailedReport() map[string]any {
 	return report
 }
 
-/**
- * 获取摘要报告
- */
+// 获取摘要报告
 func (pm *PerformanceMonitor) GetSummaryReport() map[string]any {
 	report := pm.GetDetailedReport()
 
@@ -459,9 +423,7 @@ func (pm *PerformanceMonitor) GetSummaryReport() map[string]any {
 	return summary
 }
 
-/**
- * 重置统计信息
- */
+// 重置统计信息
 func (pm *PerformanceMonitor) Reset() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -501,9 +463,7 @@ func (pm *PerformanceMonitor) Reset() {
 	LogInfo("性能监控统计已重置: %s", pm.dbGroupName)
 }
 
-/**
- * 获取指标数据（实现MetricsDataSource接口）
- */
+// 获取指标数据（实现MetricsDataSource接口）
 func (pm *PerformanceMonitor) GetMetrics() map[string]any {
 	report := pm.GetDetailedReport()
 
@@ -565,9 +525,7 @@ func (pm *PerformanceMonitor) GetMetrics() map[string]any {
 	return metrics
 }
 
-/**
- * 获取数据源名称
- */
+// 获取数据源名称
 func (pm *PerformanceMonitor) GetName() string {
 	return fmt.Sprintf("performance_monitor_%s", pm.dbGroupName)
 }
