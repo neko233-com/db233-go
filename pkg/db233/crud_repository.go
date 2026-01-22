@@ -748,15 +748,20 @@ func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 		return NewQueryExceptionWithCause(err, fmt.Sprintf("批量保存到表 %s 失败", tableName))
 	}
 
-	// 处理自增主键（批量插入时，只有第一条记录能获取到自增ID）
+	// 处理自增主键（批量插入时，MySQL返回第一条记录的ID，后续ID是连续的）
 	if isAutoIncrement {
 		lastInsertId, err := result.LastInsertId()
 		if err == nil && lastInsertId > 0 {
-			// 为第一个实体设置自增主键
-			r.setPrimaryKeyValue(validEntities[0], lastInsertId)
-			// 注意：MySQL批量INSERT时，只能获取第一条记录的ID
-			// 后续记录的ID是连续的，但无法直接获取
-			LogDebug("批量INSERT自增主键已设置: 表=%s, 第一条记录ID=%d", tableName, lastInsertId)
+			// MySQL批量INSERT时，LastInsertId()返回第一条记录的ID
+			// 后续记录的ID是连续的（ID, ID+1, ID+2, ...）
+			// 为所有实体设置自增主键
+			for i, entity := range validEntities {
+				entityId := lastInsertId + int64(i)
+				r.setPrimaryKeyValue(entity, entityId)
+				LogDebug("批量INSERT自增主键已设置: 表=%s, 记录索引=%d, ID=%d", tableName, i, entityId)
+			}
+			LogDebug("批量INSERT自增主键已设置: 表=%s, 第一条记录ID=%d, 最后一条记录ID=%d, 总记录数=%d",
+				tableName, lastInsertId, lastInsertId+int64(len(validEntities)-1), len(validEntities))
 		}
 	}
 

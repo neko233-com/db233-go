@@ -47,7 +47,7 @@ func (e *TestEntityWithComplexTypes) GetTableMetaData() *db233.TableMetaData {
 
 // TestEntityWithUnexportedFields 测试包含未导出字段的实体
 type TestEntityWithUnexportedFields struct {
-	ID          int    `db:"id,primary_key,auto_increment"`
+	ID          int    `db:"id" primary_key:"true" auto_increment:"true"`
 	Name        string `db:"name"`
 	exported    string // 未导出字段，应该被跳过
 	privateData string `db:"-"` // 明确标记为跳过
@@ -81,7 +81,7 @@ func (e *TestEntityWithSkipFields) DeserializeAfterLoadDb() {}
 
 // TestEntityWithEmptyValues 测试空值处理
 type TestEntityWithEmptyValues struct {
-	ID       int     `db:"id,primary_key,auto_increment"`
+	ID       int     `db:"id" primary_key:"true" auto_increment:"true"`
 	Name     string  `db:"name"`
 	EmptyStr string  `db:"empty_str"`
 	ZeroInt  int     `db:"zero_int"`

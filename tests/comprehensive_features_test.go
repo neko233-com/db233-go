@@ -98,7 +98,7 @@ func TestPrimaryKeyAutoDetection(t *testing.T) {
 
 // TestDbTagIgnore 测试 db 标签忽略功能
 type TestDbTagEntity struct {
-	ID           int64  `db:"id,primary_key,auto_increment"`
+	ID           int64  `db:"id" primary_key:"true" auto_increment:"true"`
 	PublicField  string `db:"public_field"` // 有 db 标签，会被保存
 	PrivateField string // 没有 db 标签，应该被忽略
 	IgnoredField string `db:"-"`               // db:"-"，应该被忽略

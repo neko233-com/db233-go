@@ -385,23 +385,23 @@ func TestCrudManager_IsPrimaryKey(t *testing.T) {
 		Name: "TestID",
 		Tag:  `db:"test_id" primary_key:"true"`,
 	}
-	if !cm.IsPrimaryKey(field1) {
+	if !cm.IsPrimaryKey(field2) {
 		t.Error("Field with primary_key tag should be primary key")
 	}
 
-	// 测试名为 ID 的字段
-	field2 := reflect.StructField{
+	// 测试名为 ID 的字段（无标签，仅通过字段名识别）
+	field3 := reflect.StructField{
 		Name: "ID",
 	}
-	if !cm.IsPrimaryKey(field2) {
+	if !cm.IsPrimaryKey(field3) {
 		t.Error("Field named ID should be primary key")
 	}
 
-	// 测试普通字段
-	field3 := reflect.StructField{
+	// 测试普通字段（不应该被识别为主键）
+	field4 := reflect.StructField{
 		Name: "Name",
 	}
-	if cm.IsPrimaryKey(field3) {
+	if cm.IsPrimaryKey(field4) {
 		t.Error("Regular field should not be primary key")
 	}
 }

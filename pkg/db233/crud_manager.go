@@ -573,6 +573,19 @@ func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
 	}
 
 	LogInfo("表创建成功: 数据库类型=%s, 表=%s", strategy.GetDatabaseType(), tableName)
+
+	// 创建表后，迁移索引（如果实体实现了 ITableMetaDataProvider 接口）
+	if entity, ok := entityType.(IDbEntity); ok {
+		metaData := GetTableMetaData(entity)
+		if metaData != nil && len(metaData.Indexes) > 0 {
+			permissions := NewDefaultAutoDbPermission()
+			if err := cm.migrateIndexes(db, tableName, metaData.Indexes, permissions); err != nil {
+				LogError("索引迁移失败: 表=%s, 错误=%v", tableName, err)
+				// 索引迁移失败不影响表创建，只记录错误
+			}
+		}
+	}
+
 	return nil
 }
 
