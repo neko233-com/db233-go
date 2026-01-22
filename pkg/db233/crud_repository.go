@@ -696,7 +696,7 @@ func (r *BaseCrudRepository) isZeroValue(value any) bool {
 }
 
 /**
- * 其他方法的简化实现
+ * 批量保存实体（真正的批量INSERT，一次SQL插入多条）
  */
 func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 	// 参数验证
@@ -707,23 +707,126 @@ func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 		return NewValidationException("实体列表不能为空")
 	}
 
-	LogDebug("开始批量保存: 实体数量=%d", len(entities))
-
-	successCount := 0
+	// 过滤掉 nil 实体
+	validEntities := make([]IDbEntity, 0, len(entities))
 	for i, entity := range entities {
 		if entity == nil {
 			LogWarn("批量保存跳过 nil 实体: 索引=%d", i)
 			continue
 		}
-
-		if err := r.Save(entity); err != nil {
-			LogError("批量保存失败: 索引=%d, 实体类型=%T, 错误=%v", i, entity, err)
-			return NewQueryExceptionWithCause(err, fmt.Sprintf("批量保存失败，已成功保存 %d/%d 条记录，第 %d 条记录保存失败", successCount, len(entities), i+1))
-		}
-		successCount++
+		validEntities = append(validEntities, entity)
 	}
 
-	LogDebug("批量保存完成: 成功=%d, 总数=%d", successCount, len(entities))
+	if len(validEntities) == 0 {
+		return NewValidationException("没有有效的实体可保存")
+	}
+
+	LogDebug("开始批量保存: 实体数量=%d", len(validEntities))
+
+	// 获取第一个实体的表名和字段结构（假设所有实体类型相同）
+	firstEntity := validEntities[0]
+	tableName := r.getTableName(firstEntity)
+	if tableName == "" {
+		return NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
+	}
+
+	// 调用保存前的序列化钩子
+	for _, entity := range validEntities {
+		entity.SerializeBeforeSaveDb()
+	}
+
+	// 获取字段结构（使用第一个实体）
+	firstFields := r.getFields(firstEntity)
+	if len(firstFields) == 0 {
+		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段，请检查字段是否包含 db 标签", firstEntity))
+	}
+
+	// 获取主键信息
+	cm := GetCrudManagerInstance()
+	uidColumn := cm.GetPrimaryKeyColumnName(firstEntity)
+	if uidColumn == "" {
+		uidColumn = "id"
+	}
+	isAutoIncrement := r.isAutoIncrementPrimaryKey(firstEntity, uidColumn)
+
+	// 确定要插入的列（排除自增主键的零值）
+	columns := make([]string, 0, len(firstFields))
+	for name, value := range firstFields {
+		if name == uidColumn && isAutoIncrement && r.isZeroValue(value) {
+			continue // 跳过自增主键的零值
+		}
+		columns = append(columns, name)
+	}
+
+	if len(columns) == 0 {
+		return NewValidationException(fmt.Sprintf("表 %s 没有可插入的字段", tableName))
+	}
+
+	// 构建批量INSERT SQL: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
+	// 生成单个占位符: (?, ?, ?)
+	placeholderParts := make([]string, len(columns))
+	for i := range placeholderParts {
+		placeholderParts[i] = "?"
+	}
+	placeholder := "(" + StringUtilsInstance.Join(placeholderParts, ",") + ")"
+	placeholders := make([]string, 0, len(validEntities))
+	allValues := make([]any, 0, len(validEntities)*len(columns))
+
+	for _, entity := range validEntities {
+		fields := r.getFields(entity)
+		rowValues := make([]any, 0, len(columns))
+
+		for _, col := range columns {
+			value, exists := fields[col]
+			if !exists {
+				// 如果字段不存在，使用默认值
+				value = r.getDefaultValueIfEmpty(nil, col)
+			} else {
+				value = r.getDefaultValueIfEmpty(value, col)
+			}
+			rowValues = append(rowValues, value)
+		}
+
+		placeholders = append(placeholders, placeholder)
+		allValues = append(allValues, rowValues...)
+	}
+
+	// 构建SQL: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
+	sql := "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " + StringUtilsInstance.Join(placeholders, ",")
+
+	LogDebug("执行批量INSERT: 表=%s, 记录数=%d, 字段数=%d, SQL=%s", tableName, len(validEntities), len(columns), sql)
+
+	result, err := r.db.DataSource.Exec(sql, allValues...)
+	if err != nil {
+		if isConnectionError(err) {
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
+			// 批量操作失败时，记录第一个实体的主键
+			firstUidValue := cm.GetPrimaryKeyValue(firstEntity)
+			r.recordFailedOperation("SaveBatch", tableName, sql, allValues, firstUidValue)
+			if r.db.FaultTolerantMgr != nil {
+				r.db.FaultTolerantMgr.CheckAndReconnect()
+			}
+			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+		}
+		LogError("批量保存失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
+		return NewQueryExceptionWithCause(err, fmt.Sprintf("批量保存到表 %s 失败", tableName))
+	}
+
+	// 处理自增主键（批量插入时，只有第一条记录能获取到自增ID）
+	if isAutoIncrement {
+		lastInsertId, err := result.LastInsertId()
+		if err == nil && lastInsertId > 0 {
+			// 为第一个实体设置自增主键
+			r.setPrimaryKeyValue(validEntities[0], lastInsertId)
+			// 注意：MySQL批量INSERT时，只能获取第一条记录的ID
+			// 后续记录的ID是连续的，但无法直接获取
+			LogDebug("批量INSERT自增主键已设置: 表=%s, 第一条记录ID=%d", tableName, lastInsertId)
+		}
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	LogDebug("批量保存完成: 表=%s, 影响行数=%d, 记录数=%d", tableName, rowsAffected, len(validEntities))
+
 	return nil
 }
 

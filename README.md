@@ -12,7 +12,9 @@ db233-go 是 db233 的 Go 语言版本，一个功能强大的数据库操作库
   - [JPA 风格实体继承](#方式-2jpa-风格实体继承--推荐) ⭐ 推荐
   - [CRUD 操作](#3-使用-crud-操作)
   - [自动建表和迁移](#4-自动建表和表结构迁移)
+  - [OLAP 查询](#6-olap-查询聚合函数countsumavgmaxmin-等) ⭐ NEW！
 - [JPA 继承完整指南](#jpa-风格实体继承完整指南)
+- [OLAP 查询完整指南](#olap-查询使用指南) ⭐ NEW！
 - [高级特性](#高级特性)
 - [API 文档](#api-文档)
 - [贡献指南](#贡献)
@@ -524,7 +526,48 @@ repo.Save(entity)  // 第一次：INSERT
 entity.CurrentStrength = 200
 repo.Save(entity)  // 第二次：自动变为 UPDATE
 
-// 6. 查询
+// 6. OLAP 查询（聚合函数：COUNT、SUM、AVG、MAX、MIN 等）
+
+// 6.1 基础类型查询（推荐用于 OLAP）
+// 指定基础类型作为 returnType，会自动取第一个返回值并转换类型
+var countType int64
+results := db.ExecuteQuery("SELECT COUNT(*) as cnt FROM users", [][]any{}, countType)
+count := results[0].(int64) // 返回 int64 类型
+
+var sumType float64
+results = db.ExecuteQuery("SELECT SUM(age) as total_age FROM users", [][]any{}, sumType)
+sum := results[0].(float64) // 返回 float64 类型
+
+var avgType float32
+results = db.ExecuteQuery("SELECT AVG(age) as avg_age FROM users", [][]any{}, avgType)
+avg := results[0].(float32) // 返回 float32 类型
+
+// 支持的基础类型：int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, string, bool
+// 注意：会忽略 SQL 别名，直接取第一个返回值
+
+// 6.2 带参数的 OLAP 查询
+var countType2 int64
+results = db.ExecuteQuery("SELECT COUNT(*) FROM users WHERE age > ?", [][]any{{25}}, countType2)
+count = results[0].(int64)
+
+// 6.3 原始值查询（返回 map 或原始值）
+results = db.ExecuteQuery("SELECT COUNT(*) as cnt, MAX(age) as max_age FROM users", [][]any{}, nil)
+// 如果只有一列，返回原始值；多列返回 map[string]any
+if len(results) > 0 {
+    if rowMap, ok := results[0].(map[string]any); ok {
+        cnt := rowMap["cnt"]
+        maxAge := rowMap["max_age"]
+    }
+}
+
+// 6.4 实体查询（返回指针引用，避免值传递）
+results = db.ExecuteQuery("SELECT * FROM users WHERE age > ?", [][]any{{18}}, &User{})
+for _, result := range results {
+    user := result.(*User) // 返回的是指针类型
+    fmt.Printf("User: %+v\n", user)
+}
+
+// 7. 查询
 found, _ := repo.FindById(int64(1000022), &StrengthEntity{})
 foundEntity := found.(*StrengthEntity)
 // 自动调用 DeserializeAfterLoadDb()，计算 cachedPowerLevel
@@ -542,6 +585,9 @@ foundEntity := found.(*StrengthEntity)
 | **UPSERT 处理** | 自动避免主键冲突 | INSERT...ON DUPLICATE KEY UPDATE |
 | **钩子方法** | 保存前/加载后回调 | `BeforeSaveToDb()`、`AfterLoadFromDb()` |
 | **线程安全** | 并发安全的缓存 | 内置 RWMutex 保护 |
+| **OLAP 查询** | 支持聚合函数，自动类型转换 | `COUNT(*)` 返回 `int64`，`SUM()` 返回 `float64` |
+| **批量 INSERT** | 真正的批量插入，一次 SQL 插入多条 | `SaveBatch(entities)` |
+| **指针返回** | 所有查询返回指针引用，避免值传递 | `results[0].(*User)` |
 
 ### 📊 性能对比
 
@@ -558,6 +604,7 @@ foundEntity := found.(*StrengthEntity)
 - 📗 [JPA Inheritance Guide (English)](docs/JPA_INHERITANCE_GUIDE.md) - Complete English guide
 - 📙 [快速参考卡片](docs/QUICK_REFERENCE.md) - 语法速查
 - 💻 [完整示例代码](examples/player_entity_example.go) - 可运行的示例
+- 📊 [OLAP 查询使用指南](docs/OLAP_QUERY.md) - COUNT、SUM、AVG 等聚合函数查询 ⭐ NEW！
 
 ---
 
