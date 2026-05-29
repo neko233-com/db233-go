@@ -214,6 +214,18 @@ if (-not $DryRun) {
 
 # 7. 推送当前分支与标签
 Write-Section "Pushing to remote"
+
+# 规范化 origin URL（GitHub 推荐带 .git 后缀，避免部分环境 push/release 异常）
+$originUrl = git remote get-url origin 2>$null
+if ($originUrl -match '^https://github\.com/[^/]+/[^/.]+$') {
+    $fixedUrl = "$originUrl.git"
+    Write-Warn "origin URL 缺少 .git 后缀，自动修正: $fixedUrl"
+    git remote set-url origin $fixedUrl
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "origin URL 已更新"
+    }
+}
+
 $currentBranch = git branch --show-current
 if (-not $DryRun) {
     Write-ColoredHost "Pushing branch $currentBranch..." "White"
