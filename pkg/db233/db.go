@@ -61,6 +61,8 @@ type Db struct {
 	DatabaseType EnumDatabaseType // 数据库类型，默认为 MySQL
 	// FaultTolerantMgr 容错管理器（可选）
 	FaultTolerantMgr *FaultTolerantManager
+	// WriteJournal 本地 WAL（可选，游戏服数据不丢）
+	WriteJournal *LocalWriteJournal
 }
 
 // NewDb 创建一个默认使用 MySQL 的 Db 实例。
@@ -913,8 +915,11 @@ func (db *Db) ExecuteQuerySimple(query string, params []any, returnType any) []a
 	return db.ExecuteQuery(query, [][]any{params}, returnType)
 }
 
-// Close 关闭底层数据库连接，并在需要时停止容错管理器。
+// Close 关闭底层数据库连接，并在需要时停止容错管理器与 WAL。
 func (db *Db) Close() error {
+	if db.WriteJournal != nil {
+		db.WriteJournal.Stop()
+	}
 	if db.FaultTolerantMgr != nil {
 		db.FaultTolerantMgr.Stop()
 	}

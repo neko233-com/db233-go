@@ -11,16 +11,18 @@ import (
 
 // FailedOperation keeps a failed write for retry.
 type FailedOperation struct {
-	ID         string         `json:"id"`
-	Operation  string         `json:"operation"` // "Save", "Update", "Delete", "ExecuteUpdate"
-	SQL        string         `json:"sql"`
-	Params     []any          `json:"params"`
-	EntityData map[string]any `json:"entity_data,omitempty"`
-	TableName  string         `json:"table_name"`
-	PrimaryKey any            `json:"primary_key,omitempty"`
-	Timestamp  time.Time      `json:"timestamp"`
-	RetryCount int            `json:"retry_count"`
-	LastError  string         `json:"last_error,omitempty"`
+	ID             string         `json:"id"`
+	Operation      string         `json:"operation"` // "Save", "Update", "Delete", "SaveBatchUpsert", "ExecuteUpdate"
+	SQL            string         `json:"sql"`
+	Params         []any          `json:"params"`
+	EntityData     map[string]any `json:"entity_data,omitempty"`
+	EntityTypeName string         `json:"entityTypeName,omitempty"`
+	EntityJSON     []byte         `json:"entityJSON,omitempty"`
+	TableName      string         `json:"table_name"`
+	PrimaryKey     any            `json:"primary_key,omitempty"`
+	Timestamp      time.Time      `json:"timestamp"`
+	RetryCount     int            `json:"retry_count"`
+	LastError      string         `json:"last_error,omitempty"`
 }
 
 // FaultTolerantManager provides reconnect and retry.
@@ -41,6 +43,7 @@ type FaultTolerantManager struct {
 
 	maxRetryAttempts int
 	retryInterval    time.Duration
+	neverDropFailedOps bool
 
 	stopChan          chan bool
 	healthCheckTicker *time.Ticker
@@ -58,13 +61,26 @@ func NewFaultTolerantManager(db *Db, dbConfig *DbConnectionConfig) *FaultToleran
 		maxReconnectAttempts: 10,
 		reconnectInterval:    5 * time.Second,
 		healthCheckInterval:  30 * time.Second,
-		maxRetryAttempts:     3,
+		maxRetryAttempts: 0, // 0 = 无限重试，游戏数据绝不丢弃
 		retryInterval:        10 * time.Second,
+		neverDropFailedOps:   true,
 		stopChan:             make(chan bool),
 	}
 
 	ftm.loadFailedOperations()
 	return ftm
+}
+
+// SetNeverDropFailedOps 设置是否永不丢弃失败操作（游戏服默认 true）。
+func (ftm *FaultTolerantManager) SetNeverDropFailedOps(neverDrop bool) {
+	ftm.failedOpsMutex.Lock()
+	defer ftm.failedOpsMutex.Unlock()
+	ftm.neverDropFailedOps = neverDrop
+}
+
+// RetryFailedOperationsNow 立即重试失败操作。
+func (ftm *FaultTolerantManager) RetryFailedOperationsNow() {
+	ftm.retryFailedOperations()
 }
 
 // SetPersistPath sets the path for persistence.
@@ -217,7 +233,7 @@ func (ftm *FaultTolerantManager) retryFailedOperations() {
 	remainingOps := make([]*FailedOperation, 0)
 
 	for _, op := range ftm.failedOps {
-		if op.RetryCount >= ftm.maxRetryAttempts {
+		if !ftm.neverDropFailedOps && ftm.maxRetryAttempts > 0 && op.RetryCount >= ftm.maxRetryAttempts {
 			LogError("操作重试次数已达上限，放弃: ID=%s, Operation=%s", op.ID, op.Operation)
 			continue
 		}
@@ -245,7 +261,7 @@ func (ftm *FaultTolerantManager) executeFailedOperation(op *FailedOperation) boo
 	}()
 
 	switch op.Operation {
-	case "Save", "Update":
+	case "Save", "Update", "SaveBatchUpsert":
 		return ftm.executeSaveOrUpdate(op)
 	case "Delete":
 		return ftm.executeDelete(op)
@@ -258,6 +274,20 @@ func (ftm *FaultTolerantManager) executeFailedOperation(op *FailedOperation) boo
 }
 
 func (ftm *FaultTolerantManager) executeSaveOrUpdate(op *FailedOperation) bool {
+	// 优先用实体 JSON 回放（比 SQL 参数更可靠）
+	if len(op.EntityJSON) > 0 && op.EntityTypeName != "" {
+		entity, err := DeserializeEntity(op.EntityTypeName, op.EntityJSON)
+		if err != nil {
+			LogError("失败操作实体反序列化失败: ID=%s, err=%v", op.ID, err)
+		} else {
+			repo := NewBaseCrudRepository(ftm.db)
+			if err := repo.saveBatchUpsertOnce([]IDbEntity{entity}); err == nil {
+				return true
+			}
+			LogWarn("实体回放 UPSERT 失败: ID=%s, err=%v", op.ID, err)
+		}
+	}
+
 	if len(op.Params) == 0 {
 		LogWarn("操作参数为空: ID=%s", op.ID)
 		return false

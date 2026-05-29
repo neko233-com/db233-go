@@ -560,7 +560,76 @@ func main() {
 
 ---
 
+## 游戏逻辑服接入（v0.1.0+）
+
+### 升级依赖
+
+```bash
+go get github.com/neko233-com/db233-go@v0.1.0
+```
+
+### 配置文件 `config/db233-performance.json`
+
+```json
+{
+  "concurrentMaxWorkers": 16,
+  "batchUpsertChunkSize": 200,
+  "writeBufferEnabled": true,
+  "writeBufferFlushIntervalMs": 100,
+  "maxOpenConns": 100,
+  "maxIdleConns": 20,
+  "enableLocalJournal": true,
+  "localJournalPath": "./data/db233_journal"
+}
+```
+
+### 启动初始化（一次性，运行期不变）
+
+```go
+opts := db233.DefaultGameDbOptions()
+opts.PerformanceConfigPath = "config/db233-performance.json"
+opts.EntityTypes = []db233.IDbEntity{&PlayerBase{}, &PlayerBag{}, /* 全部玩家表 */}
+
+dbConfig := db233.NewDefaultMySQLConfig(host, port, user, pass, database)
+_ = db233.InitGameDb(db, dbConfig, opts)
+
+repo := db233.NewBaseCrudRepository(db)
+sessionRepo := db233.NewSessionRepository(repo)
+```
+
+### 登录 / 在线 / 下线
+
+```go
+// 登录：并发加载全量玩家数据到 L1
+session, _ := sessionRepo.OpenSession(playerId, loginEntityTypes)
+
+// 读：走内存
+bag := session.Get(&PlayerBag{}).(*PlayerBag)
+
+// 写：L1 + dirty + 异步缓冲（WAL 保护）
+bag.Gold += 100
+session.MarkDirty(bag)
+
+// 下线：强制落库（失败数据保留 WAL 自动恢复）
+_ = sessionRepo.CloseSession(playerId)
+```
+
+### 数据不丢保证
+
+| 机制 | 说明 |
+|------|------|
+| WAL 先落盘 | `fsync` 后写库，失败保留 `pending.ndjson` |
+| 无限重试 | FaultTolerantManager 默认永不丢弃 |
+| UPSERT 幂等 | 回放/重试安全，不会产生重复脏数据 |
+
+---
+
 ## 更新日志
+
+### v0.1.0 (2026-05-30) — 游戏服高性能 + 数据不丢
+- FindByIds / SaveBatchUpsert / UpdateBatchUpsert / FindByIdConcurrent
+- Session L1 + WriteBuffer + LocalWriteJournal (WAL)
+- InitGameDb 一站式初始化
 
 ### v1.2.0 (2026-01-22) ⭐ 最新版本
 - ✨ **新增：** 命名参数查询支持 - 使用 `{paramName}` 语法
