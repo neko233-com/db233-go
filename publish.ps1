@@ -55,6 +55,63 @@ function Write-Warn {
     Write-ColoredHost "WARN: $Message" "Yellow"
 }
 
+# Git 辅助：PowerShell 下 git  stderr 不应触发 Stop
+function Invoke-Git {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & git @Args
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return $exit
+}
+
+function Get-GitRemoteUrl {
+    param([string]$Name)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $url = git remote get-url $Name 2>$null
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($exit -ne 0 -or [string]::IsNullOrWhiteSpace($url)) {
+        return $null
+    }
+    return $url.Trim()
+}
+
+function Ensure-GithubRemote {
+    param([string]$OriginUrl)
+    if ([string]::IsNullOrWhiteSpace($OriginUrl)) {
+        Write-Warn "origin URL 为空，跳过 github remote 配置"
+        return $false
+    }
+
+    $githubUrl = Get-GitRemoteUrl "github"
+    if (-not $githubUrl) {
+        Write-ColoredHost "自动添加 github remote（与 origin 同步）..." "Yellow"
+        $exit = Invoke-Git remote add github $OriginUrl
+        if ($exit -ne 0) {
+            Write-Err "添加 github remote 失败"
+            return $false
+        }
+        Write-Ok "github remote 已添加: $OriginUrl"
+        return $true
+    }
+
+    if ($githubUrl -ne $OriginUrl) {
+        Write-ColoredHost "同步 github remote URL..." "Yellow"
+        $exit = Invoke-Git remote set-url github $OriginUrl
+        if ($exit -ne 0) {
+            Write-Err "更新 github remote 失败"
+            return $false
+        }
+        Write-Ok "github remote 已更新: $OriginUrl"
+    } else {
+        Write-Ok "github remote 已就绪: $githubUrl"
+    }
+    return $true
+}
+
 
 # ========================================
 # 版本工具
@@ -242,33 +299,16 @@ if (-not $DryRun) {
         exit 1
     }
 
-    # 自动配置 github 远程仓库（如果不存在或配置错误）
-    $originUrl = git remote get-url origin 2>$null
-    if ($originUrl) {
-        $githubRemote = git remote get-url github 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            # github 远程不存在，添加它
-            Write-ColoredHost "Adding github remote..." "Yellow"
-            git remote add github $originUrl
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Github remote added: $originUrl"
-            }
-        } elseif ($githubRemote -ne $originUrl) {
-            # github 远程存在但 URL 不同，更新它
-            Write-ColoredHost "Updating github remote URL..." "Yellow"
-            git remote remove github
-            git remote add github $originUrl
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Github remote updated: $originUrl"
-            }
-        }
-        
-        # 推送到 github 远程
+    # 自动配置 github 远程（与 origin 同 URL，兼容双 remote 推送习惯）
+    $originUrl = Get-GitRemoteUrl "origin"
+    if (Ensure-GithubRemote -OriginUrl $originUrl) {
         Write-ColoredHost "Pushing to github remote..." "White"
-        git push github $currentBranch
-        git push github $newVersion
-        if ($LASTEXITCODE -eq 0) {
+        $branchExit = Invoke-Git push github $currentBranch
+        $tagExit = Invoke-Git push github $newVersion
+        if ($branchExit -eq 0 -and $tagExit -eq 0) {
             Write-Ok "Pushed to github remote"
+        } else {
+            Write-Warn "github remote 推送部分失败（origin 已成功时可忽略）"
         }
     }
 
