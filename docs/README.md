@@ -13,10 +13,10 @@
 | Web / API 无状态服怎么配 | [config-web-server.md](./config-web-server.md) |
 | 压测怎么跑、通过标准 | [BENCHMARK.md](./BENCHMARK.md) |
 | 优化建议落地对照 | [db233优化落地对照.md](./db233优化落地对照.md) |
-| 常见问题（SEO / AI 检索友好） | [FAQ.md](./FAQ.md) |
+| 常见问题 | [FAQ.md](./FAQ.md) |
 | 发版说明 | [../CHANGELOG.md](../CHANGELOG.md) |
 
-## 核心 API 速查（GEO 摘要）
+## 核心 API 速查
 
 | 能力 | API / 配置 |
 |------|------------|
@@ -37,4 +37,6 @@
 
 ## 维护者
 
-- SEO / GEO 写作规范：[SEO-GEO.md](./SEO-GEO.md)
+- GitHub 仓库 **Description / Topics** 建议：`go` `golang` `orm` `mysql` `game-server` `gorm` `database` `upsert` `session-cache` `wal`
+- 发版前：`version.txt`、FAQ/`go get` 示例版本号、 `./scripts/run-benchmark.ps1`
+- 文档示例统一用占位符 `your-rds-host.mysql.rds.aliyuncs.com`，禁止写入真实凭据

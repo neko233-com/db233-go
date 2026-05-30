@@ -6,13 +6,13 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.0.1 · Go 1.25+ |
+| **版本** | v1.0.2 · Go 1.25+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.1
+go get github.com/neko233-com/db233-go@v1.0.2
 ```
 
 **发版压测**：`./scripts/run-benchmark.ps1`（[BENCHMARK.md](docs/BENCHMARK.md)）  
@@ -208,22 +208,21 @@ go get github.com/neko233-com/db233-go@v1.0.1
 | [docs/README.md](docs/README.md) | **文档中心**（场景导航） |
 | [docs/OVERVIEW.md](docs/OVERVIEW.md) | 是什么、适合谁、30 秒上手 |
 | [docs/COMPARE-ORM.md](docs/COMPARE-ORM.md) | **db233 vs GORM vs sqlx** 选型 |
-| [docs/FAQ.md](docs/FAQ.md) | **常见问题**（SEO / AI 检索友好） |
+| [docs/FAQ.md](docs/FAQ.md) | **常见问题** |
 | [docs/BENCHMARK.md](docs/BENCHMARK.md) | 压测标准与一键脚本 |
-| [docs/SEO-GEO.md](docs/SEO-GEO.md) | 维护者 SEO/GEO 规范 |
 | [config-game-server-stateful.md](docs/config-game-server-stateful.md) | 有状态游戏服配置 |
 | [config-web-server.md](docs/config-web-server.md) | Web/API 服配置 |
 
 ---
 
-> 🚀 **v1.2.0：** 命名参数查询 `{paramName}`、批量命名更新。
+> 支持 **命名参数查询** `{paramName}` 与批量命名更新。
 
 ## 📋 目录
 
 - [框架性能对标](#框架性能对标阿里云-rds-mysql--同地域)
 - [文档与 FAQ](#文档与-faq)
-- [游戏逻辑服接入](#游戏逻辑服接入-v010)
-- [新增功能（命名参数）](#-v120-新增功能)
+- [游戏逻辑服接入](#游戏逻辑服接入-v102)
+- [命名参数查询](#命名参数查询)
 - [核心特性](#核心特性)
 - [快速开始](#快速开始)
 - [命名参数完整指南](#命名参数完整指南)
@@ -235,7 +234,7 @@ go get github.com/neko233-com/db233-go@v1.0.1
 
 ---
 
-## 🆕 v1.2.0 新增功能
+## 命名参数查询
 
 ### 命名参数查询 - 更清晰的 SQL
 
@@ -775,7 +774,7 @@ func main() {
 
 ---
 
-## 游戏逻辑服接入（v1.0.1+）
+## 游戏逻辑服接入（v1.0.2+）
 
 > **配置最佳实践（持续维护）**  
 > - 有状态逻辑服：[docs/config-game-server-stateful.md](docs/config-game-server-stateful.md)  
@@ -786,7 +785,7 @@ func main() {
 ### 升级依赖
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.1
+go get github.com/neko233-com/db233-go@v1.0.2
 ```
 
 ### 配置文件 `config/db233-performance.json`
@@ -1103,7 +1102,7 @@ db233-go 是面向 **有状态游戏逻辑服** 的 Go ORM：登录后玩家数�
 <summary><strong>如何安装与初始化游戏服？</strong></summary>
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.1
+go get github.com/neko233-com/db233-go@v1.0.2
 cp config.local.json.example config.local.json   # 本地凭据，勿提交 Git
 ```
 
@@ -1133,9 +1132,21 @@ sessionRepo, _ := db233.InitGameDb(db, dbConfig, opts) // 见上文「游戏逻�
 
 ## 更新日志
 
+完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### v1.0.2 (2026-05-30) — 文档完善
+
+- 文档中心、FAQ、GORM 对比、项目概览
+- README 版本号与发版说明修正
+
+### v1.0.1 (2026-05-30) — 性能正式化
+
+- FastOrmScan、对象池、冷启动预热、发版 benchmark 门禁
+- 详见 [CHANGELOG.md](CHANGELOG.md)
+
 ### v1.0.0 (2026-05-30) — 生产就绪：游戏服 Session 缓存 + WAL + 连接池
 
-首个稳定版，面向有状态游戏逻辑服。详见 [CHANGELOG.md](CHANGELOG.md)。
+首个稳定版，面向有状态游戏逻辑服。
 
 压测：`go test ./tests/ -run TestPerfStability_Short -timeout 90s -v`
 
@@ -1147,20 +1158,6 @@ sessionRepo, _ := db233.InitGameDb(db, dbConfig, opts) // 见上文「游戏逻�
 - FindByIds / SaveBatchUpsert / UpdateBatchUpsert / FindByIdConcurrent
 - Session L1 + WriteBuffer + LocalWriteJournal (WAL)
 - InitGameDb 一站式初始化
-
-### v1.2.0 (2026-01-22) ⭐ 最新版本
-- ✨ **新增：** 命名参数查询支持 - 使用 `{paramName}` 语法
-- ✨ **新增：** 命名参数批量更新 - `ExecuteUpdateMultiRowsNamed()`
-- ✨ **新增：** 便利查询方法 - `QueryNamedToXxx()`
-- 📝 **改进：** 简化的 API 命名 - `Query()`, `QueryToInt()` 等
-- 🧪 **新增：** 10 个全面的命名参数单元测试
-- 📚 **文档：** 完整的命名参数使用指南
-
-### v1.1.0 (2026-01-15)
-- ✨ JPA 风格实体继承机制
-- ✨ 自动 UPSERT 处理
-- 📝 改进的错误提示
-- 🧪 增强的测试覆盖
 
 ---
 
@@ -1176,4 +1173,4 @@ Apache License 2.0 - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**文档最后更新：** 2026-05-30 · v1.0.1 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)
+**文档最后更新：** 2026-05-30 · v1.0.2 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)

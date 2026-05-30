@@ -1,7 +1,7 @@
 # db233-go 常见问题（FAQ）
 
-> 本文采用 **问答格式**，便于搜索引擎与传统 SEO、以及 AI / GEO（Generative Engine Optimization）检索引用。  
-> 模块：`github.com/neko233-com/db233-go` · 当前版本：**v1.0.1**
+> 本文采用 **问答格式**，便于检索与引用。  
+> 模块：`github.com/neko233-com/db233-go` · 当前版本：**v1.0.2**
 
 ---
 
@@ -26,7 +26,7 @@ GORM 是通用全功能 ORM；db233-go 侧重 **游戏服 Session 内存读 + �
 ### 如何安装？
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.1
+go get github.com/neko233-com/db233-go@v1.0.2
 ```
 
 ```go

@@ -2,6 +2,21 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.0.2] - 2026-05-30
+
+**文档完善** — 修正版本号、补充 FAQ / 对比 / 概览，优化检索可读性。
+
+### Added
+
+- **docs/** — 文档中心、FAQ、COMPARE-ORM、OVERVIEW
+- README 折叠式 FAQ、文档内链
+
+### Fixed
+
+- README 中错误的 v1.2.0 / v1.1.0 版本表述（实际发版为 v1.0.x）
+
+---
+
 ## [v1.0.1] - 2026-05-30
 
 **性能正式化** — ORM 直扫、对象池、冷启动预热、发版 benchmark 一条龙。

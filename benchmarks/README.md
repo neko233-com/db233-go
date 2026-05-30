@@ -40,7 +40,7 @@ go test ./tests/ -timeout 5m
 go test ./tests/ -run 'TestPerfStability|TestTrafficBurst|TestAllocPool' -timeout 5m -v
 ```
 
-## 通过标准（v1.0.1）
+## 通过标准（v1.0.2+）
 
 | 类别 | 标准 |
 |------|------|

@@ -51,6 +51,6 @@
 ## 发版检查清单
 
 - [ ] `scripts/run-benchmark.ps1` 全绿
-- [ ] `version.txt` = `v1.0.1`
-- [ ] `CHANGELOG.md` 含 v1.0.1
+- [ ] `version.txt` = `v1.0.2`
+- [ ] `CHANGELOG.md` 含 v1.0.2
 - [ ] `go test ./tests/ -short` CI 快速模式可过（跳过 MySQL 重测项）
