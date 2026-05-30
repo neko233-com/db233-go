@@ -14,6 +14,10 @@ Write-Host " db233-go benchmark suite"
 Write-Host " root: $Root"
 Write-Host "========================================"
 
+step "[0/4] Secret leak check"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$Root/scripts/check-secrets.ps1"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Step "[1/4] Unit tests (./tests/, full)"
 go test ./tests/ -count=1 -timeout 5m
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

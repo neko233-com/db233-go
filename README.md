@@ -2,44 +2,187 @@
 
 > 面向**有状态游戏逻辑服**的 Go ORM：**v1.0.1** — Session L1、批量 UPSERT、WAL、对象池、冷启动预热。
 
-**发版压测**：`./scripts/run-benchmark.ps1`（规范见 [docs/BENCHMARK.md](docs/BENCHMARK.md)）
+**发版压测**：`./scripts/run-benchmark.ps1`（规范见 [docs/BENCHMARK.md](docs/BENCHMARK.md)）  
+**推送前**：`./scripts/check-secrets.ps1`（禁止提交 `config.local.json` / `*.local.yaml` 凭据）
 
 ## 框架性能对标（阿里云 RDS MySQL · 同地域）
 
 复现：`cd benchmarks && go test -run TestFrameworkCompare_Report -timeout 3m -v`
 
-| 框架 | 单次 PK 读 | 登录 3 表 | 批量 UPSERT×50 | Session 读×1000 | 相对 raw SQL 读 |
-|------|------------|-----------|----------------|-----------------|-----------------|
-| **db233-go** | **~10.8** | **~12.6** | **~13.0** | **<0.001 ms** | **~0.5×** |
-| database/sql | ~21.5 | ~67.3 | ~581 | — | 1.0× |
-| sqlx | ~18.9 | ~58.1 | ~974 | — | ~0.88× |
-| GORM | ~23.3 | ~74.0 | ~54.6 | ~21s（1000×读） | ~1.08× |
+> **图例（按列对比）**：🟩 最优 · 🟨 中等 · 🟥 最差 · ⬜ 不适用 — **延迟/倍率越小越绿**
 
-| 能力 | db233-go | GORM | sqlx | database/sql |
-|------|----------|------|------|--------------|
-| 实体 CRUD / UPSERT | ✅ | ✅ | 部分 | ❌ |
-| 批量 UPSERT 单 SQL | ✅ | 部分 | ❌ | ❌ |
-| Session 一级缓存（在线零查库） | ✅ | ❌ | ❌ | ❌ |
-| FindByIdConcurrent 登录 | ✅ | ❌ | ❌ | ❌ |
-| WAL 写不丢 | ✅ | ❌ | ❌ | ❌ |
-| `*sql.Stmt` 预编译池 | ✅ | 内部 | ✅ | 手动 |
-| 内部对象池（字段 map / 批量 scratch / Scan 缓冲） | ✅ `enableAllocPool` | 部分 | ❌ | ❌ |
-| ORM 直扫字段（无 map 中转） | ✅ | ✅ | ✅ | 手动 |
-| 冷启动预热（池+元数据+Stmt） | ✅ | 部分 | ❌ | ❌ |
+<!-- benchmark-heat: latency lower is better -->
+<table>
+<thead>
+<tr>
+<th align="left">框架</th>
+<th align="right">单次 PK 读</th>
+<th align="right">登录 3 表</th>
+<th align="right">批量 UPSERT×50</th>
+<th align="right">Session 读×1000</th>
+<th align="right">相对 raw SQL 读</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>db233-go</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~10.8</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~12.6</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~13.0</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>&lt;0.001 ms</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~0.5×</strong></td>
+</tr>
+<tr>
+<td>database/sql</td>
+<td align="right" style="background-color:#ffeb9c">~21.5</td>
+<td align="right" style="background-color:#ffeb9c">~67.3</td>
+<td align="right" style="background-color:#ffeb9c">~581</td>
+<td align="right" style="background-color:#f2f2f2">—</td>
+<td align="right" style="background-color:#ffeb9c">1.0×</td>
+</tr>
+<tr>
+<td>sqlx</td>
+<td align="right" style="background-color:#e2efda">~18.9</td>
+<td align="right" style="background-color:#e2efda">~58.1</td>
+<td align="right" style="background-color:#ffc7ce">~974</td>
+<td align="right" style="background-color:#f2f2f2">—</td>
+<td align="right" style="background-color:#e2efda">~0.88×</td>
+</tr>
+<tr>
+<td>GORM</td>
+<td align="right" style="background-color:#ffc7ce">~23.3</td>
+<td align="right" style="background-color:#ffc7ce">~74.0</td>
+<td align="right" style="background-color:#e2efda">~54.6</td>
+<td align="right" style="background-color:#ffc7ce">~21s</td>
+<td align="right" style="background-color:#ffc7ce">~1.08×</td>
+</tr>
+</tbody>
+</table>
+
+<!-- benchmark-heat: feature matrix -->
+<table>
+<thead>
+<tr>
+<th align="left">能力</th>
+<th align="center">db233-go</th>
+<th align="center">GORM</th>
+<th align="center">sqlx</th>
+<th align="center">database/sql</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>实体 CRUD / UPSERT</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">部分</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+<tr>
+<td>批量 UPSERT 单 SQL</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">部分</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+<tr>
+<td>Session 一级缓存（在线零查库）</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+<tr>
+<td>FindByIdConcurrent 登录</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+<tr>
+<td>WAL 写不丢</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+<tr>
+<td><code>*sql.Stmt</code> 预编译池</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">内部</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">手动</td>
+</tr>
+<tr>
+<td>内部对象池（字段 map / 批量 scratch）</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">部分</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+<tr>
+<td>ORM 直扫字段（无 map 中转）</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">手动</td>
+</tr>
+<tr>
+<td>冷启动预热（池+元数据+Stmt）</td>
+<td align="center" style="background-color:#c6efce">✅</td>
+<td align="center" style="background-color:#ffeb9c">部分</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+<td align="center" style="background-color:#ffc7ce">❌</td>
+</tr>
+</tbody>
+</table>
 
 > **游戏服读路径**：登录 `OpenSession` 后 `session.Get` 走 L1，不经过 ORM/DB。  
 > **内存/GC**：默认 `enableAllocPool` + `enableFastOrmScan`；见下文「相对 GORM 内存压力」。
 
 ### 相对 GORM 内存 / GC 压力（设计对比）
 
-| 维度 | db233-go | GORM |
-|------|----------|------|
-| 单次读中间对象 | 直扫字段，无 `map[string]any` | Schema + 反射 + 可能 `clause` 构建 |
-| 批量写 200 行 | 1 个 field map scratch + 复用 `[]any` 行缓冲 | 每行 Statement/反射链 + 可能 N 次 Exec |
-| IN 查询 500 ID | `?,?,?` 字符串缓存（immutable） | 每次拼接 |
-| 在线读（Session） | L1 指针复用，**零 DB 对象分配** | 每次 `First` 新建 struct + 查库 |
-| 返回给业务的对象 | 每行 1 个 entity（与 GORM 相同） | 每行 1 个 struct |
-| **不可池化（安全边界）** | 返回的 entity / `QueryNamed` 的 map 仍独立分配 | 同 |
+<table>
+<thead>
+<tr>
+<th align="left">维度</th>
+<th align="left" style="background-color:#e8f5e9">db233-go</th>
+<th align="left" style="background-color:#ffebee">GORM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单次读中间对象</td>
+<td style="background-color:#c6efce">直扫字段，无 <code>map[string]any</code></td>
+<td style="background-color:#ffc7ce">Schema + 反射 + 可能 <code>clause</code> 构建</td>
+</tr>
+<tr>
+<td>批量写 200 行</td>
+<td style="background-color:#c6efce">1 个 field map scratch + 复用 <code>[]any</code> 行缓冲</td>
+<td style="background-color:#ffc7ce">每行 Statement/反射链 + 可能 N 次 Exec</td>
+</tr>
+<tr>
+<td>IN 查询 500 ID</td>
+<td style="background-color:#c6efce"><code>?,?,?</code> 字符串缓存（immutable）</td>
+<td style="background-color:#ffeb9c">每次拼接</td>
+</tr>
+<tr>
+<td>在线读（Session）</td>
+<td style="background-color:#c6efce">L1 指针复用，<strong>零 DB 对象分配</strong></td>
+<td style="background-color:#ffc7ce">每次 <code>First</code> 新建 struct + 查库</td>
+</tr>
+<tr>
+<td>返回给业务的对象</td>
+<td style="background-color:#f2f2f2">每行 1 个 entity（与 GORM 相同）</td>
+<td style="background-color:#f2f2f2">每行 1 个 struct</td>
+</tr>
+<tr>
+<td><strong>不可池化（安全边界）</strong></td>
+<td style="background-color:#f2f2f2">返回的 entity / <code>QueryNamed</code> 的 map 仍独立分配</td>
+<td style="background-color:#f2f2f2">同</td>
+</tr>
+</tbody>
+</table>
 
 **不能池化的（会破坏安全/语义）**：返回给调用方的 entity、`*[]map` 查询结果、WAL 持久化 JSON 副本、跨 goroutine 共享的可变 map。
 
@@ -739,12 +882,17 @@ Go 标准库 `database/sql.DB` 即连接池。db233 两层配置：
 }
 ```
 
-### 本地测试配置 `config.local.json`（勿提交 Git）
+### 本地测试配置 `config.local.json` / `config.local.yaml`（勿提交 Git）
+
+> **安全**：真实 host / password **只能**写在下列 gitignore 文件中。仓库内仅保留 `*.example` 占位符。  
+> 推送前执行：`./scripts/check-secrets.ps1`
 
 复制模板并填入真实连接：
 
 ```bash
 cp config.local.json.example config.local.json
+# 或
+cp config.local.yaml.example config.local.yaml
 ```
 
 ```json
@@ -759,7 +907,7 @@ cp config.local.json.example config.local.json
 }
 ```
 
-`*.local.json` 已在 `.gitignore` 中忽略。
+`*.local.json` / `config.local.json` / `*.local.yaml` 已在 `.gitignore` 中忽略。
 
 ```go
 // 本地开发 / 测试
@@ -782,33 +930,129 @@ cd benchmarks && go test -run TestStability -timeout 3m -v
 
 #### 延迟对比（中位数 ms，越小越好 · 启用 FastOrmScan + 冷启动预热）
 
-| 框架 | 单次 PK 读 | 登录 3 表 | 批量 UPSERT×50 | Session 读×1000 |
-|------|------------|-----------|----------------|-----------------|
-| **db233-go** | **~10.8** | **~12.6** | **~13.0** | **<0.001** |
-| database/sql | 21.5 | 67.3 | 581 | — |
-| sqlx | 18.9 | 58.1 | 974 | — |
-| GORM | 23.3 | 74.0 | 54.6 | — |
+> 色阶同文首：**按列** 越小越绿、越大越红。
+
+<table>
+<thead>
+<tr>
+<th align="left">框架</th>
+<th align="right">单次 PK 读</th>
+<th align="right">登录 3 表</th>
+<th align="right">批量 UPSERT×50</th>
+<th align="right">Session 读×1000</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>db233-go</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~10.8</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~12.6</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>~13.0</strong></td>
+<td align="right" style="background-color:#c6efce"><strong>&lt;0.001</strong></td>
+</tr>
+<tr>
+<td>database/sql</td>
+<td align="right" style="background-color:#ffeb9c">21.5</td>
+<td align="right" style="background-color:#ffeb9c">67.3</td>
+<td align="right" style="background-color:#ffeb9c">581</td>
+<td align="right" style="background-color:#f2f2f2">—</td>
+</tr>
+<tr>
+<td>sqlx</td>
+<td align="right" style="background-color:#e2efda">18.9</td>
+<td align="right" style="background-color:#e2efda">58.1</td>
+<td align="right" style="background-color:#ffc7ce">974</td>
+<td align="right" style="background-color:#f2f2f2">—</td>
+</tr>
+<tr>
+<td>GORM</td>
+<td align="right" style="background-color:#ffc7ce">23.3</td>
+<td align="right" style="background-color:#ffc7ce">74.0</td>
+<td align="right" style="background-color:#e2efda">54.6</td>
+<td align="right" style="background-color:#ffc7ce">~21s</td>
+</tr>
+</tbody>
+</table>
 
 #### 相对基线（database/sql 单次读 = 1.0×）
 
-| 场景 | db233-go | GORM | 结论 |
-|------|----------|------|------|
-| 单次 PK 读 | **0.50×（快 2×）** | 1.08× | 直扫字段 + Stmt 缓存 + 启动预热 |
-| 登录 3 表 | **5.4× 更快** | 0.91× | `FindByIdConcurrent` 并发加载 |
-| 批量写 50 行 | **45× 更快** | 10.6× | 单条 SQL 批量 UPSERT |
-| 在线读×1000 | **>10⁶×** | ~21s 估算 | Session L1 内存读 |
+<table>
+<thead>
+<tr>
+<th align="left">场景</th>
+<th align="right">db233-go</th>
+<th align="right">GORM</th>
+<th align="left">结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单次 PK 读</td>
+<td align="right" style="background-color:#c6efce"><strong>0.50×（快 2×）</strong></td>
+<td align="right" style="background-color:#ffc7ce">1.08×</td>
+<td>直扫字段 + Stmt 缓存 + 启动预热</td>
+</tr>
+<tr>
+<td>登录 3 表</td>
+<td align="right" style="background-color:#c6efce"><strong>5.4× 更快</strong></td>
+<td align="right" style="background-color:#ffeb9c">0.91×</td>
+<td><code>FindByIdConcurrent</code> 并发加载</td>
+</tr>
+<tr>
+<td>批量写 50 行</td>
+<td align="right" style="background-color:#c6efce"><strong>45× 更快</strong></td>
+<td align="right" style="background-color:#e2efda">10.6×</td>
+<td>单条 SQL 批量 UPSERT</td>
+</tr>
+<tr>
+<td>在线读×1000</td>
+<td align="right" style="background-color:#c6efce"><strong>&gt;10⁶×</strong></td>
+<td align="right" style="background-color:#ffc7ce">~21s 估算</td>
+<td>Session L1 内存读</td>
+</tr>
+</tbody>
+</table>
 
 > 游戏服应走 `OpenSession` + `session.Get`：在线读不经过 ORM/DB 往返，这是相对 Spring JPA / GORM **一级缓存（Session）** 的结构性优势。
 
 #### 稳定性验证（突发流量 / 抖动）
 
-| 测试 | 场景 | 结果 |
-|------|------|------|
-| `TestStability_TrafficBurst` | 80 goroutine × 15 混合读写/Session | 0 错误，无 Session 泄漏 |
-| `TestStability_ConnectionPoolSpike` | 30×5 并发读，池上限 10 | Ping 恢复，池 idle=10 |
-| `TestStability_LRUBurst` | 100 Session 洪峰，max=30 | LRU 在线数=30 |
-| `TestStability_WALBurst` | 20×10 并发 WAL 写 | pending=0 |
-| `TestTrafficBurst_Stability` | 50 worker 突发 | 连接池恢复 |
+<table>
+<thead>
+<tr>
+<th align="left">测试</th>
+<th align="left">场景</th>
+<th align="left">结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TestStability_TrafficBurst</code></td>
+<td>80 goroutine × 15 混合读写/Session</td>
+<td style="background-color:#c6efce">0 错误，无 Session 泄漏</td>
+</tr>
+<tr>
+<td><code>TestStability_ConnectionPoolSpike</code></td>
+<td>30×5 并发读，池上限 10</td>
+<td style="background-color:#c6efce">Ping 恢复，池 idle=10</td>
+</tr>
+<tr>
+<td><code>TestStability_LRUBurst</code></td>
+<td>100 Session 洪峰，max=30</td>
+<td style="background-color:#c6efce">LRU 在线数=30</td>
+</tr>
+<tr>
+<td><code>TestStability_WALBurst</code></td>
+<td>20×10 并发 WAL 写</td>
+<td style="background-color:#c6efce">pending=0</td>
+</tr>
+<tr>
+<td><code>TestTrafficBurst_Stability</code></td>
+<td>50 worker 突发</td>
+<td style="background-color:#c6efce">连接池恢复</td>
+</tr>
+</tbody>
+</table>
 
 **停止优化条件**（已满足）：单次读 ≤2.5× raw SQL；登录/批量写 ≥ GORM；Session 读数量级领先；稳定性测试全绿。
 

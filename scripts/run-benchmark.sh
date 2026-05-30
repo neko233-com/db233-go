@@ -12,6 +12,9 @@ echo "========================================"
 
 step() { echo ""; echo ">>> $1"; echo "----------------------------------------"; }
 
+step "[0/4] Secret leak check"
+"$ROOT/scripts/check-secrets.sh"
+
 step "[1/4] Unit tests (./tests/, full)"
 go test ./tests/ -count=1 -timeout 5m
 

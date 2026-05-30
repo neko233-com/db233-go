@@ -42,8 +42,18 @@ Thumbs.db
 # Logs
 *.log
 
-# Local dev config (credentials, do not commit)
+# Local dev config (credentials — NEVER commit)
+config.local.json
+config.local.yaml
+config.local.yml
 *.local.json
+*.local.yaml
+*.local.yml
+.env
+.env.*
+!.env.example
+secrets/
+**/credentials*.json
 
 # Build artifacts
 dist/
