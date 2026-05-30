@@ -1,6 +1,7 @@
 # db233-go Benchmark 标准（v1.0.1+）
 
-> 发版门禁 / 压测回归的唯一规范。与 `scripts/run-benchmark.*` 保持一致。
+> 发版门禁 / 压测回归的唯一规范。与 `scripts/run-benchmark.*` 保持一致。  
+> 文档索引：[README.md](./README.md) · [FAQ](./FAQ.md) · [COMPARE-ORM](./COMPARE-ORM.md)
 
 ## 一键运行
 

@@ -1,9 +1,22 @@
 # db233-go
 
-> 面向**有状态游戏逻辑服**的 Go ORM：**v1.0.1** — Session L1、批量 UPSERT、WAL、对象池、冷启动预热。
+<!-- keywords: Go ORM, MySQL, game server, batch UPSERT, Session cache, WAL, GORM alternative, sqlx, stateful logic server, 游戏服, 批量写入, 连接池 -->
 
-**发版压测**：`./scripts/run-benchmark.ps1`（规范见 [docs/BENCHMARK.md](docs/BENCHMARK.md)）  
-**推送前**：`./scripts/check-secrets.ps1`（禁止提交 `config.local.json` / `*.local.yaml` 凭据）
+**Go 语言 ORM / 数据库库**（[`github.com/neko233-com/db233-go`](https://github.com/neko233-com/db233-go)）— 面向 **有状态游戏逻辑服** 与 **MySQL 高 QPS**：**Session 一级缓存**（在线读零查库）、**批量 UPSERT**、**WAL 写不丢**、连接池与冷启动预热。可作为 **GORM / sqlx** 的性能向替代方案。
+
+| | |
+|:--|:--|
+| **版本** | v1.0.1 · Go 1.25+ |
+| **数据库** | MySQL（主），PostgreSQL（连接层） |
+| **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
+| **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
+
+```bash
+go get github.com/neko233-com/db233-go@v1.0.1
+```
+
+**发版压测**：`./scripts/run-benchmark.ps1`（[BENCHMARK.md](docs/BENCHMARK.md)）  
+**推送前**：`./scripts/check-secrets.ps1`（凭据仅 `config.local.json` / `*.local.yaml`）
 
 ## 框架性能对标（阿里云 RDS MySQL · 同地域）
 
@@ -188,20 +201,36 @@
 
 ---
 
+## 文档与 FAQ
+
+| 文档 | 说明 |
+|------|------|
+| [docs/README.md](docs/README.md) | **文档中心**（场景导航） |
+| [docs/OVERVIEW.md](docs/OVERVIEW.md) | 是什么、适合谁、30 秒上手 |
+| [docs/COMPARE-ORM.md](docs/COMPARE-ORM.md) | **db233 vs GORM vs sqlx** 选型 |
+| [docs/FAQ.md](docs/FAQ.md) | **常见问题**（SEO / AI 检索友好） |
+| [docs/BENCHMARK.md](docs/BENCHMARK.md) | 压测标准与一键脚本 |
+| [docs/SEO-GEO.md](docs/SEO-GEO.md) | 维护者 SEO/GEO 规范 |
+| [config-game-server-stateful.md](docs/config-game-server-stateful.md) | 有状态游戏服配置 |
+| [config-web-server.md](docs/config-web-server.md) | Web/API 服配置 |
+
+---
+
 > 🚀 **v1.2.0：** 命名参数查询 `{paramName}`、批量命名更新。
 
 ## 📋 目录
 
-- [新增功能](#-v120-新增功能)
+- [框架性能对标](#框架性能对标阿里云-rds-mysql--同地域)
+- [文档与 FAQ](#文档与-faq)
+- [游戏逻辑服接入](#游戏逻辑服接入-v010)
+- [新增功能（命名参数）](#-v120-新增功能)
 - [核心特性](#核心特性)
 - [快速开始](#快速开始)
-  - [命名参数查询](#命名参数查询---新功能) ⭐ NEW！
-  - [命名参数批量更新](#命名参数批量更新---新功能) ⭐ NEW！
-  - [JPA 风格实体继承](#jpa-风格实体继承)
-  - [CRUD 操作](#crud-操作)
-- [命名参数完整指南](#命名参数完整指南) ⭐ NEW！
+- [命名参数完整指南](#命名参数完整指南)
 - [API 文档](#api-文档)
 - [测试](#测试)
+- [常见问题 FAQ](#常见问题-faq)
+- [更新日志](#更新日志)
 - [许可证](#许可证)
 
 ---
@@ -746,17 +775,18 @@ func main() {
 
 ---
 
-## 游戏逻辑服接入（v0.1.0+）
+## 游戏逻辑服接入（v1.0.1+）
 
 > **配置最佳实践（持续维护）**  
 > - 有状态逻辑服：[docs/config-game-server-stateful.md](docs/config-game-server-stateful.md)  
 > - 无状态 Web/API：[docs/config-web-server.md](docs/config-web-server.md)  
-> - 压测优化建议落地对照：[docs/db233优化落地对照.md](docs/db233优化落地对照.md)
+> - 压测优化建议落地对照：[docs/db233优化落地对照.md](docs/db233优化落地对照.md)  
+> - **选型 / FAQ**：[docs/COMPARE-ORM.md](docs/COMPARE-ORM.md) · [docs/FAQ.md](docs/FAQ.md)
 
 ### 升级依赖
 
 ```bash
-go get github.com/neko233-com/db233-go@v0.1.0
+go get github.com/neko233-com/db233-go@v1.0.1
 ```
 
 ### 配置文件 `config/db233-performance.json`
@@ -1058,6 +1088,49 @@ cd benchmarks && go test -run TestStability -timeout 3m -v
 
 ---
 
+## 常见问题 FAQ
+
+<details>
+<summary><strong>db233-go 是什么？和 GORM 有什么区别？</strong></summary>
+
+db233-go 是面向 **有状态游戏逻辑服** 的 Go ORM：登录后玩家数据在 **Session 内存（L1）**，在线 `session.Get` **不查库**；写用 **批量 UPSERT + WAL**。  
+与 GORM 相比：RDS 实测 **单次 PK 读更快**、**Session 读 1000 次亚毫秒级**（GORM 需循环查库）。通用 CRUD / 关联预加载仍可选 GORM。  
+→ 完整对比 [docs/COMPARE-ORM.md](docs/COMPARE-ORM.md) · [docs/FAQ.md](docs/FAQ.md)
+
+</details>
+
+<details>
+<summary><strong>如何安装与初始化游戏服？</strong></summary>
+
+```bash
+go get github.com/neko233-com/db233-go@v1.0.1
+cp config.local.json.example config.local.json   # 本地凭据，勿提交 Git
+```
+
+```go
+sessionRepo, _ := db233.InitGameDb(db, dbConfig, opts) // 见上文「游戏逻辑服接入」
+```
+
+</details>
+
+<details>
+<summary><strong>数据库密码会进 Git 吗？</strong></summary>
+
+不会（若遵循规范）。真实连接仅写在 **gitignore** 的 `config.local.json` / `config.local.yaml`；推送前运行 `./scripts/check-secrets.ps1`。
+
+</details>
+
+<details>
+<summary><strong>在线读慢怎么办？</strong></summary>
+
+业务读应走 **`session.Get`**，不要循环 `repo.FindById`。FindById 仅用于未 OpenSession 或运维查询。见 [docs/FAQ.md](docs/FAQ.md#性能)。
+
+</details>
+
+更多问题 → **[docs/FAQ.md](docs/FAQ.md)**（含英文 Quick Answers）
+
+---
+
 ## 更新日志
 
 ### v1.0.0 (2026-05-30) — 生产就绪：游戏服 Session 缓存 + WAL + 连接池
@@ -1103,4 +1176,4 @@ Apache License 2.0 - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**文档最后更新：** 2026-01-22 v1.2.0 ✅ 所有测试通过
+**文档最后更新：** 2026-05-30 · v1.0.1 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)
