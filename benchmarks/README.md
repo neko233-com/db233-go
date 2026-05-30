@@ -48,4 +48,6 @@ go test ./tests/ -run 'TestPerfStability|TestTrafficBurst|TestAllocPool' -timeou
 | 登录 3 表 | db233 并发加载显著优于串行框架 |
 | 批量写 50 | db233 ≤ GORM × **1.5** |
 | Session 读 1k | 显著优于 GORM 循环 First |
+| 刷盘 100 Session | 合并刷盘 ≤ 逐 Session × **1.05** |
+| 关服 FlushAll 100 | 数据落库 + 分波完成 |
 | 稳定性 | 0 致命错误、Session 无泄漏、WAL pending=0 |

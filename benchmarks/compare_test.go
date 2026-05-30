@@ -240,6 +240,14 @@ func SetBenchEntityCacheKey(t *testing.T, key string, value any) {
 		old = snap.MaxSessions
 	case "flushOnEvict":
 		old = snap.FlushOnEvict
+	case "sessionFlushMergeByTable":
+		old = snap.SessionFlushMergeByTable
+	case "sessionFlushMaxWorkers":
+		old = snap.SessionFlushMaxWorkers
+	case "shutdownFlushMaxWorkers":
+		old = snap.ShutdownFlushMaxWorkers
+	case "shutdownFlushWaveIntervalMs":
+		old = snap.ShutdownFlushWaveIntervalMs
 	default:
 		t.Fatalf("unsupported key %s", key)
 	}

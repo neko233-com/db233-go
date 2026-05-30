@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# db233-go 发版/压测一条龙：单元 → 主包压测 → 框架对比 → 稳定性
+# db233-go 发版/压测一条龙
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,21 +12,27 @@ echo "========================================"
 
 step() { echo ""; echo ">>> $1"; echo "----------------------------------------"; }
 
-step "[0/4] Secret leak check"
+step "[0/6] Secret leak check"
 "$ROOT/scripts/check-secrets.sh"
 
-step "[1/4] Unit tests (./tests/, full)"
+step "[1/6] pkg/db233 unit tests"
+go test ./pkg/db233/ -count=1 -timeout 2m
+
+step "[2/6] Integration tests (./tests/, full)"
 go test ./tests/ -count=1 -timeout 5m
 
-step "[2/4] Perf + traffic + alloc pool (./tests/)"
+step "[3/6] Perf + traffic + session flush"
 go test ./tests/ -count=1 -timeout 5m \
-  -run 'TestPerfStability|TestTrafficBurst|TestAllocPool'
+  -run 'TestPerfStability|TestTrafficBurst|TestAllocPool|TestSessionFlush'
 
-step "[3/4] Framework compare (benchmarks/)"
+step "[4/6] Framework compare"
 (cd benchmarks && go test -count=1 -timeout 3m -run TestFrameworkCompare_Report -v)
 
-step "[4/4] Stability burst (benchmarks/)"
+step "[5/6] Stability burst"
 (cd benchmarks && go test -count=1 -timeout 5m -run TestStability -v)
+
+step "[6/6] Session flush compare"
+(cd benchmarks && go test -count=1 -timeout 5m -run TestFlushCompare -v)
 
 echo ""
 echo "========================================"

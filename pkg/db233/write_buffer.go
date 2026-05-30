@@ -119,6 +119,15 @@ func (wb *WriteBuffer) Flush() error {
 	wb.mu.Unlock()
 
 	var firstErr error
+	settings := GetCrudPerformanceSettings().Snapshot()
+	maxBatch := settings.WriteBufferMaxBatchSize
+	if maxBatch <= 0 {
+		maxBatch = settings.BatchUpsertChunkSize
+	}
+	if maxBatch <= 0 {
+		maxBatch = 100
+	}
+
 	for _, entitiesMap := range pending {
 		var entities []IDbEntity
 		if EnableAllocPoolEnabled() {
@@ -129,12 +138,37 @@ func (wb *WriteBuffer) Flush() error {
 		for _, entity := range entitiesMap {
 			entities = append(entities, entity)
 		}
-		if err := wb.repo.UpdateBatchUpsert(entities); err != nil && firstErr == nil {
-			firstErr = err
+		for start := 0; start < len(entities); start += maxBatch {
+			end := start + maxBatch
+			if end > len(entities) {
+				end = len(entities)
+			}
+			if err := wb.repo.UpdateBatchUpsert(entities[start:end]); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 		if EnableAllocPoolEnabled() {
 			releaseEntitySlice(entities)
 		}
 	}
+	if firstErr != nil {
+		wb.mu.Lock()
+		wb.mergePending(pending)
+		wb.mu.Unlock()
+	}
 	return firstErr
+}
+
+func (wb *WriteBuffer) mergePending(back map[string]map[string]IDbEntity) {
+	for table, pkMap := range back {
+		if wb.pending[table] == nil {
+			wb.pending[table] = make(map[string]IDbEntity)
+		}
+		for pk, entity := range pkMap {
+			if _, exists := wb.pending[table][pk]; !exists {
+				wb.size++
+			}
+			wb.pending[table][pk] = entity
+		}
+	}
 }

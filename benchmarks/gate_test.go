@@ -14,4 +14,6 @@ func TestReleaseGate(t *testing.T) {
 	t.Run("StabilityConnectionPoolSpike", TestStability_ConnectionPoolSpike)
 	t.Run("StabilityLRUBurst", TestStability_LRUBurst)
 	t.Run("StabilityWALBurst", TestStability_WALBurst)
+	t.Run("FlushCompare", TestFlushCompare_MergedVsPerSession)
+	t.Run("FlushShutdown", TestFlushCompare_Shutdown100Sessions)
 }

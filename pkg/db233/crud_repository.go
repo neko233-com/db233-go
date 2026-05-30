@@ -75,6 +75,16 @@ type BaseCrudRepository struct {
 	writeBuffer  *WriteBuffer
 	writeJournal *LocalWriteJournal
 	wbMu         sync.Mutex
+
+	testHookMu     sync.Mutex
+	testUpsertHook func([]IDbEntity) error // 仅测试注入
+}
+
+// SetTestUpsertHook 测试专用：拦截 UpdateBatchUpsert（nil 恢复默认）。
+func (r *BaseCrudRepository) SetTestUpsertHook(hook func([]IDbEntity) error) {
+	r.testHookMu.Lock()
+	defer r.testHookMu.Unlock()
+	r.testUpsertHook = hook
 }
 
 // SetWriteJournal 绑定本地 WAL（InitGameDb 调用）。
@@ -915,6 +925,12 @@ func groupEntitiesByTable(entities []IDbEntity, tableNameOf func(IDbEntity) stri
 
 // UpdateBatchUpsert 批量属性同步（游戏服高频写，WAL 保护不丢数据）。
 func (r *BaseCrudRepository) UpdateBatchUpsert(entities []IDbEntity) error {
+	r.testHookMu.Lock()
+	hook := r.testUpsertHook
+	r.testHookMu.Unlock()
+	if hook != nil {
+		return hook(entities)
+	}
 	return r.SaveBatchUpsert(entities)
 }
 

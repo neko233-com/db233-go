@@ -40,6 +40,11 @@
     "evictionPolicy": "lru",
     "maxSessions": 10000,
     "sessionFlushIntervalMs": 60000,
+    "sessionFlushIntervalJitterPct": 10,
+    "sessionFlushMaxWorkers": 8,
+    "sessionFlushMergeByTable": true,
+    "shutdownFlushMaxWorkers": 8,
+    "shutdownFlushWaveIntervalMs": 20,
     "flushOnEvict": true,
     "negativeCacheEnabled": false,
     "entityTypeLimits": { "PlayerBagEntity": 8000 }
@@ -99,8 +104,22 @@ m, _ := repo.FindByIdsMap(ids, &PlayerBagEntity{})
 | 字段 | 推荐 |
 |------|------|
 | `sessionFlushIntervalMs` | 60000（0=仅下线刷） |
+| `sessionFlushIntervalJitterPct` | 10（±10% 抖动，避免整点齐刷） |
+| `sessionFlushMaxWorkers` | 8（定时刷 / CloseSession 并发写库上限） |
+| `sessionFlushMergeByTable` | true（定时 tick 跨玩家按表合并 UPSERT） |
+| `shutdownFlushMaxWorkers` | 8–16（关服 `FlushAll` 每波并发数） |
+| `shutdownFlushWaveIntervalMs` | 20–50（关服波次间隔，削峰 DB） |
 | `negativeCacheEnabled` | false（按需 Session 级开） |
 | `maxSessions` | 在线上限 × 1.2 |
+
+### 刷盘行为摘要
+
+| 场景 | 行为 |
+|------|------|
+| 定时刷写 | 收集全部 dirty → **按表合并** → 有界 worker 批量 UPSERT |
+| 玩家下线 `CloseSession` | 单 Session 刷盘，受 `sessionFlushMaxWorkers` 限流 |
+| 关服 `db.Close()` / `FlushAll` | 全量 dirty 合并 → **分波**刷盘（波内并发 + 波间 sleep）→ 再刷 WriteBuffer |
+| WriteBuffer | 全局队列合并；`writeBufferMaxBatchSize` 限制单次 Flush 行数 |
 
 ---
 

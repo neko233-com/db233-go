@@ -28,6 +28,11 @@
     "evictionPolicy": "lru",
     "maxSessions": 10000,
     "sessionFlushIntervalMs": 60000,
+    "sessionFlushIntervalJitterPct": 10,
+    "sessionFlushMaxWorkers": 8,
+    "sessionFlushMergeByTable": true,
+    "shutdownFlushMaxWorkers": 8,
+    "shutdownFlushWaveIntervalMs": 20,
     "flushOnEvict": true,
     "negativeCacheEnabled": false,
     "entityTypeLimits": {

@@ -257,60 +257,61 @@ func (s *PlayerSession) putCacheOnly(entity IDbEntity) error {
 
 // Flush 强制刷写 dirty 到 DB（WAL 保护），Session 退出时必须调用。
 func (s *PlayerSession) Flush() error {
+	if s.owner != nil {
+		return s.owner.flushSession(s, true)
+	}
+	return s.flushInternal(true)
+}
+
+func (s *PlayerSession) takeDirty() []IDbEntity {
 	s.mu.Lock()
-	dirtyEntities := make([]IDbEntity, 0, len(s.dirty))
+	defer s.mu.Unlock()
+	if len(s.dirty) == 0 {
+		return nil
+	}
+	out := make([]IDbEntity, 0, len(s.dirty))
 	for _, entity := range s.dirty {
-		dirtyEntities = append(dirtyEntities, entity)
+		out = append(out, entity)
 	}
 	s.dirty = make(map[string]IDbEntity)
-	s.mu.Unlock()
+	return out
+}
 
+func (s *PlayerSession) restoreDirty(entities []IDbEntity) {
+	if len(entities) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entity := range entities {
+		s.dirty[s.repo.getTableName(entity)] = entity
+	}
+}
+
+func (s *PlayerSession) flushInternal(includeWriteBuffer bool) error {
+	dirtyEntities := s.takeDirty()
 	var firstErr error
 	if len(dirtyEntities) > 0 {
 		if err := s.repo.UpdateBatchUpsert(dirtyEntities); err != nil {
 			firstErr = err
-			s.mu.Lock()
-			for _, entity := range dirtyEntities {
-				s.dirty[s.repo.getTableName(entity)] = entity
-			}
-			s.mu.Unlock()
+			s.restoreDirty(dirtyEntities)
 		}
 	}
-	if err := s.repo.FlushWriteBuffer(); err != nil && firstErr == nil {
-		firstErr = err
+	if includeWriteBuffer {
+		if err := s.repo.FlushWriteBuffer(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
 
 // FlushDirtyOnly 仅刷 dirty，不关闭 Session（定时刷写用）。
 func (s *PlayerSession) FlushDirtyOnly() error {
-	return s.flushDirtyInternal(false)
-}
-
-func (s *PlayerSession) flushDirtyInternal(restoreOnError bool) error {
-	s.mu.Lock()
-	if len(s.dirty) == 0 {
-		s.mu.Unlock()
-		return nil
+	if s.owner != nil {
+		s.owner.acquireFlushSlot()
+		defer s.owner.releaseFlushSlot()
 	}
-	dirtyEntities := make([]IDbEntity, 0, len(s.dirty))
-	for _, entity := range s.dirty {
-		dirtyEntities = append(dirtyEntities, entity)
-	}
-	s.dirty = make(map[string]IDbEntity)
-	s.mu.Unlock()
-
-	if err := s.repo.UpdateBatchUpsert(dirtyEntities); err != nil {
-		if restoreOnError {
-			s.mu.Lock()
-			for _, entity := range dirtyEntities {
-				s.dirty[s.repo.getTableName(entity)] = entity
-			}
-			s.mu.Unlock()
-		}
-		return err
-	}
-	return nil
+	return s.flushInternal(false)
 }
 
 // Release 释放 Session 占用的实体计数（内部用）。
@@ -354,6 +355,11 @@ type SessionRepository struct {
 	flushStop    chan struct{}
 	flushDone    chan struct{}
 	flushStarted bool
+
+	flushSemMu sync.Mutex
+	flushSem   chan struct{}
+
+	flushRunning sync.Mutex // 定时刷写重叠保护（上一 tick 未完成则跳过）
 }
 
 // NewSessionRepository 创建 Session 仓储并启动定时刷写（若配置启用）。
@@ -397,23 +403,24 @@ func (sr *SessionRepository) SetFlushInterval(intervalMs int) {
 func (sr *SessionRepository) startPeriodicFlush(interval time.Duration) {
 	go func() {
 		defer close(sr.flushDone)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		settings := GetEntityCacheSettings().Snapshot()
+		timer := time.NewTimer(jitterDuration(interval, settings.SessionFlushIntervalJitterPct))
+		defer timer.Stop()
 		for {
 			select {
 			case <-sr.flushStop:
 				return
-			case <-ticker.C:
-				settings := GetEntityCacheSettings().Snapshot()
+			case <-timer.C:
+				settings = GetEntityCacheSettings().Snapshot()
 				newInterval := time.Duration(settings.SessionFlushIntervalMs) * time.Millisecond
 				if settings.SessionFlushIntervalMs <= 0 {
 					continue
 				}
 				if newInterval != interval {
 					interval = newInterval
-					ticker.Reset(interval)
 				}
 				_ = sr.FlushAllDirty()
+				timer.Reset(jitterDuration(interval, settings.SessionFlushIntervalJitterPct))
 			}
 		}
 	}()
@@ -538,33 +545,31 @@ func (sr *SessionRepository) CloseSession(playerID string) error {
 	return nil
 }
 
-// FlushAllDirty 定时刷写：将所有 Session 的 dirty 落库，不关闭 Session。
+// FlushAllDirty 定时刷写：跨 Session 合并或按 Session 并发刷盘（有界 worker）。
 func (sr *SessionRepository) FlushAllDirty() error {
-	var firstErr error
-	sr.sessions.Range(func(key, value any) bool {
-		session := value.(*PlayerSession)
-		if err := session.FlushDirtyOnly(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("playerID=%s: %w", key.(string), err)
-		}
-		return true
-	})
-	return firstErr
+	if !sr.tryBeginPeriodicFlush() {
+		return nil
+	}
+	defer sr.endPeriodicFlush()
+
+	settings := GetEntityCacheSettings().Snapshot()
+	if settings.SessionFlushMergeByTable {
+		return sr.flushAllDirtyMerged(settings)
+	}
+	return sr.flushAllDirtyPerSession(settings)
 }
 
-// FlushAll 关服：强制刷写所有 Session 并落库。
+func (sr *SessionRepository) tryBeginPeriodicFlush() bool {
+	return sr.flushRunning.TryLock()
+}
+
+func (sr *SessionRepository) endPeriodicFlush() {
+	sr.flushRunning.Unlock()
+}
+
+// FlushAll 关服：收集全部 dirty，按表合并分波刷盘，再刷 WriteBuffer。
 func (sr *SessionRepository) FlushAll() error {
-	var firstErr error
-	sr.sessions.Range(func(key, value any) bool {
-		session := value.(*PlayerSession)
-		if err := session.Flush(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("playerID=%s: %w", key.(string), err)
-		}
-		return true
-	})
-	if err := sr.repo.FlushWriteBuffer(); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	return firstErr
+	return sr.flushAllShutdown()
 }
 
 // OnlineCount 在线玩家数。

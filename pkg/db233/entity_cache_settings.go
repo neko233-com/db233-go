@@ -26,6 +26,21 @@ type EntityCacheSettings struct {
 	// 默认 60000（1 分钟）；0 表示关闭定时刷写，仅退出/FlushAll 时落库。
 	SessionFlushIntervalMs int `json:"sessionFlushIntervalMs"`
 
+	// SessionFlushIntervalJitterPct 定时刷写间隔抖动百分比（0–100），避免整点齐刷。默认 10。
+	SessionFlushIntervalJitterPct int `json:"sessionFlushIntervalJitterPct"`
+
+	// SessionFlushMaxWorkers 刷盘最大并发写库数（CloseSession / 定时刷写 / 合并刷）。默认 8。
+	SessionFlushMaxWorkers int `json:"sessionFlushMaxWorkers"`
+
+	// SessionFlushMergeByTable 定时刷写是否跨 Session 按表合并 UPSERT。默认 true。
+	SessionFlushMergeByTable bool `json:"sessionFlushMergeByTable"`
+
+	// ShutdownFlushMaxWorkers 关服 FlushAll 最大并发写库数。默认 8；可略调高以加快关服。
+	ShutdownFlushMaxWorkers int `json:"shutdownFlushMaxWorkers"`
+
+	// ShutdownFlushWaveIntervalMs 关服刷盘波次间隔（毫秒），波间 sleep 削峰 DB。默认 20；0 表示无间隔。
+	ShutdownFlushWaveIntervalMs int `json:"shutdownFlushWaveIntervalMs"`
+
 	// FlushOnEvict LRU 淘汰 Session 前是否先刷写 dirty 到 DB。
 	FlushOnEvict bool `json:"flushOnEvict"`
 
@@ -41,13 +56,18 @@ type EntityCacheSettings struct {
 // DefaultEntityCacheSettings 默认实体缓存配置。
 func DefaultEntityCacheSettings() EntityCacheSettings {
 	return EntityCacheSettings{
-		Enabled:                true,
-		EvictionPolicy:         EntityCacheEvictionLRU,
-		MaxSessions:            10000,
-		SessionFlushIntervalMs: 60000,
-		FlushOnEvict:           true,
-		EntityTypeLimits:       make(map[string]int),
-		NegativeCacheEnabled:   false,
+		Enabled:                     true,
+		EvictionPolicy:              EntityCacheEvictionLRU,
+		MaxSessions:                 10000,
+		SessionFlushIntervalMs:      60000,
+		SessionFlushIntervalJitterPct: 10,
+		SessionFlushMaxWorkers:        8,
+		SessionFlushMergeByTable:      true,
+		ShutdownFlushMaxWorkers:       8,
+		ShutdownFlushWaveIntervalMs:   20,
+		FlushOnEvict:                true,
+		EntityTypeLimits:            make(map[string]int),
+		NegativeCacheEnabled:        false,
 	}
 }
 
@@ -138,6 +158,7 @@ func (m *EntityCacheSettingsManager) LoadFromJSON(data []byte) error {
 		return nil
 	}
 	var settings EntityCacheSettings
+	settings = DefaultEntityCacheSettings()
 	if err := json.Unmarshal(payload, &settings); err != nil {
 		return fmt.Errorf("解析 entityCache 节点失败: %w", err)
 	}
@@ -165,6 +186,20 @@ func normalizeEntityCacheSettings(s EntityCacheSettings) EntityCacheSettings {
 	}
 	if s.EntityTypeLimits == nil {
 		s.EntityTypeLimits = make(map[string]int)
+	}
+	if s.SessionFlushIntervalJitterPct < 0 {
+		s.SessionFlushIntervalJitterPct = def.SessionFlushIntervalJitterPct
+	} else if s.SessionFlushIntervalJitterPct == 0 && s.SessionFlushIntervalMs > 0 {
+		s.SessionFlushIntervalJitterPct = def.SessionFlushIntervalJitterPct
+	}
+	if s.SessionFlushMaxWorkers <= 0 {
+		s.SessionFlushMaxWorkers = def.SessionFlushMaxWorkers
+	}
+	if s.ShutdownFlushMaxWorkers <= 0 {
+		s.ShutdownFlushMaxWorkers = def.ShutdownFlushMaxWorkers
+	}
+	if s.ShutdownFlushWaveIntervalMs < 0 {
+		s.ShutdownFlushWaveIntervalMs = def.ShutdownFlushWaveIntervalMs
 	}
 	return s
 }
@@ -195,6 +230,36 @@ func applyEntityCacheKeyValue(settings *EntityCacheSettings, key string, value a
 			return err
 		}
 		settings.SessionFlushIntervalMs = v
+	case "sessionFlushIntervalJitterPct":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		settings.SessionFlushIntervalJitterPct = v
+	case "sessionFlushMaxWorkers":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		settings.SessionFlushMaxWorkers = v
+	case "sessionFlushMergeByTable":
+		v, err := toBool(value)
+		if err != nil {
+			return err
+		}
+		settings.SessionFlushMergeByTable = v
+	case "shutdownFlushMaxWorkers":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		settings.ShutdownFlushMaxWorkers = v
+	case "shutdownFlushWaveIntervalMs":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		settings.ShutdownFlushWaveIntervalMs = v
 	case "flushOnEvict":
 		v, err := toBool(value)
 		if err != nil {

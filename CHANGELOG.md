@@ -2,6 +2,21 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Session 刷盘**：有界 worker 池、跨 Session 按表合并、定时抖动、关服分波 `FlushAll`
+- **WriteBuffer**：`writeBufferMaxBatchSize` 分片刷盘；失败回滚 pending
+- **测试**：`pkg/db233` flush/WriteBuffer 单测 + `tests/session_flush_*` 集成 + `benchmarks/flush_compare_test.go`
+- **压测脚本**：6 阶段（含 pkg 单测 + 刷盘对比）
+
+### Changed
+
+- 定时 `FlushAllDirty` 重叠 tick 跳过（DB 慢时不堆叠）
+
+---
+
 ## [v1.0.2] - 2026-05-30
 
 **文档完善** — 修正版本号、补充 FAQ / 对比 / 概览，优化检索可读性。
