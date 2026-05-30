@@ -29,6 +29,20 @@ func ApplyConnectionPoolSettings(db *sql.DB, settings CrudPerformanceSettings) {
 		settings.MaxOpenConns, settings.MaxIdleConns, settings.ConnMaxLifetimeSec, settings.ConnMaxIdleTimeSec)
 }
 
+// WarmConnectionPool 预热连接池（降低首条 SQL 冷启动延迟）。
+func WarmConnectionPool(db *sql.DB, rounds int) error {
+	if db == nil || rounds <= 0 {
+		return nil
+	}
+	var lastErr error
+	for i := 0; i < rounds; i++ {
+		if err := db.Ping(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // RegisterDbForConnectionPool 注册 Db，配置变更时自动刷新连接池。
 func RegisterDbForConnectionPool(db *Db) {
 	if db == nil {

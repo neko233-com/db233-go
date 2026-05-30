@@ -42,6 +42,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Local dev config (credentials, do not commit)
+*.local.json
+
 # Build artifacts
 dist/
 build/

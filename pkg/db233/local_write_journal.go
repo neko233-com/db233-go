@@ -302,6 +302,10 @@ func (j *LocalWriteJournal) rewriteEntriesLocked(entries []*JournalEntry) error 
 	path := j.journalFile()
 	tmpPath := path + ".tmp"
 
+	if err := os.MkdirAll(j.dir, 0755); err != nil {
+		return fmt.Errorf("创建 WAL 目录失败: %w", err)
+	}
+
 	if len(entries) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err

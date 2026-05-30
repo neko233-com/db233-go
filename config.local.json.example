@@ -1,0 +1,12 @@
+{
+  "databaseType": "mysql",
+  "host": "your-rds-host.mysql.rds.aliyuncs.com",
+  "port": 3306,
+  "username": "root",
+  "password": "your-password",
+  "database": "db233_go",
+  "maxOpenConns": 50,
+  "maxIdleConns": 10,
+  "connMaxLifetimeSec": 3600,
+  "connMaxIdleTimeSec": 600
+}

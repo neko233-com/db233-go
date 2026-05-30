@@ -1,0 +1,24 @@
+{
+  "concurrentMaxWorkers": 8,
+  "findByIdsChunkSize": 500,
+  "batchUpsertChunkSize": 100,
+  "batchInsertChunkSize": 100,
+  "enableConcurrentFind": true,
+  "enableSqlTemplateCache": true,
+  "enablePreparedStmtCache": true,
+  "enableFastOrmScan": true,
+  "enableRowMapPool": true,
+  "enableAllocPool": true,
+  "enableColdStartWarmup": true,
+  "poolWarmupRounds": 5,
+  "stmtCacheSize": 256,
+  "stmtCacheTTLSeconds": 600,
+  "writeBufferEnabled": false,
+  "maxOpenConns": 32,
+  "maxIdleConns": 8,
+  "connMaxLifetimeSec": 3600,
+  "connMaxIdleTimeSec": 600,
+  "entityCache": {
+    "enabled": false
+  }
+}

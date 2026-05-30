@@ -22,46 +22,52 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 
 	var results []any
 
-	// 获取结构体类型
 	structType := reflect.TypeOf(returnType)
 	if structType.Kind() == reflect.Ptr {
 		structType = structType.Elem()
 	}
 
-	// 获取列名
 	columns, err := rows.Columns()
 	if err != nil {
 		log.Printf("获取列名失败: %v", err)
 		return results
 	}
 
+	settings := GetCrudPerformanceSettings().Snapshot()
+	if settings.EnableFastOrmScan {
+		if plan, planErr := GetOrmScanPlanCache().GetPlan(returnType, columns); planErr == nil {
+			return o.ormBatchFast(rows, plan)
+		}
+	}
+
+	return o.ormBatchLegacy(rows, structType, columns)
+}
+
+func (o *OrmHandler) ormBatchLegacy(rows *sql.Rows, structType reflect.Type, columns []string) []any {
+	var results []any
+	scratch := acquireScanScratch(len(columns))
+	defer releaseScanScratch(scratch)
+
 	for rows.Next() {
-		// 创建新实例（值 + 指针）
 		newInstancePtr := reflect.New(structType)
 		newInstance := newInstancePtr.Elem()
 
-		// 准备扫描目标
-		scanTargets := make([]any, len(columns))
-		for i := range scanTargets {
-			scanTargets[i] = new(any)
+		dest := scratch.dest
+		for i := range dest {
+			dest[i] = scratch.discardPtr(i)
 		}
 
-		// 扫描行
-		err := rows.Scan(scanTargets...)
+		err := rows.Scan(dest...)
 		if err != nil {
 			log.Printf("扫描行失败: %v", err)
 			continue
 		}
 
-		// 映射到结构体字段
 		for i, col := range columns {
-			// 尝试查找字段（支持嵌入结构体）
 			field := o.findFieldByColumnName(newInstance, structType, col)
-
 			if field.IsValid() && field.CanSet() {
-				val := reflect.ValueOf(scanTargets[i]).Elem()
+				val := reflect.ValueOf(*scratch.discardPtr(i))
 				if val.IsValid() {
-					// 处理类型转换（使用新的转换方法）
 					convertedVal, err := o.convertValue(val, field.Type())
 					if err != nil {
 						LogDebug("字段类型转换警告: 列=%s, 源类型=%s, 目标类型=%s, 错误=%v", col, val.Type(), field.Type(), err)
@@ -72,7 +78,6 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 			}
 		}
 
-		// 返回指针类型，确保实现 IDbEntity 的指针接收者方法
 		results = append(results, newInstancePtr.Interface())
 	}
 

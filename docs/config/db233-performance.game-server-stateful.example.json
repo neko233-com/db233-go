@@ -1,0 +1,37 @@
+{
+  "concurrentMaxWorkers": 16,
+  "findByIdsChunkSize": 500,
+  "batchUpsertChunkSize": 200,
+  "batchInsertChunkSize": 200,
+  "enableConcurrentFind": true,
+  "enableSqlTemplateCache": true,
+  "enablePreparedStmtCache": true,
+  "enableFastOrmScan": true,
+  "enableRowMapPool": true,
+  "enableAllocPool": true,
+  "enableColdStartWarmup": true,
+  "poolWarmupRounds": 10,
+  "stmtCacheSize": 256,
+  "stmtCacheTTLSeconds": 600,
+  "writeBufferEnabled": true,
+  "writeBufferFlushIntervalMs": 100,
+  "writeBufferMaxBatchSize": 200,
+  "writeBufferMaxQueueSize": 10000,
+  "maxOpenConns": 50,
+  "maxIdleConns": 10,
+  "connMaxLifetimeSec": 3600,
+  "connMaxIdleTimeSec": 600,
+  "enableLocalJournal": true,
+  "localJournalPath": "./data/db233_journal",
+  "entityCache": {
+    "enabled": true,
+    "evictionPolicy": "lru",
+    "maxSessions": 10000,
+    "sessionFlushIntervalMs": 60000,
+    "flushOnEvict": true,
+    "negativeCacheEnabled": false,
+    "entityTypeLimits": {
+      "PlayerBagEntity": 8000
+    }
+  }
+}

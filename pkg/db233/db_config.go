@@ -247,12 +247,9 @@ func (c *DbConnectionConfig) CreateDataSource() (*sql.DB, error) {
 	}
 
 	// 测试连接
-	if err := dataSource.Ping(); err != nil {
-		err := dataSource.Close()
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("数据库连接测试失败: %w", err)
+	if pingErr := dataSource.Ping(); pingErr != nil {
+		_ = dataSource.Close()
+		return nil, fmt.Errorf("数据库连接测试失败: %w", pingErr)
 	}
 
 	LogInfo("数据库连接成功: 类型=%s, 主机=%s:%d, 数据库=%s", c.DatabaseType, c.Host, c.Port, c.Database)

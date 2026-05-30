@@ -1,8 +1,51 @@
 # db233-go
 
-> 🚀 **v1.2.0 重大更新：** 现在支持命名参数查询和批量更新！使用 `{paramName}` 语法代替 `?` 占位符，代码更清晰易维护。
+> 面向**有状态游戏逻辑服**的 Go ORM：**v1.0.1** — Session L1、批量 UPSERT、WAL、对象池、冷启动预热。
 
-db233-go 是 db233 的 Go 语言版本，一个功能强大的数据库操作库，提供 ORM、分片、迁移、监控和**命名参数查询**功能。
+**发版压测**：`./scripts/run-benchmark.ps1`（规范见 [docs/BENCHMARK.md](docs/BENCHMARK.md)）
+
+## 框架性能对标（阿里云 RDS MySQL · 同地域）
+
+复现：`cd benchmarks && go test -run TestFrameworkCompare_Report -timeout 3m -v`
+
+| 框架 | 单次 PK 读 | 登录 3 表 | 批量 UPSERT×50 | Session 读×1000 | 相对 raw SQL 读 |
+|------|------------|-----------|----------------|-----------------|-----------------|
+| **db233-go** | **~10.8** | **~12.6** | **~13.0** | **<0.001 ms** | **~0.5×** |
+| database/sql | ~21.5 | ~67.3 | ~581 | — | 1.0× |
+| sqlx | ~18.9 | ~58.1 | ~974 | — | ~0.88× |
+| GORM | ~23.3 | ~74.0 | ~54.6 | ~21s（1000×读） | ~1.08× |
+
+| 能力 | db233-go | GORM | sqlx | database/sql |
+|------|----------|------|------|--------------|
+| 实体 CRUD / UPSERT | ✅ | ✅ | 部分 | ❌ |
+| 批量 UPSERT 单 SQL | ✅ | 部分 | ❌ | ❌ |
+| Session 一级缓存（在线零查库） | ✅ | ❌ | ❌ | ❌ |
+| FindByIdConcurrent 登录 | ✅ | ❌ | ❌ | ❌ |
+| WAL 写不丢 | ✅ | ❌ | ❌ | ❌ |
+| `*sql.Stmt` 预编译池 | ✅ | 内部 | ✅ | 手动 |
+| 内部对象池（字段 map / 批量 scratch / Scan 缓冲） | ✅ `enableAllocPool` | 部分 | ❌ | ❌ |
+| ORM 直扫字段（无 map 中转） | ✅ | ✅ | ✅ | 手动 |
+| 冷启动预热（池+元数据+Stmt） | ✅ | 部分 | ❌ | ❌ |
+
+> **游戏服读路径**：登录 `OpenSession` 后 `session.Get` 走 L1，不经过 ORM/DB。  
+> **内存/GC**：默认 `enableAllocPool` + `enableFastOrmScan`；见下文「相对 GORM 内存压力」。
+
+### 相对 GORM 内存 / GC 压力（设计对比）
+
+| 维度 | db233-go | GORM |
+|------|----------|------|
+| 单次读中间对象 | 直扫字段，无 `map[string]any` | Schema + 反射 + 可能 `clause` 构建 |
+| 批量写 200 行 | 1 个 field map scratch + 复用 `[]any` 行缓冲 | 每行 Statement/反射链 + 可能 N 次 Exec |
+| IN 查询 500 ID | `?,?,?` 字符串缓存（immutable） | 每次拼接 |
+| 在线读（Session） | L1 指针复用，**零 DB 对象分配** | 每次 `First` 新建 struct + 查库 |
+| 返回给业务的对象 | 每行 1 个 entity（与 GORM 相同） | 每行 1 个 struct |
+| **不可池化（安全边界）** | 返回的 entity / `QueryNamed` 的 map 仍独立分配 | 同 |
+
+**不能池化的（会破坏安全/语义）**：返回给调用方的 entity、`*[]map` 查询结果、WAL 持久化 JSON 副本、跨 goroutine 共享的可变 map。
+
+---
+
+> 🚀 **v1.2.0：** 命名参数查询 `{paramName}`、批量命名更新。
 
 ## 📋 目录
 
@@ -562,6 +605,11 @@ func main() {
 
 ## 游戏逻辑服接入（v0.1.0+）
 
+> **配置最佳实践（持续维护）**  
+> - 有状态逻辑服：[docs/config-game-server-stateful.md](docs/config-game-server-stateful.md)  
+> - 无状态 Web/API：[docs/config-web-server.md](docs/config-web-server.md)  
+> - 压测优化建议落地对照：[docs/db233优化落地对照.md](docs/db233优化落地对照.md)
+
 ### 升级依赖
 
 ```bash
@@ -579,39 +627,70 @@ go get github.com/neko233-com/db233-go@v0.1.0
   "maxOpenConns": 100,
   "maxIdleConns": 20,
   "enableLocalJournal": true,
-  "localJournalPath": "./data/db233_journal"
+  "localJournalPath": "./data/db233_journal",
+  "entityCache": {
+    "enabled": true,
+    "evictionPolicy": "lru",
+    "maxSessions": 10000,
+    "sessionFlushIntervalMs": 60000,
+    "flushOnEvict": true,
+    "entityTypeLimits": {
+      "PlayerBagEntity": 8000
+    }
+  }
 }
 ```
+
+| entityCache 字段 | 说明 |
+|------------------|------|
+| `enabled` | 是否启用 Session 实体缓存（读内存、写 dirty 延迟落库） |
+| `evictionPolicy` | 淘汰策略，默认 `lru` |
+| `maxSessions` | 全局最大在线 Session 数，超出 LRU 淘汰 |
+| `sessionFlushIntervalMs` | 定时刷写 dirty 到 DB（默认 60000=1 分钟）；`0` 表示不自动刷写，仅下线/关服时落库 |
+| `flushOnEvict` | LRU 淘汰前是否先刷写 dirty |
+| `negativeCacheEnabled` | 负缓存（默认 **false**）；确认无记录后不再 SELECT |
+| `entityTypeLimits` | 各 `XxxEntity` 类型在缓存中的最大实例数（跨 Session 统计） |
+
+运行期可通过 `GetEntityCacheSettings().Set("sessionFlushIntervalMs", 120000)` 动态调整刷写间隔。  
+负缓存也可 **Session 级** 动态开关（不影响全局）：`session.SetNegativeCacheEnabled(true)`。
 
 ### 启动初始化（一次性，运行期不变）
 
 ```go
 opts := db233.DefaultGameDbOptions()
 opts.PerformanceConfigPath = "config/db233-performance.json"
-opts.EntityTypes = []db233.IDbEntity{&PlayerBase{}, &PlayerBag{}, /* 全部玩家表 */}
+opts.EntityTypes = []db233.IDbEntity{&PlayerBaseEntity{}, &PlayerBagEntity{} /* 全部玩家表 */}
+
+// 白名单：仅注册的 XxxEntity 可走 Session 缓存（JPA 风格）
+opts.CacheableEntities = []db233.CacheableEntitySpec{
+    {Prototype: &PlayerBaseEntity{}},
+    {Prototype: &PlayerBagEntity{}, MaxInstances: 8000},
+}
+opts.EnableEntityCache = true
 
 dbConfig := db233.NewDefaultMySQLConfig(host, port, user, pass, database)
-_ = db233.InitGameDb(db, dbConfig, opts)
-
-repo := db233.NewBaseCrudRepository(db)
-sessionRepo := db233.NewSessionRepository(repo)
+sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
+if err != nil { /* handle */ }
+// db.SessionRepo 已绑定，关服 db.Close() 会自动 FlushAll + Stop
 ```
 
 ### 登录 / 在线 / 下线
 
 ```go
-// 登录：并发加载全量玩家数据到 L1
+// 登录：并发加载可缓存实体到 L1（未注册类型不加载）
 session, _ := sessionRepo.OpenSession(playerId, loginEntityTypes)
 
-// 读：走内存
-bag := session.Get(&PlayerBag{}).(*PlayerBag)
+// 读：走内存（未命中可 GetOrLoad）
+bag := session.Get(&PlayerBagEntity{}).(*PlayerBagEntity)
 
-// 写：L1 + dirty + 异步缓冲（WAL 保护）
+// 写：L1 + dirty；缓存开启时不立即写库，由定时刷写或下线/关服落库
 bag.Gold += 100
-session.MarkDirty(bag)
+session.Put(bag) // 或 session.MarkDirty(bag)
 
-// 下线：强制落库（失败数据保留 WAL 自动恢复）
+// 下线：强制刷写 dirty 到 DB（同一 playerId PK，WAL 保护）
 _ = sessionRepo.CloseSession(playerId)
+
+// 关服：db.Close() 或 sessionRepo.FlushAll() 刷写全部 Session
 ```
 
 ### 数据不丢保证
@@ -622,9 +701,130 @@ _ = sessionRepo.CloseSession(playerId)
 | 无限重试 | FaultTolerantManager 默认永不丢弃 |
 | UPSERT 幂等 | 回放/重试安全，不会产生重复脏数据 |
 
+### 读路径：缓存命中零查库
+
+登录 `OpenSession` 会把可缓存实体一次性加载进 L1；之后：
+
+- `session.Get(&XxxEntity{})` — 有值直接返回，**不查库**
+- `session.GetOrLoad(&XxxEntity{})` — 正缓存命中不查库；负缓存开启且已确认无记录也不查库
+- `session.IsResolved(&XxxEntity{})` — 是否已解析（有实体或负缓存 absent）
+- `session.SetNegativeCacheEnabled(true)` — Session 级负缓存开关（默认全局 false）
+
+```go
+bag, _ := session.GetOrLoad(&PlayerBagEntity{})
+if bag == nil {
+    // 登录时已确认无记录，不会重复 SELECT
+}
+```
+
+### 连接池（等价 Java HikariCP）
+
+Go 标准库 `database/sql.DB` 即连接池。db233 两层配置：
+
+| 层级 | 配置位置 | 对应 Java |
+|------|----------|-----------|
+| 创建时 | `config.local.json` 或 `DbConnectionConfig` | Hikari `maximumPoolSize` / `minimumIdle` |
+| 运行期 | `db233-performance.json` 的 `maxOpenConns` 等 | 动态调参 |
+
+`InitGameDb` 内调用 `RegisterDbForConnectionPool(db)`，与 performance JSON 联动。
+
+推荐游戏服参数（单逻辑服写库）：
+
+```json
+{
+  "maxOpenConns": 50,
+  "maxIdleConns": 10,
+  "connMaxLifetimeSec": 3600,
+  "connMaxIdleTimeSec": 600
+}
+```
+
+### 本地测试配置 `config.local.json`（勿提交 Git）
+
+复制模板并填入真实连接：
+
+```bash
+cp config.local.json.example config.local.json
+```
+
+```json
+{
+  "host": "your-rds.mysql.rds.aliyuncs.com",
+  "port": 3306,
+  "username": "root",
+  "password": "your-password",
+  "database": "db233_go",
+  "maxOpenConns": 50,
+  "maxIdleConns": 10
+}
+```
+
+`*.local.json` 已在 `.gitignore` 中忽略。
+
+```go
+// 本地开发 / 测试
+db, dbConfig, err := db233.OpenDbFromLocalConfig("config.local.json")
+sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
+```
+
+集成测试 `CreateTestDb(t)` 会**优先**读取 `config.local.json`，无文件时回退 `127.0.0.1`。
+
+### Go 框架性能对比（实测）
+
+环境：阿里云 RDS MySQL，Go 1.25，`config.local.json` 同地域连接。  
+复现：
+
+```bash
+cd benchmarks && go test -run TestFrameworkCompare_Report -timeout 3m -v
+cd .. && go test ./tests/ -run "TrafficBurst|TestPerfStability" -timeout 3m -v
+cd benchmarks && go test -run TestStability -timeout 3m -v
+```
+
+#### 延迟对比（中位数 ms，越小越好 · 启用 FastOrmScan + 冷启动预热）
+
+| 框架 | 单次 PK 读 | 登录 3 表 | 批量 UPSERT×50 | Session 读×1000 |
+|------|------------|-----------|----------------|-----------------|
+| **db233-go** | **~10.8** | **~12.6** | **~13.0** | **<0.001** |
+| database/sql | 21.5 | 67.3 | 581 | — |
+| sqlx | 18.9 | 58.1 | 974 | — |
+| GORM | 23.3 | 74.0 | 54.6 | — |
+
+#### 相对基线（database/sql 单次读 = 1.0×）
+
+| 场景 | db233-go | GORM | 结论 |
+|------|----------|------|------|
+| 单次 PK 读 | **0.50×（快 2×）** | 1.08× | 直扫字段 + Stmt 缓存 + 启动预热 |
+| 登录 3 表 | **5.4× 更快** | 0.91× | `FindByIdConcurrent` 并发加载 |
+| 批量写 50 行 | **45× 更快** | 10.6× | 单条 SQL 批量 UPSERT |
+| 在线读×1000 | **>10⁶×** | ~21s 估算 | Session L1 内存读 |
+
+> 游戏服应走 `OpenSession` + `session.Get`：在线读不经过 ORM/DB 往返，这是相对 Spring JPA / GORM **一级缓存（Session）** 的结构性优势。
+
+#### 稳定性验证（突发流量 / 抖动）
+
+| 测试 | 场景 | 结果 |
+|------|------|------|
+| `TestStability_TrafficBurst` | 80 goroutine × 15 混合读写/Session | 0 错误，无 Session 泄漏 |
+| `TestStability_ConnectionPoolSpike` | 30×5 并发读，池上限 10 | Ping 恢复，池 idle=10 |
+| `TestStability_LRUBurst` | 100 Session 洪峰，max=30 | LRU 在线数=30 |
+| `TestStability_WALBurst` | 20×10 并发 WAL 写 | pending=0 |
+| `TestTrafficBurst_Stability` | 50 worker 突发 | 连接池恢复 |
+
+**停止优化条件**（已满足）：单次读 ≤2.5× raw SQL；登录/批量写 ≥ GORM；Session 读数量级领先；稳定性测试全绿。
+
 ---
 
 ## 更新日志
+
+### v1.0.0 (2026-05-30) — 生产就绪：游戏服 Session 缓存 + WAL + 连接池
+
+首个稳定版，面向有状态游戏逻辑服。详见 [CHANGELOG.md](CHANGELOG.md)。
+
+压测：`go test ./tests/ -run TestPerfStability_Short -timeout 90s -v`
+
+### v0.1.2 (2026-05-30) — Session 实体缓存 + 延迟刷写
+- EntityCache 配置（LRU / 按类型上限 / 定时刷写）
+- CacheableEntity 白名单 + InitGameDb 返回 SessionRepository
 
 ### v0.1.0 (2026-05-30) — 游戏服高性能 + 数据不丢
 - FindByIds / SaveBatchUpsert / UpdateBatchUpsert / FindByIdConcurrent

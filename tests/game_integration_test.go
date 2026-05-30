@@ -83,18 +83,21 @@ func TestInitGameDb_Integration(t *testing.T) {
 		&TestPlayerBagEntity{},
 	}
 
-	_, err := db.DataSource.Exec(`
+	if _, err := db.DataSource.Exec(`
 		CREATE TABLE IF NOT EXISTS test_batch_find (
 			playerId VARCHAR(64) NOT NULL PRIMARY KEY,
 			name VARCHAR(255) NULL,
 			level INT NOT NULL DEFAULT 0
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+	`); err != nil {
+		t.Fatalf("建表失败: %v", err)
+	}
+	if _, err := db.DataSource.Exec(`
 		CREATE TABLE IF NOT EXISTS test_player_bag (
 			playerId VARCHAR(64) NOT NULL PRIMARY KEY,
 			gold INT NOT NULL DEFAULT 0
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-	`)
-	if err != nil {
+	`); err != nil {
 		t.Fatalf("建表失败: %v", err)
 	}
 	defer func() {
@@ -103,7 +106,10 @@ func TestInitGameDb_Integration(t *testing.T) {
 	}()
 
 	dbConfig := db233.NewDefaultMySQLConfig("127.0.0.1", 3306, "root", "root", "db233_go")
-	if err := db233.InitGameDb(db, dbConfig, opts); err != nil {
+	if local, _ := LoadLocalDbConfig(); local != nil {
+		dbConfig = local.ToDbConnectionConfig()
+	}
+	if _, err := db233.InitGameDb(db, dbConfig, opts); err != nil {
 		t.Fatalf("InitGameDb 失败: %v", err)
 	}
 
@@ -120,7 +126,10 @@ func TestInitGameDb_Integration(t *testing.T) {
 		t.Fatalf("UpdateBatchUpsert 失败: %v", err)
 	}
 
-	sessionRepo := db233.NewSessionRepository(repo)
+	sessionRepo := db.SessionRepo
+	if sessionRepo == nil {
+		sessionRepo = db233.NewSessionRepository(repo)
+	}
 	session, err := sessionRepo.OpenSession(playerID, []db233.IDbEntity{
 		&TestBatchFindEntity{},
 		&TestPlayerBagEntity{},

@@ -52,11 +52,15 @@ func setupBatchFindTable(db *db233.Db) error {
 }
 
 func setupConcurrentLoginTables(db *db233.Db) error {
-	_, err := db.DataSource.Exec(`
+	if _, err := db.DataSource.Exec(`
 		CREATE TABLE IF NOT EXISTS test_player_bag (
 			playerId VARCHAR(64) NOT NULL PRIMARY KEY,
 			gold INT NOT NULL DEFAULT 0
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+	`); err != nil {
+		return err
+	}
+	_, err := db.DataSource.Exec(`
 		CREATE TABLE IF NOT EXISTS test_player_quest (
 			playerId VARCHAR(64) NOT NULL PRIMARY KEY,
 			questData VARCHAR(255) NULL

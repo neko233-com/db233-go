@@ -2,14 +2,53 @@ package tests
 
 import (
 	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
-// CreateTestDb 创建测试数据库连接
+// localConfigCandidates 从 tests/ 目录向上查找 config.local.json。
+var localConfigCandidates = []string{
+	"config.local.json",
+	filepath.Join("..", "config.local.json"),
+	filepath.Join("..", "..", "config.local.json"),
+}
+
+// LoadLocalDbConfig 加载本地 config.local.json（存在则返回配置，否则 nil）。
+func LoadLocalDbConfig() (*db233.LocalDbConfigFile, string) {
+	for _, p := range localConfigCandidates {
+		cfg, err := db233.LoadLocalDbConfigFromFile(p)
+		if err == nil {
+			return cfg, p
+		}
+	}
+	return nil, ""
+}
+
+// CreateTestDb 创建测试数据库连接。
+// 优先使用项目根目录 config.local.json；否则回退 127.0.0.1 本地 MySQL。
 func CreateTestDb(t *testing.T) *db233.Db {
+	if local, path := LoadLocalDbConfig(); local != nil {
+		t.Logf("使用本地配置: %s", path)
+		dbConfig := local.ToDbConnectionConfig()
+		if err := ensureDatabaseExists(dbConfig); err != nil {
+			t.Skipf("无法创建/连接数据库 %s: %v", dbConfig.Database, err)
+			return nil
+		}
+		db, err := dbConfig.CreateDbWithoutFaultTolerance(0, nil)
+		if err != nil {
+			t.Skipf("本地 config.local.json 连接失败: %v", err)
+			return nil
+		}
+		db233.RegisterDbForConnectionPool(db)
+		_ = db233.WarmConnectionPool(db.DataSource, 2)
+		return db
+	}
+
 	// 创建 SQL 数据库连接 (不指定数据库，使用默认)
 	dataSource, err := sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/")
 	if err != nil {
@@ -42,6 +81,39 @@ func CreateTestDb(t *testing.T) *db233.Db {
 
 	// 创建 Db 实例
 	db := db233.NewDb(dataSource, 0, nil)
+	return db
+}
+
+// ensureDatabaseExists 连接实例并在目标库不存在时自动创建（本地/RDS 测试用）。
+func ensureDatabaseExists(cfg *db233.DbConnectionConfig) error {
+	if cfg == nil || cfg.Database == "" {
+		return nil
+	}
+	bootstrap := *cfg
+	bootstrap.Database = ""
+	ds, err := bootstrap.CreateDataSource()
+	if err != nil {
+		return err
+	}
+	defer ds.Close()
+	_, err = ds.Exec(fmt.Sprintf(
+		"CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+		cfg.Database,
+	))
+	return err
+}
+
+// CreateTestDbFromLocalConfig 仅从 config.local.json 创建连接，无回退。
+func CreateTestDbFromLocalConfig(t *testing.T) *db233.Db {
+	path := db233.DefaultLocalConfigPath
+	if _, err := os.Stat(path); err != nil {
+		path = filepath.Join("..", db233.DefaultLocalConfigPath)
+	}
+	db, _, err := db233.OpenDbFromLocalConfig(path)
+	if err != nil {
+		t.Skipf("config.local.json 不可用: %v", err)
+		return nil
+	}
 	return db
 }
 

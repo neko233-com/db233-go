@@ -120,12 +120,20 @@ func (wb *WriteBuffer) Flush() error {
 
 	var firstErr error
 	for _, entitiesMap := range pending {
-		entities := make([]IDbEntity, 0, len(entitiesMap))
+		var entities []IDbEntity
+		if EnableAllocPoolEnabled() {
+			entities = acquireEntitySlice(len(entitiesMap))
+		} else {
+			entities = make([]IDbEntity, 0, len(entitiesMap))
+		}
 		for _, entity := range entitiesMap {
 			entities = append(entities, entity)
 		}
 		if err := wb.repo.UpdateBatchUpsert(entities); err != nil && firstErr == nil {
 			firstErr = err
+		}
+		if EnableAllocPoolEnabled() {
+			releaseEntitySlice(entities)
 		}
 	}
 	return firstErr

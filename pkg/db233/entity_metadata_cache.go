@@ -21,8 +21,8 @@ type EntityMetadata struct {
 	// 主键字段名（struct field name）
 	PrimaryKeyFieldName string
 
-	// 列名到字段索引的映射
-	ColumnToFieldIndex map[string]int
+	// 列名到字段索引路径的映射（支持嵌入结构体）
+	ColumnToFieldPath map[string][]int
 
 	// 字段名到列名的映射
 	FieldNameToColumn map[string]string
@@ -101,7 +101,7 @@ func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
 func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type) (*EntityMetadata, error) {
 	metadata := &EntityMetadata{
 		EntityType:         entityType,
-		ColumnToFieldIndex: make(map[string]int),
+		ColumnToFieldPath: make(map[string][]int),
 		FieldNameToColumn:  make(map[string]string),
 		AllColumns:         make([]string, 0),
 	}
@@ -164,7 +164,7 @@ func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadat
 			// 如果是结构体，递归扫描
 			if embeddedType.Kind() == reflect.Struct {
 				LogDebug("扫描嵌入结构体: %s -> %s", t.Name(), field.Name)
-				c.scanFields(embeddedType, metadata, currentIndex[:len(currentIndex)-1])
+				c.scanFields(embeddedType, metadata, currentIndex)
 				continue
 			}
 		}
@@ -187,15 +187,8 @@ func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadat
 			}
 		}
 
-		// 记录映射关系（使用最后一个索引，因为嵌入字段会被提升到父级）
-		fieldIndex := currentIndex[len(currentIndex)-1]
-		if len(parentIndex) == 0 {
-			// 非嵌入字段，直接使用索引
-			metadata.ColumnToFieldIndex[columnName] = fieldIndex
-		} else {
-			// 嵌入字段，使用当前索引（Go会自动提升嵌入字段）
-			metadata.ColumnToFieldIndex[columnName] = fieldIndex
-		}
+		path := append([]int(nil), currentIndex...)
+		metadata.ColumnToFieldPath[columnName] = path
 
 		metadata.FieldNameToColumn[field.Name] = columnName
 		metadata.AllColumns = append(metadata.AllColumns, columnName)

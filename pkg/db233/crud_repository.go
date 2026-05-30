@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -46,6 +47,9 @@ type CrudRepository interface {
 	// FindByIds 根据主键列表批量查找（单表 IN 查询，支持分块）。
 	FindByIds(ids []any, entityType IDbEntity) ([]IDbEntity, error)
 
+	// FindByIdsMap 根据主键列表批量查找，返回 map[primaryKey]IDbEntity。
+	FindByIdsMap(ids []any, entityType IDbEntity) (map[any]IDbEntity, error)
+
 	// FindByIdConcurrent 并发按主键查询多个实体类型（登录加载多表场景）。
 	FindByIdConcurrent(id any, entityTypes []IDbEntity, config *ConcurrentCrudConfig) []FindByIdConcurrentItem
 
@@ -58,7 +62,7 @@ type CrudRepository interface {
 	// Update 更新实体（必须实现 IDbEntity 接口）。
 	Update(entity IDbEntity) error
 
-	// UpdateBatch 批量更新（必须实现 IDbEntity 接口）。
+	// UpdateBatch 批量更新（真批量：同表单 SQL UPSERT，跨表自动分组）。
 	UpdateBatch(entities []IDbEntity) error
 
 	// Count 统计数量。
@@ -229,7 +233,7 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 		LogDebug("执行 INSERT (自增主键): 表=%s, 字段数=%d", tableName, len(columns))
 	}
 
-	result, err := r.db.DataSource.Exec(sql, finalValues...)
+	result, err := r.db.execContext(context.Background(), sql, finalValues...)
 	if err != nil {
 		// 友好的错误提示
 		if isConnectionError(err) {
@@ -342,19 +346,30 @@ func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 
 // 获取字段（支持嵌入结构体）
 func (r *BaseCrudRepository) getFields(entity any) map[string]any {
+	if EnableAllocPoolEnabled() {
+		scratch := acquireFieldMap()
+		r.getFieldsInto(entity, scratch)
+		out := make(map[string]any, len(scratch))
+		for k, v := range scratch {
+			out[k] = v
+		}
+		releaseFieldMap(scratch)
+		return out
+	}
+	fields := make(map[string]any)
+	r.getFieldsInto(entity, fields)
+	return fields
+}
+
+// getFieldsInto 扫描实体字段写入 fields（可复用 map，调用方负责 clear）。
+func (r *BaseCrudRepository) getFieldsInto(entity any, fields map[string]any) {
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-
-	fields := make(map[string]any)
 	t := v.Type()
 	entityTypeName := t.Name()
-
-	// 递归扫描字段（包括嵌入结构体）
 	r.scanFieldsRecursive(v, t, entityTypeName, fields)
-
-	return fields
 }
 
 // 递归扫描字段（处理嵌入结构体）
@@ -501,6 +516,9 @@ func (r *BaseCrudRepository) serializeComplexType(value any, fieldType reflect.T
 	}
 
 	// 使用 JSON 序列化
+	if EnableAllocPoolEnabled() {
+		return marshalJSONToString(value)
+	}
 	jsonBytes, err := json.Marshal(value)
 	if err != nil {
 		return "", fmt.Errorf("JSON序列化失败: %w", err)
@@ -757,40 +775,54 @@ func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) erro
 	}
 
 	// 构建批量INSERT SQL: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
-	// 生成单个占位符: (?, ?, ?)
-	placeholderParts := make([]string, len(columns))
-	for i := range placeholderParts {
-		placeholderParts[i] = "?"
-	}
-	placeholder := "(" + StringUtilsInstance.Join(placeholderParts, ",") + ")"
+	rowPlaceholder := "(" + joinQuestionMarks(len(columns)) + ")"
 	placeholders := make([]string, 0, len(validEntities))
 	allValues := make([]any, 0, len(validEntities)*len(columns))
 
-	for _, entity := range validEntities {
-		fields := r.getFields(entity)
-		rowValues := make([]any, 0, len(columns))
+	var fieldScratch map[string]any
+	var batchScratch *batchUpsertScratch
+	if EnableAllocPoolEnabled() {
+		batchScratch = acquireBatchUpsertScratch()
+		defer releaseBatchUpsertScratch(batchScratch)
+		fieldScratch = batchScratch.fieldMap
+	} else {
+		fieldScratch = acquireFieldMap()
+		defer releaseFieldMap(fieldScratch)
+	}
 
+	for _, entity := range validEntities {
+		clear(fieldScratch)
+		r.getFieldsInto(entity, fieldScratch)
+		var rowValues []any
+		if batchScratch != nil {
+			batchScratch.rowValues = batchScratch.rowValues[:0]
+			rowValues = batchScratch.rowValues
+		} else {
+			rowValues = make([]any, 0, len(columns))
+		}
 		for _, col := range columns {
-			value, exists := fields[col]
+			value, exists := fieldScratch[col]
 			if !exists {
-				// 如果字段不存在，使用默认值
 				value = r.getDefaultValueIfEmpty(nil, col)
 			} else {
 				value = r.getDefaultValueIfEmpty(value, col)
 			}
 			rowValues = append(rowValues, value)
 		}
-
-		placeholders = append(placeholders, placeholder)
+		placeholders = append(placeholders, rowPlaceholder)
 		allValues = append(allValues, rowValues...)
 	}
 
-	// 构建SQL: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
-	sql := "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " + StringUtilsInstance.Join(placeholders, ",")
+	var sql string
+	if EnableAllocPoolEnabled() {
+		sql = appendBatchInsertSQL(tableName, columns, placeholders)
+	} else {
+		sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " + StringUtilsInstance.Join(placeholders, ",")
+	}
 
 	LogDebug("执行批量INSERT: 表=%s, 记录数=%d, 字段数=%d, SQL=%s", tableName, len(validEntities), len(columns), sql)
 
-	result, err := r.db.DataSource.Exec(sql, allValues...)
+	result, err := r.db.execContext(context.Background(), sql, allValues...)
 	if err != nil {
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
@@ -851,7 +883,34 @@ func (r *BaseCrudRepository) SaveBatchUpsert(entities []IDbEntity) error {
 	}
 
 	chunkSize := GetCrudPerformanceSettings().Snapshot().BatchUpsertChunkSize
-	return r.saveBatchUpsertWithJournal(validEntities, chunkSize)
+	groups := groupEntitiesByTable(validEntities, r.getTableName)
+	for _, group := range groups {
+		if err := r.saveBatchUpsertWithJournal(group, chunkSize); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// groupEntitiesByTable 按表名分组（混合实体类型批量写时自动拆表，避免 JPA 式 N 次往返）。
+func groupEntitiesByTable(entities []IDbEntity, tableNameOf func(IDbEntity) string) [][]IDbEntity {
+	if len(entities) == 0 {
+		return nil
+	}
+	order := make([]string, 0, 4)
+	byTable := make(map[string][]IDbEntity)
+	for _, entity := range entities {
+		tableName := tableNameOf(entity)
+		if _, ok := byTable[tableName]; !ok {
+			order = append(order, tableName)
+		}
+		byTable[tableName] = append(byTable[tableName], entity)
+	}
+	groups := make([][]IDbEntity, 0, len(order))
+	for _, tableName := range order {
+		groups = append(groups, byTable[tableName])
+	}
+	return groups
 }
 
 // UpdateBatchUpsert 批量属性同步（游戏服高频写，WAL 保护不丢数据）。
@@ -968,19 +1027,33 @@ func (r *BaseCrudRepository) saveBatchUpsertOnce(validEntities []IDbEntity) erro
 		}
 	}
 
-	placeholderParts := make([]string, len(columns))
-	for i := range placeholderParts {
-		placeholderParts[i] = "?"
-	}
-	rowPlaceholder := "(" + StringUtilsInstance.Join(placeholderParts, ",") + ")"
+	rowPlaceholder := "(" + joinQuestionMarks(len(columns)) + ")"
 	placeholders := make([]string, 0, len(validEntities))
 	allValues := make([]any, 0, len(validEntities)*len(columns))
 
+	var fieldScratch map[string]any
+	var batchScratch *batchUpsertScratch
+	if EnableAllocPoolEnabled() {
+		batchScratch = acquireBatchUpsertScratch()
+		defer releaseBatchUpsertScratch(batchScratch)
+		fieldScratch = batchScratch.fieldMap
+	} else {
+		fieldScratch = acquireFieldMap()
+		defer releaseFieldMap(fieldScratch)
+	}
+
 	for _, entity := range validEntities {
-		fields := r.getFields(entity)
-		rowValues := make([]any, 0, len(columns))
+		clear(fieldScratch)
+		r.getFieldsInto(entity, fieldScratch)
+		var rowValues []any
+		if batchScratch != nil {
+			batchScratch.rowValues = batchScratch.rowValues[:0]
+			rowValues = batchScratch.rowValues
+		} else {
+			rowValues = make([]any, 0, len(columns))
+		}
 		for _, col := range columns {
-			value, exists := fields[col]
+			value, exists := fieldScratch[col]
 			if !exists {
 				value = r.getDefaultValueIfEmpty(nil, col)
 			} else {
@@ -992,25 +1065,34 @@ func (r *BaseCrudRepository) saveBatchUpsertOnce(validEntities []IDbEntity) erro
 		allValues = append(allValues, rowValues...)
 	}
 
-	updateParts := make([]string, 0)
-	for _, col := range columns {
-		if col != uidColumn {
-			updateParts = append(updateParts, col+" = VALUES("+col+")")
-		}
-	}
-
 	var sql string
-	if len(updateParts) > 0 {
-		sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " +
-			StringUtilsInstance.Join(placeholders, ",") + " ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
+	if EnableAllocPoolEnabled() {
+		updateParts := make([]string, 0, len(columns))
+		for _, col := range columns {
+			if col != uidColumn {
+				updateParts = append(updateParts, col+" = VALUES("+col+")")
+			}
+		}
+		sql = appendBatchUpsertSQL(tableName, columns, placeholders, updateParts)
 	} else {
-		sql = "INSERT IGNORE INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " +
-			StringUtilsInstance.Join(placeholders, ",")
+		updateParts := make([]string, 0)
+		for _, col := range columns {
+			if col != uidColumn {
+				updateParts = append(updateParts, col+" = VALUES("+col+")")
+			}
+		}
+		if len(updateParts) > 0 {
+			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " +
+				StringUtilsInstance.Join(placeholders, ",") + " ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
+		} else {
+			sql = "INSERT IGNORE INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " +
+				StringUtilsInstance.Join(placeholders, ",")
+		}
 	}
 
 	LogDebug("执行批量 UPSERT: 表=%s, 记录数=%d, 字段数=%d", tableName, len(validEntities), len(columns))
 
-	result, err := r.db.DataSource.Exec(sql, allValues...)
+	result, err := r.db.execContext(context.Background(), sql, allValues...)
 	if err != nil {
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
@@ -1095,7 +1177,7 @@ func (r *BaseCrudRepository) DeleteById(id any, entityType IDbEntity) error {
 	sql := "DELETE FROM " + tableName + " WHERE " + uidColumn + " = ?"
 	LogDebug("执行 DELETE: 表=%s, 主键列=%s, ID=%v, SQL=%s", tableName, uidColumn, id, sql)
 
-	result, err := r.db.DataSource.Exec(sql, id)
+	result, err := r.db.execContext(context.Background(), sql, id)
 	if err != nil {
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
@@ -1216,11 +1298,16 @@ func (r *BaseCrudRepository) FindByIds(ids []any, entityType IDbEntity) ([]IDbEn
 		}
 		chunk := validIds[start:end]
 
-		placeholders := make([]string, len(chunk))
-		for i := range placeholders {
-			placeholders[i] = "?"
+		var sql string
+		if EnableAllocPoolEnabled() {
+			sql = appendFindByIdsSQL(tableName, uidColumn, len(chunk))
+		} else {
+			placeholders := make([]string, len(chunk))
+			for i := range placeholders {
+				placeholders[i] = "?"
+			}
+			sql = "SELECT * FROM " + tableName + " WHERE " + uidColumn + " IN (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 		}
-		sql := "SELECT * FROM " + tableName + " WHERE " + uidColumn + " IN (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 		LogDebug("执行 FindByIds: 表=%s, 主键列=%s, ID数=%d, SQL=%s", tableName, uidColumn, len(chunk), sql)
 
 		results := r.db.ExecuteQuery(sql, [][]any{chunk}, entityType)
@@ -1236,6 +1323,24 @@ func (r *BaseCrudRepository) FindByIds(ids []any, entityType IDbEntity) ([]IDbEn
 
 	LogDebug("FindByIds 完成: 表=%s, 请求ID数=%d, 找到记录数=%d", tableName, len(validIds), len(allEntities))
 	return allEntities, nil
+}
+
+// FindByIdsMap 根据主键列表批量查找，返回 map[primaryKey]IDbEntity。
+func (r *BaseCrudRepository) FindByIdsMap(ids []any, entityType IDbEntity) (map[any]IDbEntity, error) {
+	list, err := r.FindByIds(ids, entityType)
+	if err != nil {
+		return nil, err
+	}
+	cm := GetCrudManagerInstance()
+	result := make(map[any]IDbEntity, len(list))
+	for _, entity := range list {
+		if entity == nil {
+			continue
+		}
+		pk := cm.GetPrimaryKeyValue(entity)
+		result[pk] = entity
+	}
+	return result, nil
 }
 
 func (r *BaseCrudRepository) FindAll(entityType IDbEntity) ([]IDbEntity, error) {
@@ -1363,7 +1468,7 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	sql := "UPDATE " + tableName + " SET " + StringUtilsInstance.Join(setParts, ", ") + " WHERE " + uidColumn + " = ?"
 	LogDebug("执行 UPDATE: 表=%s, 主键列=%s, ID=%v, 更新字段数=%d, SQL=%s", tableName, uidColumn, id, len(setParts), sql)
 
-	result, err := r.db.DataSource.Exec(sql, values...)
+	result, err := r.db.execContext(context.Background(), sql, values...)
 	if err != nil {
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
@@ -1388,32 +1493,14 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 }
 
 func (r *BaseCrudRepository) UpdateBatch(entities []IDbEntity) error {
-	// 参数验证
 	if entities == nil {
 		return NewValidationException("实体列表不能为 nil")
 	}
 	if len(entities) == 0 {
 		return NewValidationException("实体列表不能为空")
 	}
-
-	LogDebug("开始批量更新: 实体数量=%d", len(entities))
-
-	successCount := 0
-	for i, entity := range entities {
-		if entity == nil {
-			LogWarn("批量更新跳过 nil 实体: 索引=%d", i)
-			continue
-		}
-
-		if err := r.Update(entity); err != nil {
-			LogError("批量更新失败: 索引=%d, 实体类型=%T, 错误=%v", i, entity, err)
-			return NewQueryExceptionWithCause(err, fmt.Sprintf("批量更新失败，已成功更新 %d/%d 条记录，第 %d 条记录更新失败", successCount, len(entities), i+1))
-		}
-		successCount++
-	}
-
-	LogDebug("批量更新完成: 成功=%d, 总数=%d", successCount, len(entities))
-	return nil
+	LogDebug("UpdateBatch 真批量 UPSERT: 实体数量=%d", len(entities))
+	return r.SaveBatchUpsert(entities)
 }
 
 func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {

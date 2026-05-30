@@ -28,6 +28,30 @@ type CrudPerformanceSettings struct {
 	// EnableSqlTemplateCache 是否缓存 FindById 等 SQL 模板。
 	EnableSqlTemplateCache bool `json:"enableSqlTemplateCache"`
 
+	// EnablePreparedStmtCache 是否缓存 *sql.Stmt 预编译语句。
+	EnablePreparedStmtCache bool `json:"enablePreparedStmtCache"`
+
+	// EnableFastOrmScan 是否启用元数据直扫 ORM（跳过 map/any 中转，降低 GC）。
+	EnableFastOrmScan bool `json:"enableFastOrmScan"`
+
+	// EnableRowMapPool 是否复用 Scan 中间缓冲（Query 路径）。
+	EnableRowMapPool bool `json:"enableRowMapPool"`
+
+	// EnableAllocPool 内部对象池（字段 map / 批量写 scratch / IN 占位符 / Builder / JSON Buffer）。
+	EnableAllocPool bool `json:"enableAllocPool"`
+
+	// EnableColdStartWarmup InitGameDb 时预热连接池/元数据/Stmt/扫描计划。
+	EnableColdStartWarmup bool `json:"enableColdStartWarmup"`
+
+	// PoolWarmupRounds 连接池预热 Ping 轮数（0=按 maxIdle 推断）。
+	PoolWarmupRounds int `json:"poolWarmupRounds"`
+
+	// StmtCacheSize 预编译语句缓存上限（按 DB+SQL）。
+	StmtCacheSize int `json:"stmtCacheSize"`
+
+	// StmtCacheTTLSeconds 预编译语句 TTL（秒）。
+	StmtCacheTTLSeconds int `json:"stmtCacheTTLSeconds"`
+
 	// WriteBufferEnabled 是否启用异步写缓冲（高频写场景）。
 	WriteBufferEnabled bool `json:"writeBufferEnabled"`
 
@@ -68,6 +92,14 @@ func DefaultCrudPerformanceSettings() CrudPerformanceSettings {
 		ConcurrentMaxWorkers:       10,
 		EnableConcurrentFind:       true,
 		EnableSqlTemplateCache:     true,
+		EnablePreparedStmtCache:    true,
+		EnableFastOrmScan:          true,
+		EnableRowMapPool:           true,
+		EnableAllocPool:            true,
+		EnableColdStartWarmup:      true,
+		PoolWarmupRounds:           0,
+		StmtCacheSize:              256,
+		StmtCacheTTLSeconds:        600,
 		WriteBufferEnabled:         false,
 		WriteBufferFlushIntervalMs: 100,
 		WriteBufferMaxBatchSize:    100,
@@ -286,6 +318,15 @@ func mergePerformanceSettingsInts(base, patch CrudPerformanceSettings) CrudPerfo
 	if patch.LocalJournalPath != "" {
 		base.LocalJournalPath = patch.LocalJournalPath
 	}
+	if patch.PoolWarmupRounds > 0 {
+		base.PoolWarmupRounds = patch.PoolWarmupRounds
+	}
+	if patch.StmtCacheSize > 0 {
+		base.StmtCacheSize = patch.StmtCacheSize
+	}
+	if patch.StmtCacheTTLSeconds > 0 {
+		base.StmtCacheTTLSeconds = patch.StmtCacheTTLSeconds
+	}
 	return base
 }
 
@@ -311,6 +352,12 @@ func normalizePerformanceSettings(s CrudPerformanceSettings) CrudPerformanceSett
 	}
 	if s.WriteBufferMaxQueueSize <= 0 {
 		s.WriteBufferMaxQueueSize = def.WriteBufferMaxQueueSize
+	}
+	if s.StmtCacheSize <= 0 {
+		s.StmtCacheSize = def.StmtCacheSize
+	}
+	if s.StmtCacheTTLSeconds <= 0 {
+		s.StmtCacheTTLSeconds = def.StmtCacheTTLSeconds
 	}
 	return s
 }
@@ -353,6 +400,54 @@ func applyKeyValueToPatch(patch *CrudPerformanceSettings, key string, value any)
 			return err
 		}
 		patch.EnableSqlTemplateCache = v
+	case "enablePreparedStmtCache":
+		v, err := toBool(value)
+		if err != nil {
+			return err
+		}
+		patch.EnablePreparedStmtCache = v
+	case "enableFastOrmScan":
+		v, err := toBool(value)
+		if err != nil {
+			return err
+		}
+		patch.EnableFastOrmScan = v
+	case "enableRowMapPool":
+		v, err := toBool(value)
+		if err != nil {
+			return err
+		}
+		patch.EnableRowMapPool = v
+	case "enableAllocPool":
+		v, err := toBool(value)
+		if err != nil {
+			return err
+		}
+		patch.EnableAllocPool = v
+	case "enableColdStartWarmup":
+		v, err := toBool(value)
+		if err != nil {
+			return err
+		}
+		patch.EnableColdStartWarmup = v
+	case "poolWarmupRounds":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		patch.PoolWarmupRounds = v
+	case "stmtCacheSize":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		patch.StmtCacheSize = v
+	case "stmtCacheTTLSeconds":
+		v, err := toInt(value)
+		if err != nil {
+			return err
+		}
+		patch.StmtCacheTTLSeconds = v
 	case "writeBufferEnabled":
 		v, err := toBool(value)
 		if err != nil {

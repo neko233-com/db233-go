@@ -63,6 +63,8 @@ type Db struct {
 	FaultTolerantMgr *FaultTolerantManager
 	// WriteJournal 本地 WAL（可选，游戏服数据不丢）
 	WriteJournal *LocalWriteJournal
+	// SessionRepo Session 仓储（InitGameDb 创建）
+	SessionRepo *SessionRepository
 }
 
 // NewDb 创建一个默认使用 MySQL 的 Db 实例。
@@ -130,21 +132,29 @@ func (db *Db) ExecuteSqlByStatement(statement *SqlStatement) []map[string]any {
 			}
 
 			for rows.Next() {
-				// 创建扫描目标
-				scanTargets := make([]any, len(columns))
-				for i := range scanTargets {
-					scanTargets[i] = new(any)
-				}
-
-				if err := rows.Scan(scanTargets...); err != nil {
-					LogError("扫描行失败: %v", err)
-					continue
-				}
-
-				// 构建 map[string]any 结果
-				rowMap := make(map[string]any)
-				for i, col := range columns {
-					rowMap[col] = *scanTargets[i].(*any)
+				var rowMap map[string]any
+				if GetCrudPerformanceSettings().Snapshot().EnableRowMapPool || EnableAllocPoolEnabled() {
+					m, err := scanRowsToMaps(columns, func(dest []any) error {
+						return rows.Scan(dest...)
+					})
+					if err != nil {
+						LogError("扫描行失败: %v", err)
+						continue
+					}
+					rowMap = m
+				} else {
+					scanTargets := make([]any, len(columns))
+					for i := range scanTargets {
+						scanTargets[i] = new(any)
+					}
+					if err := rows.Scan(scanTargets...); err != nil {
+						LogError("扫描行失败: %v", err)
+						continue
+					}
+					rowMap = make(map[string]any, len(columns))
+					for i, col := range columns {
+						rowMap[col] = *scanTargets[i].(*any)
+					}
 				}
 				results = append(results, rowMap)
 			}
@@ -162,7 +172,13 @@ func (db *Db) ExecuteUpdate(query string, params ...any) (int64, error) {
 		}
 	}()
 
-	result, err := db.DataSource.Exec(query, params...)
+	var result sql.Result
+	var err error
+	if settings := GetCrudPerformanceSettings().Snapshot(); settings.EnablePreparedStmtCache {
+		result, err = db.execContext(context.Background(), query, params...)
+	} else {
+		result, err = db.DataSource.Exec(query, params...)
+	}
 	if err != nil {
 		if isConnectionError(err) {
 			LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, query)
@@ -440,7 +456,7 @@ func (db *Db) ExecuteQueryContext(ctx context.Context, query string, paramsArray
 	}
 
 	for _, params := range paramsArray {
-		rows, err := db.DataSource.QueryContext(ctx, query, params...)
+		rows, err := db.queryContext(ctx, query, params...)
 		if err != nil {
 			// 友好的错误提示
 			if isConnectionError(err) {
@@ -501,7 +517,7 @@ func (db *Db) executeQueryPrimitive(ctx context.Context, query string, paramsArr
 	}
 
 	for _, params := range paramsArray {
-		rows, err := db.DataSource.QueryContext(ctx, query, params...)
+		rows, err := db.queryContext(ctx, query, params...)
 		if err != nil {
 			if isConnectionError(err) {
 				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, query)
@@ -626,7 +642,7 @@ func (db *Db) convertStringToPrimitive(str string, targetType reflect.Type) (any
 func (db *Db) executeQueryRaw(ctx context.Context, query string, paramsArray [][]any) []any {
 	var results []any
 	for _, params := range paramsArray {
-		rows, err := db.DataSource.QueryContext(ctx, query, params...)
+		rows, err := db.queryContext(ctx, query, params...)
 		if err != nil {
 			if isConnectionError(err) {
 				LogWarn("数据库连接已关闭或不可用: %v (SQL: %s)", err, query)
@@ -648,26 +664,34 @@ func (db *Db) executeQueryRaw(ctx context.Context, query string, paramsArray [][
 			}
 
 			for rows.Next() {
-				// 创建扫描目标
-				scanTargets := make([]any, len(columns))
-				for i := range scanTargets {
-					scanTargets[i] = new(any)
+				scratch := acquireScanScratch(len(columns))
+				dest := scratch.dest
+				for i := range dest {
+					dest[i] = scratch.discardPtr(i)
 				}
-
-				if err := rows.Scan(scanTargets...); err != nil {
+				if err := rows.Scan(dest...); err != nil {
+					releaseScanScratch(scratch)
 					LogError("扫描行失败: %v", err)
 					continue
 				}
-
-				// 如果只有一列，直接返回该值；否则返回 map
 				if len(columns) == 1 {
-					val := *scanTargets[0].(*any)
+					val := *scratch.discardPtr(0)
+					releaseScanScratch(scratch)
 					results = append(results, val)
-				} else {
-					rowMap := make(map[string]any)
+				} else if GetCrudPerformanceSettings().Snapshot().EnableRowMapPool || EnableAllocPoolEnabled() {
+					pooled := acquireRowMap(len(columns))
 					for i, col := range columns {
-						rowMap[col] = *scanTargets[i].(*any)
+						pooled[col] = *scratch.discardPtr(i)
 					}
+					releaseScanScratch(scratch)
+					results = append(results, copyRowMap(pooled))
+					releaseRowMap(pooled)
+				} else {
+					rowMap := make(map[string]any, len(columns))
+					for i, col := range columns {
+						rowMap[col] = *scratch.discardPtr(i)
+					}
+					releaseScanScratch(scratch)
 					results = append(results, rowMap)
 				}
 			}
@@ -737,21 +761,29 @@ func (db *Db) ExecuteQueryByStatement(statement *SqlStatement) []map[string]any 
 			}
 
 			for rows.Next() {
-				// 创建扫描目标
-				scanTargets := make([]any, len(columns))
-				for i := range scanTargets {
-					scanTargets[i] = new(any)
-				}
-
-				if err := rows.Scan(scanTargets...); err != nil {
-					LogError("扫描行失败: %v", err)
-					continue
-				}
-
-				// 构建 map[string]any 结果
-				rowMap := make(map[string]any)
-				for i, col := range columns {
-					rowMap[col] = *scanTargets[i].(*any)
+				var rowMap map[string]any
+				if GetCrudPerformanceSettings().Snapshot().EnableRowMapPool || EnableAllocPoolEnabled() {
+					m, err := scanRowsToMaps(columns, func(dest []any) error {
+						return rows.Scan(dest...)
+					})
+					if err != nil {
+						LogError("扫描行失败: %v", err)
+						continue
+					}
+					rowMap = m
+				} else {
+					scanTargets := make([]any, len(columns))
+					for i := range scanTargets {
+						scanTargets[i] = new(any)
+					}
+					if err := rows.Scan(scanTargets...); err != nil {
+						LogError("扫描行失败: %v", err)
+						continue
+					}
+					rowMap = make(map[string]any, len(columns))
+					for i, col := range columns {
+						rowMap[col] = *scanTargets[i].(*any)
+					}
 				}
 				results = append(results, rowMap)
 			}
@@ -915,8 +947,12 @@ func (db *Db) ExecuteQuerySimple(query string, params []any, returnType any) []a
 	return db.ExecuteQuery(query, [][]any{params}, returnType)
 }
 
-// Close 关闭底层数据库连接，并在需要时停止容错管理器与 WAL。
+// Close 关闭底层数据库连接，并在需要时停止容错管理器、WAL 与 Session 定时刷写。
 func (db *Db) Close() error {
+	if db.SessionRepo != nil {
+		_ = db.SessionRepo.FlushAll()
+		db.SessionRepo.Stop()
+	}
 	if db.WriteJournal != nil {
 		db.WriteJournal.Stop()
 	}
@@ -1084,6 +1120,26 @@ func (db *Db) executeQueryToScalar(sql string, params []any, defaultValue any) a
 	}
 
 	// 创建扫描目标（只需要第一列）
+	if EnableAllocPoolEnabled() && len(columns) > 0 {
+		scratch := acquireScanScratch(len(columns))
+		defer releaseScanScratch(scratch)
+		dest := scratch.dest
+		for i := range dest {
+			dest[i] = scratch.discardPtr(i)
+		}
+		if err := rows.Scan(dest...); err != nil {
+			LogError("扫描标量值失败: %v", err)
+			return defaultValue
+		}
+		rawValue := *scratch.discardPtr(0)
+		convertedValue, err := db.convertToPrimitiveType(rawValue, reflect.TypeOf(defaultValue))
+		if err != nil {
+			LogError("标量值转换失败: %v", err)
+			return defaultValue
+		}
+		return convertedValue
+	}
+
 	scanTargets := make([]any, len(columns))
 	for i := range scanTargets {
 		scanTargets[i] = new(any)
@@ -1201,17 +1257,26 @@ func (db *Db) QueryNamed(sql string, params map[string]any) []map[string]any {
 	}
 
 	for rows.Next() {
+		if GetCrudPerformanceSettings().Snapshot().EnableRowMapPool || EnableAllocPoolEnabled() {
+			rowMap, err := scanRowsToMaps(columns, func(dest []any) error {
+				return rows.Scan(dest...)
+			})
+			if err != nil {
+				LogError("扫描行失败: %v", err)
+				continue
+			}
+			results = append(results, rowMap)
+			continue
+		}
 		scanTargets := make([]any, len(columns))
 		for i := range scanTargets {
 			scanTargets[i] = new(any)
 		}
-
 		if err := rows.Scan(scanTargets...); err != nil {
 			LogError("扫描行失败: %v", err)
 			continue
 		}
-
-		rowMap := make(map[string]any)
+		rowMap := make(map[string]any, len(columns))
 		for i, col := range columns {
 			rowMap[col] = *scanTargets[i].(*any)
 		}
