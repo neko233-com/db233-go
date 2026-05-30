@@ -2,7 +2,9 @@
 
 All notable changes to **db233-go** are documented here.
 
-## [Unreleased]
+## [v1.0.3] - 2026-05-30
+
+**Session 刷盘与压测** — 有界 worker、跨玩家合并 UPSERT、关服分波、完整测试与刷盘对比。
 
 ### Added
 
