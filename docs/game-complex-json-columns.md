@@ -2,7 +2,9 @@
 
 本文给接入游戏项目的 agent 使用，目标是让实体中的背包、英雄、任务进度等复杂数据安全落到数据库的一列中。
 
-db233-go 支持把 `map` / `slice` / `array` / 普通 `struct` 字段自动序列化为 JSON 字符串保存到 `TEXT` / `JSON` / `LONGTEXT` 等字符串列中；查询实体时会把数据库中的 JSON 字符串自动反序列化回对应 Go 字段，然后再调用实体的 `DeserializeAfterLoadDb()`。
+db233-go 支持把 `map` / `slice` / `array` / 普通 `struct` 字段自动序列化为 JSON 字符串保存到 `MEDIUMTEXT` / `JSON` / `LONGTEXT` 等字符串列中；查询实体时会把数据库中的 JSON 字符串自动反序列化回对应 Go 字段，然后再调用实体的 `DeserializeAfterLoadDb()`。
+
+注意：`db_type` 是显式建表类型，db233-go 不会替你把 `TEXT` 改成 `MEDIUMTEXT`。MySQL `TEXT` 只有 64KB 级别容量，英雄、背包、任务等 JSON 可能达到几 MB 时，应显式使用 `db_type:"MEDIUMTEXT"`；如果单列可能超过 16MB，再使用 `db_type:"LONGTEXT"`。
 
 ## 推荐写法：复杂字段直接映射到一列
 
@@ -18,8 +20,8 @@ type HeroBo struct {
 
 type PlayerHeroEntity struct {
 	PlayerID string             `db:"player_id" primary_key:"true"`
-	HeroMap  map[string]*HeroBo `db:"hero_map" db_type:"TEXT"`
-	HeroList []*HeroBo          `db:"hero_list" db_type:"TEXT"`
+	HeroMap  map[string]*HeroBo `db:"hero_map" db_type:"MEDIUMTEXT"`
+	HeroList []*HeroBo          `db:"hero_list" db_type:"MEDIUMTEXT"`
 }
 
 func (e *PlayerHeroEntity) TableName() string {
@@ -50,8 +52,8 @@ func (e *PlayerHeroEntity) DeserializeAfterLoadDb() {
 ```sql
 CREATE TABLE player_hero (
 	player_id VARCHAR(64) NOT NULL,
-	hero_map TEXT,
-	hero_list TEXT,
+	hero_map MEDIUMTEXT,
+	hero_list MEDIUMTEXT,
 	PRIMARY KEY (player_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
@@ -84,7 +86,7 @@ CREATE TABLE player_hero (
 ```go
 type PlayerHeroEntity struct {
 	PlayerID    string             `db:"player_id" primary_key:"true"`
-	HeroMapJson string             `db:"hero_map" db_type:"TEXT"`
+	HeroMapJson string             `db:"hero_map" db_type:"MEDIUMTEXT"`
 	HeroMap     map[string]*HeroBo `db:"-"`
 }
 
@@ -129,7 +131,9 @@ heroListJson := db233.ToJSONStringOrDefault(heroList, "[]")
 
 - 需要入库的字段必须有 `db:"column_name"` 标签；没有 `db` 标签不会保存。
 - 主键字段使用 `primary_key:"true"`，自增主键再加 `auto_increment:"true"`。
-- 复杂字段建议显式标记 `db_type:"TEXT"` 或 `db_type:"LONGTEXT"`，避免默认类型不足。
+- 未写 `db_type` 的复杂字段默认建表使用 `MEDIUMTEXT`，可存 2MB+ JSON。
+- 显式 `db_type` 会原样使用；不要给英雄/背包大 JSON 写 `db_type:"TEXT"`，`TEXT` 容量太小。
+- 如果单列可能超过 16MB，显式标记 `db_type:"LONGTEXT"`。
 - `map` 的 key 必须是 JSON 支持的 key 类型，游戏业务推荐 `string`；`map[int]T` 也可读写，但 JSON 中会以字符串形式存储 key。
 - 复杂对象需要导出字段，并加 `json` 标签，避免字段名变更造成线上数据不兼容。
 - 钩子里不要访问数据库；只做内存字段整理、默认值补齐、兼容旧 JSON 等轻量逻辑。
@@ -138,7 +142,7 @@ heroListJson := db233.ToJSONStringOrDefault(heroList, "[]")
 
 新增实体后至少补一个 round-trip 测试：
 
-1. 创建测试表，复杂列使用 `TEXT`。
+1. 创建测试表，复杂列使用 `MEDIUMTEXT`。
 2. 构造含 `map[string]*HeroBo` / `[]*HeroBo` 的实体。
 3. 调用 `Save` 或 `UpdateBatchUpsert`。
 4. 调用 `FindById` 读回。

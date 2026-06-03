@@ -138,10 +138,10 @@ func (s *MySQLStrategy) GetSQLType(field reflect.StructField) string {
 		kind = fieldType.Kind()
 	}
 
-	// 检查是否为复杂类型（map, slice, array），需要序列化为 JSON，使用 TEXT 类型
+	// 检查是否为复杂类型（map, slice, array），需要序列化为 JSON，使用 MEDIUMTEXT 类型
 	if s.isComplexTypeForSQL(kind, fieldType) {
-		LogDebug("检测到复杂类型字段，使用 TEXT 类型: 字段=%s, 类型=%s", field.Name, fieldType.String())
-		return "TEXT"
+		LogDebug("检测到复杂类型字段，使用 MEDIUMTEXT 类型: 字段=%s, 类型=%s", field.Name, fieldType.String())
+		return "MEDIUMTEXT"
 	}
 
 	switch kind {
@@ -172,10 +172,6 @@ func (s *MySQLStrategy) GetSQLType(field reflect.StructField) string {
 				size = s
 			}
 		}
-		// 如果 size 很大，使用 TEXT
-		if size > 65535 {
-			return "TEXT"
-		}
 		return fmt.Sprintf("VARCHAR(%d)", size)
 	case reflect.Bool:
 		return "TINYINT(1)"
@@ -183,9 +179,9 @@ func (s *MySQLStrategy) GetSQLType(field reflect.StructField) string {
 		if fieldType == reflect.TypeOf(time.Time{}) {
 			return "TIMESTAMP"
 		}
-		// 其他结构体类型，使用 TEXT（需要序列化）
-		LogDebug("检测到结构体类型字段，使用 TEXT 类型: 字段=%s, 类型=%s", field.Name, fieldType.String())
-		return "TEXT"
+		// 其他结构体类型，使用 MEDIUMTEXT（需要序列化）
+		LogDebug("检测到结构体类型字段，使用 MEDIUMTEXT 类型: 字段=%s, 类型=%s", field.Name, fieldType.String())
+		return "MEDIUMTEXT"
 	}
 
 	return "VARCHAR(255)"

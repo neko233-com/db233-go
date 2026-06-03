@@ -19,8 +19,8 @@ type TestEntityForAutoCreate struct {
 	// 有 db 标签的字段（会被创建）
 	ModulesData  string         `json:"modulesData" db:"modules_data"`   // 显式指定 db 标签
 	Score        int            `json:"score" db:"score"`                // 显式指定 db 标签
-	ComplexMap   map[string]int `json:"complexMap" db:"complex_map"`     // 应该转换为 TEXT
-	ComplexSlice []string       `json:"complexSlice" db:"complex_slice"` // 应该转换为 TEXT
+	ComplexMap   map[string]int `json:"complexMap" db:"complex_map"`     // 应该转换为 MEDIUMTEXT
+	ComplexSlice []string       `json:"complexSlice" db:"complex_slice"` // 应该转换为 MEDIUMTEXT
 
 	// 没有 db 标签的字段（会被忽略）
 	ComplexArray [3]int `json:"complexArray"` // 没有 db 标签，会被忽略
@@ -126,18 +126,18 @@ func TestAutoCreateTableWithIDbEntity(t *testing.T) {
 		t.Error("字段 score 应该存在（有 db 标签）")
 	}
 
-	// 验证复杂类型字段被创建为 TEXT
+	// 验证复杂类型字段被创建为 MEDIUMTEXT
 	if colInfo, exists := columns["complex_map"]; exists {
-		if colInfo["dataType"] != "text" {
-			t.Errorf("complex_map 应该是 TEXT 类型，得到: %s", colInfo["dataType"])
+		if colInfo["dataType"] != "mediumtext" {
+			t.Errorf("complex_map 应该是 MEDIUMTEXT 类型，得到: %s", colInfo["dataType"])
 		}
 	} else {
 		t.Error("字段 complex_map 应该存在（有 db 标签）")
 	}
 
 	if colInfo, exists := columns["complex_slice"]; exists {
-		if colInfo["dataType"] != "text" {
-			t.Errorf("complex_slice 应该是 TEXT 类型，得到: %s", colInfo["dataType"])
+		if colInfo["dataType"] != "mediumtext" {
+			t.Errorf("complex_slice 应该是 MEDIUMTEXT 类型，得到: %s", colInfo["dataType"])
 		}
 	} else {
 		t.Error("字段 complex_slice 应该存在（有 db 标签）")

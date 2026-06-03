@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"time"
 )
 
 // OrmScanPlan 预计算的列→字段扫描计划（FindById / OrmBatch 热路径）。
@@ -199,8 +198,6 @@ func isDirectScannableType(t reflect.Type) bool {
 		return t.Elem().Kind() == reflect.Uint8
 	case reflect.Ptr:
 		return isDirectScannableType(t.Elem())
-	case reflect.Struct:
-		return t == reflect.TypeOf(time.Time{})
 	default:
 		return false
 	}

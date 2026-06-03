@@ -2,6 +2,8 @@ package tests
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -38,6 +40,18 @@ type HeroDataBo struct {
 type TestHeroCollectionEntity struct {
 	ID         int                    `db:"id" primary_key:"true" auto_increment:"true"`
 	Name       string                 `db:"name"`
+	Note       string                 `db:"note"`
+	TextJSON   string                 `db:"text_json" db_type:"TEXT"`
+	HeroMap    map[int]HeroDataBo     `db:"hero_map"`
+	HeroPtrMap map[string]*HeroDataBo `db:"hero_ptr_map"`
+	Heroes     []HeroDataBo           `db:"heroes"`
+}
+
+type TestHeroCollectionEmptyEntity struct {
+	ID         int                    `db:"id" primary_key:"true" auto_increment:"true"`
+	Name       string                 `db:"name"`
+	Note       string                 `db:"note"`
+	TextJSON   string                 `db:"text_json" db_type:"TEXT"`
 	HeroMap    map[int]HeroDataBo     `db:"hero_map"`
 	HeroPtrMap map[string]*HeroDataBo `db:"hero_ptr_map"`
 	Heroes     []HeroDataBo           `db:"heroes"`
@@ -66,6 +80,14 @@ func (e *TestHeroCollectionEntity) TableName() string {
 func (e *TestHeroCollectionEntity) SerializeBeforeSaveDb() {}
 
 func (e *TestHeroCollectionEntity) DeserializeAfterLoadDb() {}
+
+func (e *TestHeroCollectionEmptyEntity) TableName() string {
+	return "test_hero_collection_empty"
+}
+
+func (e *TestHeroCollectionEmptyEntity) SerializeBeforeSaveDb() {}
+
+func (e *TestHeroCollectionEmptyEntity) DeserializeAfterLoadDb() {}
 
 // TestEntityWithUnexportedFields 测试包含未导出字段的实体
 type TestEntityWithUnexportedFields struct {
@@ -119,6 +141,9 @@ func (e *TestEntityWithEmptyValues) DeserializeAfterLoadDb() {}
 
 // 设置复杂类型测试表
 func setupComplexTypesTable(db *db233.Db) error {
+	if _, err := db.DataSource.Exec("DROP TABLE IF EXISTS test_complex_types"); err != nil {
+		return err
+	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS test_complex_types (
 			id INT AUTO_INCREMENT PRIMARY KEY,
@@ -135,15 +160,28 @@ func setupComplexTypesTable(db *db233.Db) error {
 }
 
 func setupHeroCollectionTable(db *db233.Db) error {
-	createTableSQL := `
-		CREATE TABLE IF NOT EXISTS test_hero_collection (
+	return setupHeroCollectionTableNamed(db, "test_hero_collection")
+}
+
+func setupHeroCollectionEmptyTable(db *db233.Db) error {
+	return setupHeroCollectionTableNamed(db, "test_hero_collection_empty")
+}
+
+func setupHeroCollectionTableNamed(db *db233.Db, tableName string) error {
+	if _, err := db.DataSource.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)); err != nil {
+		return err
+	}
+	createTableSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
+			note VARCHAR(255),
+			text_json TEXT,
 			hero_map TEXT,
 			hero_ptr_map TEXT,
 			heroes TEXT
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-	`
+	`, tableName)
 	_, err := db.DataSource.Exec(createTableSQL)
 	return err
 }
@@ -332,30 +370,30 @@ func TestHeroCollectionEmptyJSONColumnsInitializeContainers(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := setupHeroCollectionTable(db); err != nil {
+	if err := setupHeroCollectionEmptyTable(db); err != nil {
 		t.Fatalf("设置测试表失败: %v", err)
 	}
 	defer func() {
-		db.DataSource.Exec("DROP TABLE IF EXISTS test_hero_collection")
+		db.DataSource.Exec("DROP TABLE IF EXISTS test_hero_collection_empty")
 	}()
 
 	if _, err := db.DataSource.Exec(`
-		INSERT INTO test_hero_collection (name, hero_map, hero_ptr_map, heroes)
-		VALUES (?, ?, ?, ?)
-	`, "empty-owner", "", "", ""); err != nil {
+		INSERT INTO test_hero_collection_empty (id, name, note, text_json, hero_map, hero_ptr_map, heroes)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, 9001, "empty-owner", "", "", "", "", ""); err != nil {
 		t.Fatalf("插入空 JSON 列失败: %v", err)
 	}
 
 	repo := db233.NewBaseCrudRepository(db)
-	found, err := repo.FindByCondition("name = ?", []any{"empty-owner"}, &TestHeroCollectionEntity{})
+	found, err := repo.FindById(9001, &TestHeroCollectionEmptyEntity{})
 	if err != nil {
 		t.Fatalf("查询实体失败: %v", err)
 	}
-	if len(found) != 1 {
-		t.Fatalf("应该找到 1 条记录，得到: %d", len(found))
+	if found == nil {
+		t.Fatal("应该找到实体")
 	}
 
-	entity := found[0].(*TestHeroCollectionEntity)
+	entity := found.(*TestHeroCollectionEmptyEntity)
 	if entity.HeroMap == nil || len(entity.HeroMap) != 0 {
 		t.Fatalf("HeroMap 应初始化为空 map: %#v", entity.HeroMap)
 	}
@@ -386,6 +424,29 @@ func TestGetOrCreateDefaultForStringJSONColumns(t *testing.T) {
 	roundTrip := db233.GetOrCreateDefault(jsonText, defaultMap)
 	if roundTrip["mage"] == nil || roundTrip["mage"].HeroID != 202 {
 		t.Fatalf("辅助方法 round-trip 失败: %#v", roundTrip)
+	}
+}
+
+func TestComplexFieldsDefaultToMediumText(t *testing.T) {
+	strategy := db233.NewMySQLStrategy(db233.GetCrudManagerInstance())
+	entityType := reflect.TypeOf(TestHeroCollectionEntity{})
+
+	cases := map[string]string{
+		"HeroMap":    "MEDIUMTEXT",
+		"HeroPtrMap": "MEDIUMTEXT",
+		"Heroes":     "MEDIUMTEXT",
+		"TextJSON":   "TEXT",
+		"Note":       "VARCHAR(255)",
+	}
+
+	for fieldName, want := range cases {
+		field, ok := entityType.FieldByName(fieldName)
+		if !ok {
+			t.Fatalf("字段不存在: %s", fieldName)
+		}
+		if got := strategy.GetSQLType(field); got != want {
+			t.Fatalf("%s SQL 类型应为 %s，得到: %s", fieldName, want, got)
+		}
 	}
 }
 

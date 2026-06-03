@@ -2,6 +2,18 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.0.6] - 2026-06-03
+
+**复杂 JSON 列容量提示** — 游戏英雄、背包等大 JSON 字段推荐使用 `MEDIUMTEXT`，减少 2MB+ 文本存储风险。
+
+### Changed
+
+- MySQL 自动建表中，`map` / `slice` / `array` / 普通 `struct` 等复杂字段默认 SQL 类型为 `MEDIUMTEXT`。
+- 显式 `db_type` 不做隐式转换：写 `TEXT` 就建 `TEXT`，写 `MEDIUMTEXT` 就建 `MEDIUMTEXT`；普通 `string` 未指定 `db_type` 时仍默认 `VARCHAR(255)`。
+- 文档强调 `TEXT` 容量较小，英雄等可能达到几 MB 的 JSON 字段应显式使用 `db_type:"MEDIUMTEXT"` 或 `LONGTEXT`。
+
+---
+
 ## [v1.0.4] - 2026-06-03
 
 **复杂 JSON 字段回读修复** — 支持游戏英雄、背包等 `map[string]*HeroBo` 复杂字段按单列 JSON 保存和查询回读。

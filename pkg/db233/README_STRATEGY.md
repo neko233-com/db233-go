@@ -132,5 +132,4 @@ err := cm.AutoCreateTable(db, &User{})
 1. **默认类型**：如果不指定数据库类型，默认使用 MySQL
 2. **主键约束**：主键字段必须为 NOT NULL（所有数据库都要求）
 3. **字段默认值**：默认允许字段为 NULL，除非明确标记 `not_null`
-4. **复杂类型**：`map`、`slice`、`array` 类型会自动识别为 `TEXT` 类型（需要 JSON 序列化）
-
+4. **复杂类型**：`map`、`slice`、`array` 类型会自动识别为 `MEDIUMTEXT` 类型（需要 JSON 序列化）
