@@ -2,6 +2,21 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.0.4] - 2026-06-03
+
+**复杂 JSON 字段回读修复** — 支持游戏英雄、背包等 `map[string]*HeroBo` 复杂字段按单列 JSON 保存和查询回读。
+
+### Added
+
+- **复杂字段回归测试**：`TestHeroCollectionJSONRoundTrip` 覆盖 `map[int]HeroDataBo`、`map[string]*HeroDataBo`、`[]HeroDataBo` 的 `Save -> FindById` round-trip。
+- **游戏接入规范**：新增 [docs/game-complex-json-columns.md](docs/game-complex-json-columns.md)，说明复杂 map/slice 直接存一列，以及 string 影子字段兼容写法。
+
+### Fixed
+
+- ORM 查询映射从 `TEXT` / `[]byte` 读到 `map`、`slice`、`array`、普通 `struct` 字段时，现在会自动 JSON 反序列化，再调用 `DeserializeAfterLoadDb()`。
+
+---
+
 ## [v1.0.3] - 2026-05-30
 
 **Session 刷盘与压测** — 有界 worker、跨玩家合并 UPSERT、关服分波、完整测试与刷盘对比。

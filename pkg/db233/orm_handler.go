@@ -2,6 +2,7 @@ package db233
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"reflect"
@@ -262,21 +263,32 @@ func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (ref
 			}
 			return reflect.ValueOf(t), nil
 		}
-		return reflect.Value{}, fmt.Errorf("不支持从 []byte 转换到结构体: %s", targetType)
+		return o.unmarshalJSONValue(data, targetType)
 
 	case reflect.Slice:
 		// 特殊处理：[]byte
 		if targetType.Elem().Kind() == reflect.Uint8 {
 			return reflect.ValueOf(data), nil
 		}
-		return reflect.Value{}, fmt.Errorf("不支持从 []byte 转换到切片: %s", targetType)
+		return o.unmarshalJSONValue(data, targetType)
 
-	case reflect.Map, reflect.Array, reflect.Chan, reflect.Func:
+	case reflect.Map, reflect.Array:
+		return o.unmarshalJSONValue(data, targetType)
+
+	case reflect.Chan, reflect.Func:
 		return reflect.Value{}, fmt.Errorf("不支持从 []byte 转换到复杂类型: %s", targetType)
 
 	default:
 		return reflect.Value{}, fmt.Errorf("未知的目标类型: %s", targetType)
 	}
+}
+
+func (o *OrmHandler) unmarshalJSONValue(data []byte, targetType reflect.Type) (reflect.Value, error) {
+	target := reflect.New(targetType)
+	if err := json.Unmarshal(data, target.Interface()); err != nil {
+		return reflect.Value{}, fmt.Errorf("JSON反序列化失败: %w", err)
+	}
+	return target.Elem(), nil
 }
 
 // parseTime 解析时间字符串。

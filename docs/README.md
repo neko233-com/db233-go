@@ -10,6 +10,7 @@
 | 5 分钟了解是什么、适不适合 | [OVERVIEW.md](./OVERVIEW.md) |
 | 和 GORM / sqlx / raw SQL 怎么选 | [COMPARE-ORM.md](./COMPARE-ORM.md) |
 | 有状态游戏逻辑服怎么配 | [config-game-server-stateful.md](./config-game-server-stateful.md) |
+| 游戏英雄/背包等复杂 map 如何存一列 | [game-complex-json-columns.md](./game-complex-json-columns.md) |
 | Web / API 无状态服怎么配 | [config-web-server.md](./config-web-server.md) |
 | 压测怎么跑、通过标准 | [BENCHMARK.md](./BENCHMARK.md) |
 | 优化建议落地对照 | [db233优化落地对照.md](./db233优化落地对照.md) |

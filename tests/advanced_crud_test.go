@@ -29,6 +29,20 @@ type Config struct {
 	Value string `json:"value"`
 }
 
+type HeroDataBo struct {
+	HeroID int    `json:"heroId"`
+	Level  int    `json:"level"`
+	Name   string `json:"name"`
+}
+
+type TestHeroCollectionEntity struct {
+	ID         int                    `db:"id" primary_key:"true" auto_increment:"true"`
+	Name       string                 `db:"name"`
+	HeroMap    map[int]HeroDataBo     `db:"hero_map"`
+	HeroPtrMap map[string]*HeroDataBo `db:"hero_ptr_map"`
+	Heroes     []HeroDataBo           `db:"heroes"`
+}
+
 func (e *TestEntityWithComplexTypes) TableName() string {
 	return "test_complex_types"
 }
@@ -44,6 +58,14 @@ func (e *TestEntityWithComplexTypes) DeserializeAfterLoadDb() {
 func (e *TestEntityWithComplexTypes) GetTableMetaData() *db233.TableMetaData {
 	return nil
 }
+
+func (e *TestHeroCollectionEntity) TableName() string {
+	return "test_hero_collection"
+}
+
+func (e *TestHeroCollectionEntity) SerializeBeforeSaveDb() {}
+
+func (e *TestHeroCollectionEntity) DeserializeAfterLoadDb() {}
 
 // TestEntityWithUnexportedFields 测试包含未导出字段的实体
 type TestEntityWithUnexportedFields struct {
@@ -106,6 +128,20 @@ func setupComplexTypesTable(db *db233.Db) error {
 			items TEXT,
 			config TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+	`
+	_, err := db.DataSource.Exec(createTableSQL)
+	return err
+}
+
+func setupHeroCollectionTable(db *db233.Db) error {
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS test_hero_collection (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			hero_map TEXT,
+			hero_ptr_map TEXT,
+			heroes TEXT
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 	`
 	_, err := db.DataSource.Exec(createTableSQL)
@@ -223,6 +259,70 @@ func TestComplexTypesSerialization(t *testing.T) {
 	// 验证序列化的字段（需要反序列化）
 	// 注意：由于数据库存储的是 JSON 字符串，需要手动反序列化
 	t.Logf("成功保存和查询包含复杂类型的实体: ID=%d", entity.ID)
+}
+
+func TestHeroCollectionJSONRoundTrip(t *testing.T) {
+	db := CreateTestDb(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	if err := setupHeroCollectionTable(db); err != nil {
+		t.Fatalf("设置测试表失败: %v", err)
+	}
+	defer func() {
+		db.DataSource.Exec("DROP TABLE IF EXISTS test_hero_collection")
+	}()
+
+	repo := db233.NewBaseCrudRepository(db)
+	cm := db233.GetCrudManagerInstance()
+	cm.AutoInitEntity(&TestHeroCollectionEntity{})
+
+	entity := &TestHeroCollectionEntity{
+		Name: "hero-owner",
+		HeroMap: map[int]HeroDataBo{
+			101: {HeroID: 101, Level: 12, Name: "warrior"},
+			202: {HeroID: 202, Level: 34, Name: "mage"},
+		},
+		HeroPtrMap: map[string]*HeroDataBo{
+			"warrior": {HeroID: 101, Level: 12, Name: "warrior"},
+			"mage":    {HeroID: 202, Level: 34, Name: "mage"},
+		},
+		Heroes: []HeroDataBo{
+			{HeroID: 101, Level: 12, Name: "warrior"},
+			{HeroID: 202, Level: 34, Name: "mage"},
+		},
+	}
+
+	if err := repo.Save(entity); err != nil {
+		t.Fatalf("保存实体失败: %v", err)
+	}
+	if entity.ID == 0 {
+		t.Fatal("实体ID应该被自动设置")
+	}
+
+	found, err := repo.FindById(entity.ID, &TestHeroCollectionEntity{})
+	if err != nil {
+		t.Fatalf("查询实体失败: %v", err)
+	}
+	if found == nil {
+		t.Fatal("应该找到实体")
+	}
+
+	foundEntity := found.(*TestHeroCollectionEntity)
+	if foundEntity.HeroMap[101].Name != "warrior" || foundEntity.HeroMap[202].Level != 34 {
+		t.Fatalf("HeroMap 反序列化不匹配: %#v", foundEntity.HeroMap)
+	}
+	if foundEntity.HeroPtrMap["warrior"] == nil || foundEntity.HeroPtrMap["warrior"].HeroID != 101 {
+		t.Fatalf("HeroPtrMap warrior 反序列化不匹配: %#v", foundEntity.HeroPtrMap)
+	}
+	if foundEntity.HeroPtrMap["mage"] == nil || foundEntity.HeroPtrMap["mage"].Level != 34 {
+		t.Fatalf("HeroPtrMap mage 反序列化不匹配: %#v", foundEntity.HeroPtrMap)
+	}
+	if len(foundEntity.Heroes) != 2 || foundEntity.Heroes[1].HeroID != 202 || foundEntity.Heroes[1].Name != "mage" {
+		t.Fatalf("Heroes 反序列化不匹配: %#v", foundEntity.Heroes)
+	}
 }
 
 // TestUnexportedFields 测试未导出字段处理
