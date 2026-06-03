@@ -217,12 +217,15 @@ func TestPerfStability_Short(t *testing.T) {
 		t.Log("  • " + line)
 	}
 
-	// 稳定性断言（不依赖绝对延迟，避免 RDS 网络波动误报）
-	if report.CacheSpeedup < 5 {
+	// 稳定性断言（不依赖绝对延迟，避免本地 MySQL 计时分辨率不足误报）
+	if report.FindByIdOnce < time.Microsecond || report.CacheGet1000/1000 == 0 {
+		t.Logf("跳过 Session 缓存倍数断言: FindById=%v CachePerRead=%v，计时过短不足以稳定计算倍数",
+			report.FindByIdOnce, report.CacheGet1000/1000)
+	} else if report.CacheSpeedup < 5 {
 		t.Errorf("Session 缓存加速不足 5x (实际 %.1fx)，请检查是否绕过 Session 读路径", report.CacheSpeedup)
 	}
 	if report.PingMax > 5*time.Second {
-		t.Errorf("Ping 最大延迟过高: %v，请检查网络或 RDS 配置", report.PingMax)
+		t.Errorf("Ping 最大延迟过高: %v，请检查本地 MySQL 配置", report.PingMax)
 	}
 }
 
@@ -284,7 +287,7 @@ func buildPerfRecommendations(r *perfReport) []string {
 	var lines []string
 
 	if r.PingAvg > 20*time.Millisecond {
-		lines = append(lines, fmt.Sprintf("MySQL Ping 均值 %v 偏高：确认应用与 RDS 同地域；启动时 WarmConnectionPool 已启用", r.PingAvg))
+		lines = append(lines, fmt.Sprintf("MySQL Ping 均值 %v 偏高：确认本地 MySQL 负载与连接池配置；启动时 WarmConnectionPool 已启用", r.PingAvg))
 	} else {
 		lines = append(lines, fmt.Sprintf("MySQL Ping 均值 %v 正常", r.PingAvg))
 	}

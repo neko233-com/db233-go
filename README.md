@@ -6,19 +6,19 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.0.2 · Go 1.25+ |
+| **版本** | v1.0.7 · Go 1.25+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.2
+go get github.com/neko233-com/db233-go@v1.0.7
 ```
 
 **发版压测**：`./scripts/run-benchmark.ps1`（[BENCHMARK.md](docs/BENCHMARK.md)）  
 **推送前**：`./scripts/check-secrets.ps1`（凭据仅 `config.local.json` / `*.local.yaml`）
 
-## 框架性能对标（阿里云 RDS MySQL · 同地域）
+## 框架性能对标（本地 MySQL）
 
 复现：`cd benchmarks && go test -run TestFrameworkCompare_Report -timeout 3m -v`
 
@@ -219,7 +219,7 @@ go get github.com/neko233-com/db233-go@v1.0.2
 
 ## 📋 目录
 
-- [框架性能对标](#框架性能对标阿里云-rds-mysql--同地域)
+- [框架性能对标](#框架性能对标本地-mysql)
 - [文档与 FAQ](#文档与-faq)
 - [游戏逻辑服接入](#游戏逻辑服接入-v102)
 - [命名参数查询](#命名参数查询)
@@ -944,11 +944,11 @@ db, dbConfig, err := db233.OpenDbFromLocalConfig("config.local.json")
 sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
 ```
 
-集成测试 `CreateTestDb(t)` 会**优先**读取 `config.local.json`，无文件时回退 `127.0.0.1`。
+集成测试 `CreateTestDb(t)` 固定使用本地 MySQL：`127.0.0.1:3306 / root / root / db233_go`，避免误连远程数据库。仅 `CreateTestDbFromLocalConfig(t)` 会显式读取 `config.local.json`。
 
 ### Go 框架性能对比（实测）
 
-环境：阿里云 RDS MySQL，Go 1.25，`config.local.json` 同地域连接。  
+环境：本地 MySQL `127.0.0.1:3306/db233_go`，Go 1.25。
 复现：
 
 ```bash

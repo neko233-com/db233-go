@@ -2,6 +2,18 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.0.7] - 2026-06-03
+
+**测试连接固定本地 MySQL** — 普通集成测试不再优先读取 `config.local.json`，避免误连远程数据库。
+
+### Changed
+
+- `CreateTestDb(t)` 固定使用 `127.0.0.1:3306 / root / root / db233_go`，并启用 `parseTime=true`。
+- `game_integration_test` 的 `InitGameDb` 配置固定使用本地 MySQL。
+- 文档同步说明普通测试只用本地 MySQL；仅显式调用 `CreateTestDbFromLocalConfig(t)` 时读取 `config.local.json`。
+
+---
+
 ## [v1.0.6] - 2026-06-03
 
 **复杂 JSON 列容量提示** — 游戏英雄、背包等大 JSON 字段推荐使用 `MEDIUMTEXT`，减少 2MB+ 文本存储风险。

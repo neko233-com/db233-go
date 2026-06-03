@@ -30,25 +30,8 @@ func LoadLocalDbConfig() (*db233.LocalDbConfigFile, string) {
 }
 
 // CreateTestDb 创建测试数据库连接。
-// 优先使用项目根目录 config.local.json；否则回退 127.0.0.1 本地 MySQL。
+// 普通集成测试固定使用本地 MySQL，避免误连远程数据库。
 func CreateTestDb(t *testing.T) *db233.Db {
-	if local, path := LoadLocalDbConfig(); local != nil {
-		t.Logf("使用本地配置: %s", path)
-		dbConfig := local.ToDbConnectionConfig()
-		if err := ensureDatabaseExists(dbConfig); err != nil {
-			t.Skipf("无法创建/连接数据库 %s: %v", dbConfig.Database, err)
-			return nil
-		}
-		db, err := dbConfig.CreateDbWithoutFaultTolerance(0, nil)
-		if err != nil {
-			t.Skipf("本地 config.local.json 连接失败: %v", err)
-			return nil
-		}
-		db233.RegisterDbForConnectionPool(db)
-		_ = db233.WarmConnectionPool(db.DataSource, 2)
-		return db
-	}
-
 	// 创建 SQL 数据库连接 (不指定数据库，使用默认)
 	dataSource, err := sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/")
 	if err != nil {
@@ -66,7 +49,7 @@ func CreateTestDb(t *testing.T) *db233.Db {
 
 	// 重新连接到指定数据库
 	dataSource.Close()
-	dataSource, err = sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/db233_go")
+	dataSource, err = sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/db233_go?parseTime=true&loc=Local&charset=utf8mb4")
 	if err != nil {
 		t.Skipf("无法连接到测试数据库: %v", err)
 		return nil
@@ -81,10 +64,12 @@ func CreateTestDb(t *testing.T) *db233.Db {
 
 	// 创建 Db 实例
 	db := db233.NewDb(dataSource, 0, nil)
+	db233.RegisterDbForConnectionPool(db)
+	_ = db233.WarmConnectionPool(db.DataSource, 2)
 	return db
 }
 
-// ensureDatabaseExists 连接实例并在目标库不存在时自动创建（本地/RDS 测试用）。
+// ensureDatabaseExists 连接实例并在目标库不存在时自动创建（显式本地配置测试用）。
 func ensureDatabaseExists(cfg *db233.DbConnectionConfig) error {
 	if cfg == nil || cfg.Database == "" {
 		return nil

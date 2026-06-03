@@ -106,9 +106,6 @@ func TestInitGameDb_Integration(t *testing.T) {
 	}()
 
 	dbConfig := db233.NewDefaultMySQLConfig("127.0.0.1", 3306, "root", "root", "db233_go")
-	if local, _ := LoadLocalDbConfig(); local != nil {
-		dbConfig = local.ToDbConnectionConfig()
-	}
 	if _, err := db233.InitGameDb(db, dbConfig, opts); err != nil {
 		t.Fatalf("InitGameDb 失败: %v", err)
 	}

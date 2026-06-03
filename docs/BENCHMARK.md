@@ -13,7 +13,7 @@
 ./scripts/run-benchmark.sh
 ```
 
-环境：Go 1.25+、MySQL（优先 `config.local.json`，否则 `127.0.0.1:3306/db233_go`）。
+环境：Go 1.25+、本地 MySQL `127.0.0.1:3306/db233_go`（root/root）。普通测试不读取 `config.local.json`。
 
 ## 流水线（6 阶段）
 
