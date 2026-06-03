@@ -325,6 +325,70 @@ func TestHeroCollectionJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHeroCollectionEmptyJSONColumnsInitializeContainers(t *testing.T) {
+	db := CreateTestDb(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	if err := setupHeroCollectionTable(db); err != nil {
+		t.Fatalf("设置测试表失败: %v", err)
+	}
+	defer func() {
+		db.DataSource.Exec("DROP TABLE IF EXISTS test_hero_collection")
+	}()
+
+	if _, err := db.DataSource.Exec(`
+		INSERT INTO test_hero_collection (name, hero_map, hero_ptr_map, heroes)
+		VALUES (?, ?, ?, ?)
+	`, "empty-owner", "", "", ""); err != nil {
+		t.Fatalf("插入空 JSON 列失败: %v", err)
+	}
+
+	repo := db233.NewBaseCrudRepository(db)
+	found, err := repo.FindByCondition("name = ?", []any{"empty-owner"}, &TestHeroCollectionEntity{})
+	if err != nil {
+		t.Fatalf("查询实体失败: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("应该找到 1 条记录，得到: %d", len(found))
+	}
+
+	entity := found[0].(*TestHeroCollectionEntity)
+	if entity.HeroMap == nil || len(entity.HeroMap) != 0 {
+		t.Fatalf("HeroMap 应初始化为空 map: %#v", entity.HeroMap)
+	}
+	if entity.HeroPtrMap == nil || len(entity.HeroPtrMap) != 0 {
+		t.Fatalf("HeroPtrMap 应初始化为空 map: %#v", entity.HeroPtrMap)
+	}
+	if entity.Heroes == nil || len(entity.Heroes) != 0 {
+		t.Fatalf("Heroes 应初始化为空 slice: %#v", entity.Heroes)
+	}
+}
+
+func TestGetOrCreateDefaultForStringJSONColumns(t *testing.T) {
+	defaultMap := map[string]*HeroDataBo{}
+	if got := db233.GetOrCreateDefault("", defaultMap); got == nil || len(got) != 0 {
+		t.Fatalf("空字符串应返回默认空 map: %#v", got)
+	}
+	if got := db233.GetOrCreateDefault("null", defaultMap); got == nil || len(got) != 0 {
+		t.Fatalf("null 应返回默认空 map: %#v", got)
+	}
+
+	raw := `{"mage":{"heroId":202,"level":34,"name":"mage"}}`
+	got := db233.GetOrCreateDefault(raw, defaultMap)
+	if got["mage"] == nil || got["mage"].Level != 34 {
+		t.Fatalf("JSON 应反序列化为 map[string]*HeroDataBo: %#v", got)
+	}
+
+	jsonText := db233.ToJSONStringOrDefault(got, "{}")
+	roundTrip := db233.GetOrCreateDefault(jsonText, defaultMap)
+	if roundTrip["mage"] == nil || roundTrip["mage"].HeroID != 202 {
+		t.Fatalf("辅助方法 round-trip 失败: %#v", roundTrip)
+	}
+}
+
 // TestUnexportedFields 测试未导出字段处理
 func TestUnexportedFields(t *testing.T) {
 	db := CreateTestDb(t)

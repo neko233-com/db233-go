@@ -75,7 +75,7 @@ CREATE TABLE player_hero (
 - `FindByIdConcurrent`（内部走 `FindById`）
 - `PlayerSession.GetOrLoad`（内部走 repository 查询）
 
-这些路径会先把数据库 JSON 字符串还原为实体字段，再调用 `DeserializeAfterLoadDb()`。
+这些路径会先把数据库 JSON 字符串还原为实体字段，再调用 `DeserializeAfterLoadDb()`。如果数据库列是空字符串，`map` 会初始化为空 map，`slice` 会初始化为空 slice，避免首次创建玩家时业务字段为 nil。
 
 ## 兼容写法：数据库字段是 string，业务字段不入库
 
@@ -93,36 +93,37 @@ func (e *PlayerHeroEntity) TableName() string {
 }
 
 func (e *PlayerHeroEntity) SerializeBeforeSaveDb() {
-	if e.HeroMap == nil {
-		e.HeroMapJson = "{}"
-		return
-	}
-	data, err := json.Marshal(e.HeroMap)
-	if err != nil {
-		e.HeroMapJson = "{}"
-		return
-	}
-	e.HeroMapJson = string(data)
+	e.HeroMapJson = db233.ToJSONStringOrDefault(e.HeroMap, "{}")
 }
 
 func (e *PlayerHeroEntity) DeserializeAfterLoadDb() {
-	if e.HeroMapJson == "" {
-		e.HeroMap = map[string]*HeroBo{}
-		return
-	}
-	if err := json.Unmarshal([]byte(e.HeroMapJson), &e.HeroMap); err != nil {
-		e.HeroMap = map[string]*HeroBo{}
-	}
+	e.HeroMap = db233.GetOrCreateDefault(e.HeroMapJson, map[string]*HeroBo{})
 }
 ```
 
-使用兼容写法时，业务文件需要引入：
+使用兼容写法时，业务文件需要引入 db233：
 
 ```go
-import "encoding/json"
+import "github.com/neko233-com/db233-go/pkg/db233"
 ```
 
 业务字段必须标记 `db:"-"`，否则会多映射一列。
+
+## 辅助方法
+
+`GetOrCreateDefault` 用于已有 string JSON 列，避免空字符串、`null`、坏 JSON 让业务 map/slice 变成 nil：
+
+```go
+heroMap := db233.GetOrCreateDefault(heroMapJson, map[string]*HeroBo{})
+heroList := db233.GetOrCreateDefault(heroListJson, []*HeroBo{})
+```
+
+`ToJSONStringOrDefault` 用于保存前把业务字段写回 string 列：
+
+```go
+heroMapJson := db233.ToJSONStringOrDefault(heroMap, "{}")
+heroListJson := db233.ToJSONStringOrDefault(heroList, "[]")
+```
 
 ## 接入约束
 

@@ -212,7 +212,7 @@ func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Ty
 // convertFromBytes 从字节数组转换到目标类型。
 func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (reflect.Value, error) {
 	if len(data) == 0 {
-		return reflect.Zero(targetType), nil
+		return o.emptyJSONValue(targetType), nil
 	}
 
 	str := string(data)
@@ -284,11 +284,43 @@ func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (ref
 }
 
 func (o *OrmHandler) unmarshalJSONValue(data []byte, targetType reflect.Type) (reflect.Value, error) {
+	if strings.TrimSpace(string(data)) == "" {
+		return o.emptyJSONValue(targetType), nil
+	}
 	target := reflect.New(targetType)
 	if err := json.Unmarshal(data, target.Interface()); err != nil {
 		return reflect.Value{}, fmt.Errorf("JSON反序列化失败: %w", err)
 	}
-	return target.Elem(), nil
+	value := target.Elem()
+	if isNilContainer(value) {
+		return o.emptyJSONValue(targetType), nil
+	}
+	return value, nil
+}
+
+func (o *OrmHandler) emptyJSONValue(targetType reflect.Type) reflect.Value {
+	switch targetType.Kind() {
+	case reflect.Map:
+		return reflect.MakeMap(targetType)
+	case reflect.Slice:
+		return reflect.MakeSlice(targetType, 0, 0)
+	case reflect.Ptr:
+		elem := o.emptyJSONValue(targetType.Elem())
+		ptr := reflect.New(targetType.Elem())
+		ptr.Elem().Set(elem)
+		return ptr
+	default:
+		return reflect.Zero(targetType)
+	}
+}
+
+func isNilContainer(value reflect.Value) bool {
+	switch value.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Ptr, reflect.Interface:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // parseTime 解析时间字符串。
