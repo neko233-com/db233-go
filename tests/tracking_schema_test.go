@@ -190,3 +190,70 @@ func TestTrackingSchemaApplyAndInsertIntegration(t *testing.T) {
 		t.Fatalf("第二次同步应只补列，plan=%+v", plan)
 	}
 }
+
+func TestTrackingSchemaFileLocalCacheSkipsUnchangedIntegration(t *testing.T) {
+	db := CreateTestDb(t)
+	if db == nil {
+		return
+	}
+	defer db.Close()
+
+	db.DataSource.Exec("DROP TABLE IF EXISTS test_tracking_cache_events")
+	defer db.DataSource.Exec("DROP TABLE IF EXISTS test_tracking_cache_events")
+
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "tracking-schema.json")
+	cachePath := filepath.Join(dir, "tracking-schema-cache.json")
+	writeSchema := func(extraColumn bool) {
+		extra := ""
+		if extraColumn {
+			extra = `,
+        {"name": "extra", "type": "json"}`
+		}
+		content := `{
+  "version": "1",
+  "tables": [
+    {
+      "name": "test_tracking_cache_events",
+      "columns": [
+        {"name": "player_id", "type": "string", "size": 64, "primaryKey": true, "required": true},
+        {"name": "action", "type": "string", "size": 64, "required": true}` + extra + `
+      ]
+    }
+  ]
+}`
+		if err := os.WriteFile(schemaPath, []byte(content), 0644); err != nil {
+			t.Fatalf("写入 schema 失败: %v", err)
+		}
+	}
+	writeSchema(false)
+
+	opts := &db233.TrackingSchemaApplyOptions{CachePath: cachePath}
+	_, plan, err := db233.ApplyTrackingSchemaFile(db, schemaPath, opts)
+	if err != nil {
+		t.Fatalf("首次同步失败: %v", err)
+	}
+	if len(plan.Statements) != 1 || !plan.Changed {
+		t.Fatalf("首次同步应建表，plan=%+v", plan)
+	}
+	if _, err := db233.LoadTrackingSchemaLocalCache(cachePath); err != nil {
+		t.Fatalf("本地 cache 应已写入: %v", err)
+	}
+
+	_, plan, err = db233.ApplyTrackingSchemaFile(db, schemaPath, opts)
+	if err != nil {
+		t.Fatalf("第二次同步失败: %v", err)
+	}
+	if plan.Changed || len(plan.Statements) != 0 {
+		t.Fatalf("文件未变应跳过同步，plan=%+v", plan)
+	}
+
+	writeSchema(true)
+	_, plan, err = db233.ApplyTrackingSchemaFile(db, schemaPath, opts)
+	if err != nil {
+		t.Fatalf("schema 变更后同步失败: %v", err)
+	}
+	if !plan.Changed || len(plan.Statements) != 1 || plan.Statements[0].Operation != "add_column" {
+		t.Fatalf("schema 变更后应只补列，plan=%+v", plan)
+	}
+}

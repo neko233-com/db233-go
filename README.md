@@ -1193,6 +1193,23 @@ reloader.Start()
 defer reloader.Stop()
 ```
 
+本地记录与增量同步：
+
+```go
+opts := &db233.TrackingSchemaApplyOptions{
+    CachePath: "runtime/tracking-schema.cache.json", // 可选；不填则使用 tracking-schema.json.cache.json
+}
+schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.json", opts)
+```
+
+机制说明：
+
+- 本地 cache 记录上次成功同步的描述文件 hash、版本、时间、SQL 数量。
+- 文件 hash 未变化时直接跳过 SQL 规划和执行。
+- 文件 hash 变化时读取数据库真实结构，只做增量改动：缺表建表、缺列补列、缺索引建索引。
+- `ForceApply: true` 可强制重新检查数据库结构。
+- `DisableLocalCache: true` 可关闭本地记录。
+
 默认安全策略：只建表、补列、建索引，不删列。当前自动执行 SQL 路径支持 MySQL。
 
 ---

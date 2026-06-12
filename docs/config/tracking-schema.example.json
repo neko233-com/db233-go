@@ -1,5 +1,6 @@
 {
   // 埋点描述版本。上层可用于灰度、审计、配置发布记录。
+  // 同步成功后 db233-go 可写入本地 cache：默认 <schema>.cache.json，也可用 TrackingSchemaApplyOptions.CachePath 指定。
   "version": "1",
 
   "tables": [

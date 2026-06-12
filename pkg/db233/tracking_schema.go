@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -58,6 +59,9 @@ type TrackingSchemaApplyOptions struct {
 	DryRun            bool
 	StrictTypeCheck   bool
 	AllowUnknownTypes bool
+	CachePath         string
+	DisableLocalCache bool
+	ForceApply        bool
 }
 
 // TrackingSchemaPlan 是一次描述文件同步的计划。
@@ -73,6 +77,16 @@ type TrackingSchemaStatement struct {
 	Table     string
 	SQL       string
 	Operation string
+}
+
+// TrackingSchemaLocalCache 是埋点描述文件同步的本地记录。
+// 用于重启后判断描述文件是否变化，避免文件未改时重复做结构检查。
+type TrackingSchemaLocalCache struct {
+	SchemaPath     string    `json:"schemaPath"`
+	SchemaHash     string    `json:"schemaHash"`
+	SchemaVersion  string    `json:"schemaVersion,omitempty"`
+	AppliedAt      time.Time `json:"appliedAt"`
+	StatementCount int       `json:"statementCount"`
 }
 
 // TrackingPayloadError 表示上报 KV 不符合描述文件。
@@ -435,12 +449,63 @@ func ApplyTrackingSchemaFile(db *Db, path string, options *TrackingSchemaApplyOp
 	if err != nil {
 		return nil, TrackingSchemaPlan{}, err
 	}
+	opts := normalizeTrackingApplyOptions(options)
+	cachePath := resolveTrackingSchemaCachePath(path, opts)
+	if !opts.DisableLocalCache && !opts.ForceApply && !opts.DryRun {
+		cache, err := LoadTrackingSchemaLocalCache(cachePath)
+		if err == nil && cache.SchemaHash == hash && sameTrackingSchemaPath(cache.SchemaPath, path) {
+			return schema, TrackingSchemaPlan{Hash: hash, Changed: false}, nil
+		}
+	}
 	plan, err := ApplyTrackingSchema(db, schema, options)
 	if err != nil {
 		return schema, plan, err
 	}
 	plan.Hash = hash
+	if !opts.DisableLocalCache && !opts.DryRun {
+		cache := &TrackingSchemaLocalCache{
+			SchemaPath:     path,
+			SchemaHash:     hash,
+			SchemaVersion:  schema.Version,
+			AppliedAt:      time.Now(),
+			StatementCount: len(plan.Statements),
+		}
+		if err := SaveTrackingSchemaLocalCache(cachePath, cache); err != nil {
+			return schema, plan, err
+		}
+	}
 	return schema, plan, nil
+}
+
+// LoadTrackingSchemaLocalCache 读取埋点描述同步本地记录。
+func LoadTrackingSchemaLocalCache(path string) (*TrackingSchemaLocalCache, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cache TrackingSchemaLocalCache
+	if err := json.Unmarshal(raw, &cache); err != nil {
+		return nil, err
+	}
+	return &cache, nil
+}
+
+// SaveTrackingSchemaLocalCache 写入埋点描述同步本地记录。
+func SaveTrackingSchemaLocalCache(path string, cache *TrackingSchemaLocalCache) error {
+	if cache == nil {
+		return NewValidationException("埋点描述本地记录不能为空")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return NewConfigurationExceptionWithCause(err, "创建埋点描述本地记录目录失败")
+	}
+	raw, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return NewConfigurationExceptionWithCause(err, "序列化埋点描述本地记录失败")
+	}
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		return NewConfigurationExceptionWithCause(err, "写入埋点描述本地记录失败")
+	}
+	return nil
 }
 
 // NewTrackingSchemaReloader 创建描述文件热重载器。
@@ -509,11 +574,23 @@ func (r *TrackingSchemaReloader) reloadOnce() {
 		r.emitError(err)
 		return
 	}
+	opts := normalizeTrackingApplyOptions(&r.options)
+	cachePath := resolveTrackingSchemaCachePath(r.path, opts)
 	r.mu.RLock()
 	unchanged := hash == r.lastHash
 	r.mu.RUnlock()
-	if unchanged {
+	if unchanged && !opts.ForceApply {
 		return
+	}
+	if !opts.DisableLocalCache && !opts.ForceApply && !opts.DryRun {
+		cache, err := LoadTrackingSchemaLocalCache(cachePath)
+		if err == nil && cache.SchemaHash == hash && sameTrackingSchemaPath(cache.SchemaPath, r.path) {
+			r.mu.Lock()
+			r.current = schema
+			r.lastHash = hash
+			r.mu.Unlock()
+			return
+		}
 	}
 	plan, err := ApplyTrackingSchema(r.db, schema, &r.options)
 	if err != nil {
@@ -521,6 +598,19 @@ func (r *TrackingSchemaReloader) reloadOnce() {
 		return
 	}
 	plan.Hash = hash
+	if !opts.DisableLocalCache && !opts.DryRun {
+		cache := &TrackingSchemaLocalCache{
+			SchemaPath:     r.path,
+			SchemaHash:     hash,
+			SchemaVersion:  schema.Version,
+			AppliedAt:      time.Now(),
+			StatementCount: len(plan.Statements),
+		}
+		if err := SaveTrackingSchemaLocalCache(cachePath, cache); err != nil {
+			r.emitError(err)
+			return
+		}
+	}
 	r.mu.Lock()
 	r.current = schema
 	r.lastHash = hash
@@ -547,6 +637,22 @@ func normalizeTrackingApplyOptions(options *TrackingSchemaApplyOptions) Tracking
 		opts.Permission = NewSafeAutoDbPermission()
 	}
 	return opts
+}
+
+func resolveTrackingSchemaCachePath(schemaPath string, opts TrackingSchemaApplyOptions) string {
+	if opts.CachePath != "" {
+		return opts.CachePath
+	}
+	return schemaPath + ".cache.json"
+}
+
+func sameTrackingSchemaPath(a string, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA == nil && errB == nil {
+		return strings.EqualFold(absA, absB)
+	}
+	return strings.EqualFold(a, b)
 }
 
 func validateTrackingIdentifier(kind string, name string) error {
