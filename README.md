@@ -1130,6 +1130,73 @@ sessionRepo, _ := db233.InitGameDb(db, dbConfig, opts) // 见上文「游戏逻�
 
 ---
 
+## 埋点描述文件自动建表
+
+适合埋点接收服：客户端新增行为埋点时，只改 JSON 描述文件；db233-go 根据描述自动建表、补列、建索引，并暴露元数据给上层做 `map[string]any` 上报校验。
+
+此机制与现有 `IDbEntity` / `CrudManager.AutoCreateTable` 是两套独立机制，可同时存在，互不影响。
+
+描述文件只支持 JSON；文件内允许 `//` 和 `/* */` 注释。完整样板见 [docs/config/tracking-schema.example.json](docs/config/tracking-schema.example.json)。
+
+```json
+{
+  // JSONC: .json 文件允许注释
+  "version": "1",
+  "tables": [
+    {
+      "name": "player_behavior_events",
+      "comment": "player behavior tracking",
+      "columns": [
+        {"name": "player_id", "type": "string", "size": 64, "primaryKey": true, "required": true},
+        {"name": "event_time", "type": "timestamp", "required": true, "default": "CURRENT_TIMESTAMP"},
+        {"name": "action", "type": "string", "size": 64, "required": true, "enum": ["login", "level_up"]},
+        {"name": "level", "type": "int"},
+        {"name": "extra", "type": "json"}
+      ],
+      "indexes": [
+        {"name": "idx_player_behavior_action", "columns": ["action"]}
+      ]
+    }
+  ]
+}
+```
+
+```go
+schema, plan, err := db233.ApplyTrackingSchemaFile(db, "tracking-schema.json", nil)
+if err != nil {
+    panic(err)
+}
+_ = plan
+
+table, _ := schema.GetTable("player_behavior_events")
+payload := map[string]any{
+    "player_id":  "p001",
+    "event_time": "2026-06-12T10:00:00Z",
+    "action":     "login",
+    "level":      10,
+    "extra":      map[string]any{"device": "android"},
+}
+if errs := table.ValidatePayload(payload, false); len(errs) > 0 {
+    panic(errs[0])
+}
+_, err = db233.InsertTrackingPayload(db, table, payload)
+```
+
+热重载：
+
+```go
+reloader := db233.NewTrackingSchemaReloader(db, "tracking-schema.json", 5*time.Second, db233.TrackingSchemaApplyOptions{})
+reloader.OnReload(func(schema *db233.TrackingSchema, plan db233.TrackingSchemaPlan) {
+    // schema 可缓存给上报层做 KV 校验
+})
+reloader.Start()
+defer reloader.Stop()
+```
+
+默认安全策略：只建表、补列、建索引，不删列。当前自动执行 SQL 路径支持 MySQL。
+
+---
+
 ## 更新日志
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。

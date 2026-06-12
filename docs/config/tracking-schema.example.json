@@ -1,0 +1,66 @@
+{
+  // 埋点描述版本。上层可用于灰度、审计、配置发布记录。
+  "version": "1",
+
+  "tables": [
+    {
+      // 行为埋点表。与 IDbEntity 自动建表机制独立，可同时存在。
+      "name": "player_behavior_events",
+      "comment": "player behavior tracking events",
+
+      "columns": [
+        {
+          // playerId 建议固定为业务主键或联合主键之一。
+          "name": "player_id",
+          "type": "string",
+          "size": 64,
+          "primaryKey": true,
+          "required": true,
+          "comment": "game player id"
+        },
+        {
+          "name": "event_time",
+          "type": "timestamp",
+          "required": true,
+          "default": "CURRENT_TIMESTAMP",
+          "comment": "event report time"
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "size": 64,
+          "required": true,
+          "enum": ["login", "logout", "level_up", "item_gain", "item_cost"],
+          "comment": "tracking action name"
+        },
+        {
+          "name": "level",
+          "type": "int",
+          "comment": "player level when event happened"
+        },
+        {
+          "name": "amount",
+          "type": "double",
+          "comment": "numeric event amount"
+        },
+        {
+          // 客户端新增暂不拆列的扩展字段可先进 JSON。
+          "name": "extra",
+          "type": "json",
+          "comment": "raw event extra map serialized by caller if needed"
+        }
+      ],
+
+      "indexes": [
+        {
+          "name": "idx_player_behavior_action_time",
+          "columns": ["action", "event_time"]
+        },
+        {
+          "name": "idx_player_behavior_player_time",
+          "columns": ["player_id", "event_time"]
+        }
+      ]
+    }
+  ]
+}
