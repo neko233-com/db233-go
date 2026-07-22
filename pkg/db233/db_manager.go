@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -15,6 +16,7 @@ import (
 type DbManager struct {
 	groupNameToDbGroupMap map[string]*DbGroup
 	mu                    sync.RWMutex
+	lifecycleMu           sync.Mutex
 }
 
 var instance *DbManager
@@ -35,7 +37,13 @@ func GetInstance() *DbManager {
 // fn: 一个接收 DbManager 的回调函数，调用方可以在其中调用 AddDbGroup 等方法完成自定义初始化
 // 返回: error 初始化错误
 func (dm *DbManager) InitByYourDiy(fn func(*DbManager) error) error {
-	return fn(dm)
+	if fn == nil {
+		return fmt.Errorf("初始化回调不能为空")
+	}
+	if err := fn(dm); err != nil {
+		return NewDb233ExceptionWithCause(err, "自定义 DbManager 初始化失败")
+	}
+	return nil
 }
 
 // 获取内部的 groupName -> DbGroup 映射视图（只读视图）
@@ -53,12 +61,25 @@ func (dm *DbManager) GetGroupNameToDbGroupMap() map[string]*DbGroup {
 // 根据 groupName 移除并销毁对应的 DbGroup。如果不存在则无操作。
 // groupName: 要移除的分组名
 func (dm *DbManager) RemoveDbGroup(groupName string) {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
-	if dbGroup, exists := dm.groupNameToDbGroupMap[groupName]; exists {
-		delete(dm.groupNameToDbGroupMap, groupName)
-		dbGroup.Destroy()
+	if err := dm.RemoveDbGroupStrict(groupName); err != nil {
+		LogError("移除 DbGroup 失败: group=%s err=%s", safeValueForLog(groupName), safeErrorForLog(err))
 	}
+}
+
+// RemoveDbGroupStrict 移除并销毁分组，返回完整关闭错误链。
+func (dm *DbManager) RemoveDbGroupStrict(groupName string) error {
+	dm.lifecycleMu.Lock()
+	defer dm.lifecycleMu.Unlock()
+	dm.mu.Lock()
+	dbGroup, exists := dm.groupNameToDbGroupMap[groupName]
+	if exists {
+		delete(dm.groupNameToDbGroupMap, groupName)
+	}
+	dm.mu.Unlock()
+	if exists {
+		return dbGroup.DestroyStrict()
+	}
+	return nil
 }
 
 // AddDbGroup 添加单个 DbGroup 并初始化
@@ -74,17 +95,48 @@ func (dm *DbManager) AddDbGroup(dbGroup *DbGroup) error {
 // dbGroups: 要添加的 DbGroup 集合，集合中的每个 DbGroup 必须包含非空的 groupName
 // 返回: error 初始化错误
 func (dm *DbManager) AddDbGroups(dbGroups []*DbGroup) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+	dm.lifecycleMu.Lock()
+	defer dm.lifecycleMu.Unlock()
+	names := make(map[string]struct{}, len(dbGroups))
 	for _, dbGroup := range dbGroups {
+		if dbGroup == nil {
+			return fmt.Errorf("dbGroup 不能为空")
+		}
 		if dbGroup.GroupName == "" {
 			return fmt.Errorf("dbGroup.GroupName 不能为空")
 		}
-		dm.groupNameToDbGroupMap[dbGroup.GroupName] = dbGroup
-		if err := dbGroup.Init(); err != nil {
-			return err
+		if _, duplicate := names[dbGroup.GroupName]; duplicate {
+			return fmt.Errorf("dbGroup.GroupName 重复: %s", dbGroup.GroupName)
+		}
+		names[dbGroup.GroupName] = struct{}{}
+	}
+	dm.mu.RLock()
+	for name := range names {
+		if _, exists := dm.groupNameToDbGroupMap[name]; exists {
+			dm.mu.RUnlock()
+			return fmt.Errorf("dbGroup 已存在: %s", name)
 		}
 	}
+	dm.mu.RUnlock()
+
+	initialized := make([]*DbGroup, 0, len(dbGroups))
+	for _, dbGroup := range dbGroups {
+		if err := dbGroup.Init(); err != nil {
+			rollbackErrors := []error{err}
+			for index := len(initialized) - 1; index >= 0; index-- {
+				if destroyErr := initialized[index].DestroyStrict(); destroyErr != nil {
+					rollbackErrors = append(rollbackErrors, destroyErr)
+				}
+			}
+			return errors.Join(rollbackErrors...)
+		}
+		initialized = append(initialized, dbGroup)
+	}
+	dm.mu.Lock()
+	for _, dbGroup := range dbGroups {
+		dm.groupNameToDbGroupMap[dbGroup.GroupName] = dbGroup
+	}
+	dm.mu.Unlock()
 	return nil
 }
 

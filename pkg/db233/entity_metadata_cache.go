@@ -64,9 +64,25 @@ func GetEntityMetadataCacheInstance() *EntityMetadataCache {
 // 返回: *EntityMetadata 实体元数据
 // 返回: error 错误信息
 func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
+	if c == nil {
+		return nil, NewValidationException("实体元数据缓存不能为 nil")
+	}
+	if entity == nil {
+		return nil, NewValidationException("实体不能为 nil")
+	}
+	entityValue := reflect.ValueOf(entity)
+	switch entityValue.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		if entityValue.IsNil() {
+			return nil, NewValidationException("实体不能为 nil")
+		}
+	}
 	t := reflect.TypeOf(entity)
-	if t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil, NewValidationException(fmt.Sprintf("实体必须是 struct 或 *struct，实际类型: %T", entity))
 	}
 
 	// 先尝试从缓存读取（读锁）
@@ -80,6 +96,9 @@ func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
 	// 缓存未命中，构建元数据（写锁）
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache = make(map[reflect.Type]*EntityMetadata)
+	}
 
 	// 双重检查，防止并发情况下重复构建
 	if metadata, exists := c.cache[t]; exists {
@@ -100,10 +119,10 @@ func (c *EntityMetadataCache) GetOrBuild(entity any) (*EntityMetadata, error) {
 // buildMetadata 构建实体元数据（支持嵌入结构体）
 func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type) (*EntityMetadata, error) {
 	metadata := &EntityMetadata{
-		EntityType:         entityType,
+		EntityType:        entityType,
 		ColumnToFieldPath: make(map[string][]int),
-		FieldNameToColumn:  make(map[string]string),
-		AllColumns:         make([]string, 0),
+		FieldNameToColumn: make(map[string]string),
+		AllColumns:        make([]string, 0),
 	}
 
 	// 获取表名
@@ -122,6 +141,13 @@ func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type)
 	if metadata.TableName == "" {
 		return nil, fmt.Errorf("无法获取表名，实体必须实现 IDbEntity 接口")
 	}
+	if identifierErr := validateRepositoryTableIdentifier(metadata.TableName); identifierErr != nil {
+		return nil, identifierErr
+	}
+	// 在递归扫描前拒绝重复列和递归匿名嵌入，避免静默覆盖或无限递归。
+	if identifierErr := validateRepositoryTypeColumns(entityType); identifierErr != nil {
+		return nil, identifierErr
+	}
 
 	// 扫描字段（递归处理嵌入结构体）
 	c.scanFields(entityType, metadata, []int{})
@@ -130,6 +156,9 @@ func (c *EntityMetadataCache) buildMetadata(entity any, entityType reflect.Type)
 	if metadata.PrimaryKeyColumn == "" {
 		metadata.PrimaryKeyColumn = "id"
 		LogWarn("实体 %s 未找到主键字段，使用默认主键列名: id", entityType.Name())
+	}
+	if identifierErr := validateRepositorySQLIdentifiers(metadata.TableName, metadata.PrimaryKeyColumn, metadata.AllColumns); identifierErr != nil {
+		return nil, identifierErr
 	}
 
 	return metadata, nil
@@ -197,6 +226,9 @@ func (c *EntityMetadataCache) scanFields(t reflect.Type, metadata *EntityMetadat
 
 // Clear 清空缓存
 func (c *EntityMetadataCache) Clear() {
+	if c == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cache = make(map[reflect.Type]*EntityMetadata)
@@ -204,6 +236,12 @@ func (c *EntityMetadataCache) Clear() {
 
 // Remove 移除指定类型的缓存
 func (c *EntityMetadataCache) Remove(entityType reflect.Type) {
+	if c == nil || entityType == nil {
+		return
+	}
+	for entityType.Kind() == reflect.Ptr {
+		entityType = entityType.Elem()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.cache, entityType)

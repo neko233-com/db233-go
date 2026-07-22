@@ -3,9 +3,12 @@ package db233
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // CrudPerformanceSettings 游戏高频读写性能配置（支持外部加载与运行时热更新）。
@@ -118,6 +121,7 @@ type CrudPerformanceSettingsManager struct {
 	mu       sync.RWMutex
 	settings CrudPerformanceSettings
 	onChange []func(CrudPerformanceSettings)
+	cache    atomic.Value // CrudPerformanceSettings — immutable lock-free hot-path snapshot
 }
 
 var (
@@ -128,18 +132,27 @@ var (
 // GetCrudPerformanceSettings 获取性能配置管理器单例。
 func GetCrudPerformanceSettings() *CrudPerformanceSettingsManager {
 	performanceSettingsOnce.Do(func() {
-		performanceSettingsInstance = &CrudPerformanceSettingsManager{
+		manager := &CrudPerformanceSettingsManager{
 			settings: DefaultCrudPerformanceSettings(),
 		}
+		manager.publishCache()
+		performanceSettingsInstance = manager
 	})
 	return performanceSettingsInstance
 }
 
-// Snapshot 获取当前配置快照（读路径无锁竞争外的安全拷贝）。
+// Snapshot 获取当前配置快照。配置仅含值类型，热路径无锁且零分配。
 func (m *CrudPerformanceSettingsManager) Snapshot() CrudPerformanceSettings {
+	if cached := m.cache.Load(); cached != nil {
+		return cached.(CrudPerformanceSettings)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.settings
+}
+
+func (m *CrudPerformanceSettingsManager) publishCache() {
+	m.cache.Store(m.settings)
 }
 
 // Apply 部分热更新（仅覆盖 patch 中非零整型字段；布尔项请用 Set 或 LoadFromJSON）。
@@ -147,6 +160,7 @@ func (m *CrudPerformanceSettingsManager) Apply(patch CrudPerformanceSettings) {
 	m.mu.Lock()
 	merged := mergePerformanceSettingsInts(m.settings, patch)
 	m.settings = normalizePerformanceSettings(merged)
+	m.publishCache()
 	snapshot := m.settings
 	callbacks := append([]func(CrudPerformanceSettings){}, m.onChange...)
 	m.mu.Unlock()
@@ -162,6 +176,7 @@ func (m *CrudPerformanceSettingsManager) Apply(patch CrudPerformanceSettings) {
 func (m *CrudPerformanceSettingsManager) ApplyFull(settings CrudPerformanceSettings) {
 	m.mu.Lock()
 	m.settings = normalizePerformanceSettings(settings)
+	m.publishCache()
 	snapshot := m.settings
 	callbacks := append([]func(CrudPerformanceSettings){}, m.onChange...)
 	m.mu.Unlock()
@@ -181,6 +196,7 @@ func (m *CrudPerformanceSettingsManager) Set(key string, value any) error {
 		return err
 	}
 	m.settings = normalizePerformanceSettings(m.settings)
+	m.publishCache()
 	snapshot := m.settings
 	callbacks := append([]func(CrudPerformanceSettings){}, m.onChange...)
 	m.mu.Unlock()
@@ -227,7 +243,7 @@ func (m *CrudPerformanceSettingsManager) LoadFromJSON(data []byte) error {
 		}
 	}
 
-	var patch CrudPerformanceSettings
+	patch := DefaultCrudPerformanceSettings()
 	if err := json.Unmarshal(payload, &patch); err != nil {
 		return fmt.Errorf("解析 performance 节点失败: %w", err)
 	}
@@ -254,7 +270,7 @@ func (m *CrudPerformanceSettingsManager) LoadFromConfigManager(prefix string) {
 			continue
 		}
 		if err := applyKeyValueToPatch(&m.settings, fieldKey, value); err != nil {
-			LogWarn("跳过无效性能配置项: key=%s, err=%v", key, err)
+			LogWarn("跳过无效性能配置项: key=%s, err=%s", safeValueForLog(key), safeErrorForLog(err))
 			continue
 		}
 		changed = true
@@ -264,6 +280,7 @@ func (m *CrudPerformanceSettingsManager) LoadFromConfigManager(prefix string) {
 		return
 	}
 	m.settings = normalizePerformanceSettings(m.settings)
+	m.publishCache()
 	snapshot := m.settings
 	callbacks := append([]func(CrudPerformanceSettings){}, m.onChange...)
 	m.mu.Unlock()
@@ -518,20 +535,61 @@ func toInt(value any) (int, error) {
 	switch v := value.(type) {
 	case int:
 		return v, nil
+	case int8:
+		return int(v), nil
+	case int16:
+		return int(v), nil
+	case int32:
+		return int(v), nil
 	case int64:
+		return checkedInt64ToInt(v)
+	case uint:
+		return checkedUint64ToInt(uint64(v))
+	case uint8:
 		return int(v), nil
+	case uint16:
+		return int(v), nil
+	case uint32:
+		return checkedUint64ToInt(uint64(v))
+	case uint64:
+		return checkedUint64ToInt(v)
 	case float64:
-		return int(v), nil
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+			return 0, fmt.Errorf("无法无损转为 int: %v", v)
+		}
+		parsed, err := strconv.ParseInt(strconv.FormatFloat(v, 'f', -1, 64), 10, strconv.IntSize)
+		if err != nil {
+			return 0, fmt.Errorf("无法无损转为 int: %w", err)
+		}
+		return int(parsed), nil
 	case json.Number:
 		i, err := v.Int64()
-		return int(i), err
+		if err != nil {
+			return 0, err
+		}
+		return checkedInt64ToInt(i)
 	case string:
-		var i int
-		_, err := fmt.Sscan(v, &i)
-		return i, err
+		i, err := strconv.ParseInt(strings.TrimSpace(v), 10, strconv.IntSize)
+		return int(i), err
 	default:
 		return 0, fmt.Errorf("无法转为 int: %T", value)
 	}
+}
+
+func checkedInt64ToInt(value int64) (int, error) {
+	converted := int(value)
+	if int64(converted) != value {
+		return 0, fmt.Errorf("整数超出 int%d 范围", strconv.IntSize)
+	}
+	return converted, nil
+}
+
+func checkedUint64ToInt(value uint64) (int, error) {
+	converted := int(value)
+	if converted < 0 || uint64(converted) != value {
+		return 0, fmt.Errorf("无符号整数超出 int%d 范围", strconv.IntSize)
+	}
+	return converted, nil
 }
 
 func toBool(value any) (bool, error) {

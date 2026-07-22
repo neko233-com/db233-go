@@ -29,21 +29,27 @@ func GetPluginManagerInstance() *Db233PluginManager {
 
 // 添加全局插件
 func (pm *Db233PluginManager) AddGlobalPlugin(plugin Db233Plugin) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	// 初始化插件
+	if plugin == nil {
+		return
+	}
+	// 用户插件初始化不持有管理器锁，允许初始化阶段安全查询/注册插件。
 	plugin.InitPlugin()
 
+	pm.mu.Lock()
 	pm.globalPlugins[plugin.GetPluginName()] = plugin
+	pm.mu.Unlock()
 }
 
 // 移除全局插件
 func (pm *Db233PluginManager) RemoveGlobalPlugin(plugin Db233Plugin) {
+	if plugin == nil {
+		return
+	}
+	name := plugin.GetPluginName()
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	delete(pm.globalPlugins, plugin.GetPluginName())
+	delete(pm.globalPlugins, name)
 }
 
 // 根据插件名称移除插件
@@ -76,8 +82,8 @@ func (pm *Db233PluginManager) GetPlugin(pluginName string) Db233Plugin {
 
 // 检查插件是否已注册
 func (pm *Db233PluginManager) HasPlugin(pluginName string) bool {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
 
 	_, exists := pm.globalPlugins[pluginName]
 	return exists

@@ -2,6 +2,7 @@ package db233
 
 import (
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -37,20 +38,26 @@ func GetEntityCacheManagerInstance() *EntityCacheManager {
 
 // 获取或创建选择列名CSV
 func (ecm *EntityCacheManager) GetOrCreateSelectColumnNameCsv(entityType reflect.Type, colNameToValueMap map[string]any) string {
-	ecm.mu.Lock()
-	defer ecm.mu.Unlock()
-
+	ecm.mu.RLock()
 	if cached, exists := ecm.typeToSelectColumnNameSqlMap[entityType]; exists {
+		ecm.mu.RUnlock()
 		return cached
 	}
+	ecm.mu.RUnlock()
 
 	// 构建列名字符串
 	var columnNames []string
 	for colName := range colNameToValueMap {
 		columnNames = append(columnNames, colName)
 	}
+	sort.Strings(columnNames)
 
 	result := strings.Join(columnNames, ",")
+	ecm.mu.Lock()
+	defer ecm.mu.Unlock()
+	if cached, exists := ecm.typeToSelectColumnNameSqlMap[entityType]; exists {
+		return cached
+	}
 	ecm.typeToSelectColumnNameSqlMap[entityType] = result
 
 	return result
@@ -58,16 +65,24 @@ func (ecm *EntityCacheManager) GetOrCreateSelectColumnNameCsv(entityType reflect
 
 // 获取或创建所有列名CSV
 func (ecm *EntityCacheManager) GetOrCreateAllColumnNameCsv(entityType reflect.Type, columnNameCreator func() []string) string {
+	ecm.mu.RLock()
+	if cached, exists := ecm.typeToAllColumnNameCsvMap[entityType]; exists {
+		ecm.mu.RUnlock()
+		return cached
+	}
+	ecm.mu.RUnlock()
+
+	var columnNames []string
+	if columnNameCreator != nil {
+		columnNames = columnNameCreator()
+	}
+	result := strings.Join(columnNames, ",")
+
 	ecm.mu.Lock()
 	defer ecm.mu.Unlock()
-
 	if cached, exists := ecm.typeToAllColumnNameCsvMap[entityType]; exists {
 		return cached
 	}
-
-	columnNames := columnNameCreator()
-	result := strings.Join(columnNames, ",")
-
 	ecm.typeToAllColumnNameCsvMap[entityType] = result
 	return result
 }

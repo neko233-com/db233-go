@@ -48,7 +48,7 @@ func NewQueryStatements(sqlList []string, returnType any) *SqlStatement {
 	return &SqlStatement{
 		IsQuery:      true,
 		IsAutoCommit: true,
-		SqlList:      sqlList,
+		SqlList:      append([]string(nil), sqlList...),
 		ReturnType:   returnType,
 	}
 }
@@ -74,7 +74,7 @@ func NewUpdateStatements(sqlList []string) *SqlStatement {
 	return &SqlStatement{
 		IsQuery:      false,
 		IsAutoCommit: true,
-		SqlList:      sqlList,
+		SqlList:      append([]string(nil), sqlList...),
 		ReturnType:   nil,
 	}
 }

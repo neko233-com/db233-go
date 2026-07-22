@@ -23,6 +23,8 @@ func TestDbManager_GetInstance(t *testing.T) {
 
 func TestDbManager_AddDbGroup(t *testing.T) {
 	manager := db233.GetInstance()
+	manager.RemoveDbGroup("test_group")
+	t.Cleanup(func() { manager.RemoveDbGroup("test_group") })
 
 	// 创建模拟配置
 	config := &db233.DbGroupConfig{
@@ -52,6 +54,7 @@ func TestDbManager_AddDbGroup(t *testing.T) {
 
 func TestDbManager_RemoveDbGroup(t *testing.T) {
 	manager := db233.GetInstance()
+	manager.RemoveDbGroup("test_group_remove")
 
 	config := &db233.DbGroupConfig{
 		GroupName:       "test_group_remove",

@@ -2,6 +2,49 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.1.0] - 2026-07-22
+
+**生产一致性与生命周期加固** — 完善严格错误传播和事务能力，并用数据库代次屏障阻止清库后的旧 Session、缓冲与恢复队列重新写回历史数据。
+
+### Added
+
+- `GameDbOptions.DatabaseGeneration`、`BeginDatabaseGenerationTransition` 与 `FailClosed`：以独占屏障覆盖“清理玩家数据 + 更新持久化 epoch”的同一数据库事务；commit-unknown、回滚失败或本地切代失败时保持拒写。
+- WAL 与失败重试队列写入代次 manifest 和逐条代次；旧版、错代或损坏的恢复文件会被隔离，无法证明属于当前数据库时禁止自动回放。
+- `Db.FlushWriteMetrics()`、`AverageFlushWritesPerSecond()` 与快照 `RateSince`：以低开销原子计数暴露实际 flush SQL/实体、成功/失败和来源；合并 SQL 只计一次，每个 chunk 各计一次，恢复回放计入总压力。
+- `Db.AutoMigrateSchema` / `VerifySchema`：统一普通实体批量建表与迁移，提供安全默认权限、DryRun、最终严格验证、代次租约、可取消编排锁、跨实例幂等复核及稳定报告。
+- `config.local.json` / `config.local.yaml` 统一严格加载：支持 JSON/YAML、未知字段与多文档拒绝、1 MiB 上限、符号链接防护，并在 Unix 强制 `0600` 或更严格权限。
+- 真实 MySQL 事务回归和 100 玩家并发生产路径测试，覆盖每玩家 100 次内存态更新、跨 Session 合并为单条 SQL、WAL、最终状态、指标与完整关闭。
+- GitHub Actions 门禁：Ubuntu + MySQL、随机顺序重复测试、race detector、benchmark gate 和 Windows 测试。
+
+### Changed
+
+- 严格 ORM 拒绝整数溢出、符号回绕、浮点精度丢失和隐式截断，支持 `sql.Scanner` / `sql.Null*`，并完整传播 Query、Columns、Scan、`rows.Err()` 与 Close 错误。
+- 事务 Repository、保存点、context 与 auto-increment 回填统一使用 fail-closed 语义；操作始终绑定当前 `sql.Tx`，错误链保留原始 cause，回填只在确认提交后生效。
+- Session 同一玩家并发打开/关闭合并，缓存、SQL 模板、ORM 计划与监控样本保持有界；`Db.Close()` 会停止后台任务、刷写数据并汇总资源关闭错误。
+- MySQL 驱动升级到 v1.10.0；连接配置通过 driver connector 构造，用户名或密码含特殊字符时不再依赖手工拼接 DSN。
+
+### Fixed
+
+- 修复清库与正在执行的 Session、WriteBuffer、WAL 回放或失败重试并发时，旧代数据可能穿越清库边界的问题。
+- 修复批量/事务写入中的标识符校验、混合 Entity 契约、RowsAffected、WAL 删除和失败记录错误传播缺口。
+- 修复 Prepared Statement 缓存并发准备、淘汰与关闭之间的竞态，并避免慢速 `Prepare` 长时间占用全局锁。
+- 修复监控、健康检查、配置热加载、插件、数据源和 Session 后台任务的重复启动/停止、锁内外部调用及资源泄漏风险。
+- 修复监控 JSON/text 与指标导出使用宽权限、非原子覆盖的问题；现统一以 owner-only 临时文件、fsync 和原子替换写入，失败保留旧文件。
+
+### Security
+
+- SQL 日志与慢查询默认只记录有限 SQL 操作类别；包级运行时日志的裸字符串参数统一变为类型摘要；错误摘要仅含动态类型与有限分类，不记录 SQL hash、文本长度、参数、表名或玩家标识。完整 SQL 仅在显式 opt-in 后记录，参数始终不记录。
+- 配置日志不再输出秘密值；MySQL 凭据不经字符串 DSN 拼接；Repository 动态表名、列名和保存点名称均执行严格标识符校验。
+- 凭据门禁覆盖 tracked/untracked 文件、常见高置信度令牌、带凭据 URL/远端 DSN 与非本机 IP；发布脚本只允许从同步且 CI 全绿的 `main` 创建不可变精确标签。
+
+### Upgrade Notes
+
+- 有状态生产服升级前必须优雅停服并排空旧 WAL/失败队列；启动时先从数据库读取持久化 epoch，再把非空值传给 `DatabaseGeneration`。安全清库流程见 [docs/DATABASE_GENERATION.md](docs/DATABASE_GENERATION.md)。
+- 玩家表删除与 epoch 更新必须在同一事务内完成；数据库身份、租约和 epoch 元数据表不得加入玩家清档集合。
+- 既有方法签名保持兼容，但严格路径与关键写入现在会返回过去可能被忽略的错误；调用方必须检查并传播返回值。若调用方对 `GameDbOptions`、`JournalEntry` 或 `FailedOperation` 使用未命名字段复合字面量，需改为命名字段，以接收本版本新增的 generation 字段。
+- Unix 上的本地凭据文件必须先执行 `chmod 600 config.local.json`（YAML 同理）；权限更宽、符号链接或超过 1 MiB 的配置将 fail closed。
+- 本版本不要求修改既有玩家表 schema；性能热路径继续受现有 benchmark gate 约束。
+
 ## [v1.0.10] - 2026-07-22
 
 **严格错误传播与事务能力** — 为正确性关键 Entity 读取和跨分块原子写入补齐 fail-closed 契约。
@@ -37,7 +80,7 @@ All notable changes to **db233-go** are documented here.
 
 ### Changed
 
-- `CreateTestDb(t)` 固定使用 `127.0.0.1:3306 / root / root / db233_go`，并启用 `parseTime=true`。
+- 集成测试仅接受 `DB233_TEST_DSN` 或未跟踪的 `config.local.json`，并强制连接 loopback/本机 Unix socket；CI 凭据按运行动态生成。
 - `game_integration_test` 的 `InitGameDb` 配置固定使用本地 MySQL。
 - 文档同步说明普通测试只用本地 MySQL；仅显式调用 `CreateTestDbFromLocalConfig(t)` 时读取 `config.local.json`。
 

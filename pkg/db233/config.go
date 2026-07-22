@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"context"
 	"database/sql/driver"
 )
 
@@ -53,6 +54,12 @@ type DataSourceCreateStrategy interface {
 	// config: 具体配置
 	// 返回: 数据源驱动
 	Create(template map[string]any, config map[string]any) (driver.Driver, error)
+}
+
+// ContextDataSourceCreateStrategy 是可取消的严格数据源创建扩展。
+// DbGroup 会优先使用它；旧策略仍可通过 DataSourceCreateStrategy 兼容。
+type ContextDataSourceCreateStrategy interface {
+	CreateContext(ctx context.Context, template map[string]any, config map[string]any) (driver.Driver, error)
 }
 
 // ShardingDbStrategy 接口 - 分库分片策略

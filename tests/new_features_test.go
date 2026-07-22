@@ -31,6 +31,8 @@ func TestConfigManager(t *testing.T) {
 // 测试日志系统
 func TestLogger(t *testing.T) {
 	logger := db233.GetLogger()
+	previousLevel := logger.GetLevel()
+	defer logger.SetLevel(previousLevel)
 	logger.SetLevel(db233.DEBUG)
 
 	// 测试日志级别

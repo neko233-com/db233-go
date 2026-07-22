@@ -1,342 +1,219 @@
-﻿# ========================================
-# db233-go Auto Publish Script (PowerShell)
-# ========================================
-# 功能：
-# 1. 自动读取 version.txt 并自增版本号
-# 2. 确保所有测试通过
-# 3. 自动提交 version.txt 变更
-# 4. 创建并推送 Git Tag 与当前分支
-# ========================================
-
+# db233-go production release gate. Version changes must already be reviewed
+# and merged through a pull request before this script is run.
+[CmdletBinding()]
 param(
-    [string]$VersionPart = "patch",  # patch | minor | major
-    [switch]$DryRun = $false,          # 模拟运行，不写入、不推送
-    [switch]$SkipTests = $false        # 跳过测试
+    [switch]$DryRun,
+    [switch]$Resume
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $Root
+$Repository = 'neko233-com/db233-go'
 
-# 始终切换到脚本所在目录
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $scriptDir
-
-# 全局错误立刻退出
-$ErrorActionPreference = "Stop"
-
-
-# ========================================
-# 输出工具
-# ========================================
-function Write-ColoredHost {
-    param(
-        [string]$Message,
-        [string]$Color = "White"
-    )
-    Write-Host $Message -ForegroundColor $Color
-}
-
-function Write-Section {
-    param([string]$Message)
+function Write-Step([string]$Message) {
     Write-Host ""
-    Write-ColoredHost "===> $Message" "Cyan"
+    Write-Host "===> $Message" -ForegroundColor Cyan
 }
 
-function Write-Ok {
-    param([string]$Message)
-    Write-ColoredHost "OK: $Message" "Green"
+function Fail([string]$Message) {
+    throw $Message
 }
 
-function Write-Err {
-    param([string]$Message)
-    Write-ColoredHost "ERROR: $Message" "Red"
+function Invoke-Checked([string]$Command, [string[]]$Arguments, [string]$Description) {
+    Write-Step $Description
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Fail "$Description 失败"
+    }
 }
 
-function Write-Warn {
-    param([string]$Message)
-    Write-ColoredHost "WARN: $Message" "Yellow"
+function Get-CheckedOutput([string]$Command, [string[]]$Arguments, [string]$Description) {
+    $output = @(& $Command @Arguments)
+    if ($LASTEXITCODE -ne 0) {
+        Fail "$Description 失败"
+    }
+    return $output
 }
 
-# Git 辅助：PowerShell 下 git  stderr 不应触发 Stop
-function Invoke-Git {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    & git @Args
-    $exit = $LASTEXITCODE
-    $ErrorActionPreference = $prev
-    return $exit
+function Assert-ExpectedOriginUrl([string]$Url, [string]$Kind) {
+    if ($Url -match '(?i)^https?://[^/@\s]+:[^/@\s]+@') {
+        Fail "origin $Kind URL 内嵌凭据；请改用 Git Credential Manager 或 SSH"
+    }
+    if ($Url -notmatch '^(https://github\.com/neko233-com/db233-go(?:\.git)?|git@github\.com:neko233-com/db233-go(?:\.git)?)$') {
+        Fail "origin $Kind URL 不是预期的 GitHub 仓库"
+    }
 }
 
-function Get-GitRemoteUrl {
-    param([string]$Name)
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    $url = git remote get-url $Name 2>$null
-    $exit = $LASTEXITCODE
-    $ErrorActionPreference = $prev
-    if ($exit -ne 0 -or [string]::IsNullOrWhiteSpace($url)) {
+function Get-RemoteTagCommit([string]$Version) {
+    $lines = @(Get-CheckedOutput git @(
+        'ls-remote', '--tags', 'origin', "refs/tags/$Version", "refs/tags/$Version^{}"
+    ) '检查远端标签')
+    if ($lines.Count -eq 0) {
         return $null
     }
-    return $url.Trim()
-}
-
-function Ensure-GithubRemote {
-    param([string]$OriginUrl)
-    if ([string]::IsNullOrWhiteSpace($OriginUrl)) {
-        Write-Warn "origin URL 为空，跳过 github remote 配置"
-        return $false
-    }
-
-    $githubUrl = Get-GitRemoteUrl "github"
-    if (-not $githubUrl) {
-        Write-ColoredHost "自动添加 github remote（与 origin 同步）..." "Yellow"
-        $exit = Invoke-Git remote add github $OriginUrl
-        if ($exit -ne 0) {
-            Write-Err "添加 github remote 失败"
-            return $false
+    $records = @($lines | ForEach-Object {
+        $parts = $_ -split '\s+', 2
+        if ($parts.Count -eq 2) {
+            [pscustomobject]@{ Commit = $parts[0]; Ref = $parts[1] }
         }
-        Write-Ok "github remote 已添加: $OriginUrl"
-        return $true
+    })
+    $selected = $records | Where-Object { $_.Ref -eq "refs/tags/$Version^{}" } | Select-Object -First 1
+    if (-not $selected) {
+        $selected = $records | Where-Object { $_.Ref -eq "refs/tags/$Version" } | Select-Object -First 1
     }
-
-    if ($githubUrl -ne $OriginUrl) {
-        Write-ColoredHost "同步 github remote URL..." "Yellow"
-        $exit = Invoke-Git remote set-url github $OriginUrl
-        if ($exit -ne 0) {
-            Write-Err "更新 github remote 失败"
-            return $false
-        }
-        Write-Ok "github remote 已更新: $OriginUrl"
-    } else {
-        Write-Ok "github remote 已就绪: $githubUrl"
+    if (-not $selected -or $selected.Commit -notmatch '^[0-9a-fA-F]{40,64}$') {
+        Fail "无法解析远端标签 $Version"
     }
-    return $true
+    return $selected.Commit.ToLowerInvariant()
 }
 
-
-# ========================================
-# 版本工具
-# ========================================
-function Get-CurrentVersion {
-    $versionFile = "version.txt"
-    if (-not (Test-Path $versionFile)) {
-        Write-Err "version.txt not found"
-        exit 1
-    }
-
-    $raw = (Get-Content $versionFile -Raw).Trim()
-    if ($raw -notmatch '^v?(\d+)\.(\d+)\.(\d+)$') {
-        Write-Err "Invalid version format in version.txt. Expected vX.Y.Z"
-        exit 1
-    }
-
-    return $raw
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Fail '未找到 git'
+}
+if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
+    Fail '未找到 go'
+}
+if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    Fail '未找到 gh；发布必须通过 GitHub CLI 完成'
 }
 
-function Bump-Version {
-    param(
-        [string]$CurrentVersion,
-        [string]$Part
-    )
+Write-Step '验证工作树、分支与远端'
+$status = @(Get-CheckedOutput git @('status', '--porcelain=v1', '--untracked-files=all') '读取 Git 状态')
+if ($status.Count -ne 0) {
+    Fail '工作树不干净；版本与发布说明必须先经 PR 合并'
+}
+$branch = (Get-CheckedOutput git @('branch', '--show-current') '读取当前分支' | Select-Object -First 1).Trim()
+if ($branch -ne 'main') {
+    Fail '只能从 main 发布'
+}
+$originUrl = (Get-CheckedOutput git @('remote', 'get-url', 'origin') '读取 origin') | Select-Object -First 1
+Assert-ExpectedOriginUrl $originUrl 'fetch'
+$pushUrls = @(Get-CheckedOutput git @('remote', 'get-url', '--push', '--all', 'origin') '读取 origin push URL')
+if ($pushUrls.Count -ne 1) {
+    Fail 'origin 必须且只能配置一个 push URL'
+}
+Assert-ExpectedOriginUrl $pushUrls[0] 'push'
 
-    if ($CurrentVersion -match '^v?(\d+)\.(\d+)\.(\d+)$') {
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
-        $patch = [int]$Matches[3]
-    } else {
-        Write-Err "Cannot parse version: $CurrentVersion"
-        exit 1
-    }
-
-    switch ($Part.ToLower()) {
-        "major" { $major++; $minor = 0; $patch = 0 }
-        "minor" { $minor++; $patch = 0 }
-        "patch" { $patch++ }
-        default { Write-Err "Invalid version part: $Part"; exit 1 }
-    }
-
-    return "v{0}.{1}.{2}" -f $major, $minor, $patch
+Invoke-Checked git @('fetch', '--prune', 'origin', 'main', '--tags') '更新 origin/main 与 tags'
+$head = (Get-CheckedOutput git @('rev-parse', 'HEAD') '读取 HEAD' | Select-Object -First 1).Trim()
+$originHead = (Get-CheckedOutput git @('rev-parse', 'origin/main') '读取 origin/main' | Select-Object -First 1).Trim()
+if ($head -ne $originHead) {
+    Fail 'HEAD 与 origin/main 不一致；拒绝从未同步提交发布'
 }
 
-function Set-Version {
-    param([string]$Version)
-    "${Version}" | Out-File "version.txt" -Encoding UTF8 -NoNewline
-    Write-Ok "version.txt updated to $Version"
+$version = (Get-Content version.txt -Raw).Trim()
+if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+    Fail 'version.txt 必须是 vX.Y.Z'
 }
-
-
-# ========================================
-# 主流程
-# ========================================
-Write-ColoredHost "========================================" "Cyan"
-Write-ColoredHost "   db233-go Auto Publish Script" "Cyan"
-Write-ColoredHost "========================================" "Cyan"
-
-if ($DryRun) {
-    Write-Warn "DryRun mode: no files will be modified or pushed"
-}
-
-
-# 0. 确保工作区干净（DryRun 时仅告警）
-Write-Section "Checking git status"
-$gitStatus = git status --porcelain
-if ($LASTEXITCODE -ne 0) {
-    Write-Err "Git command failed"
-    exit 1
-}
-if ($gitStatus) {
-    if ($DryRun) {
-        Write-Warn "Working tree not clean (DryRun continues)."
-        Write-Host $gitStatus
-    } else {
-        Write-Err "Working tree not clean. Please commit or stash changes."
-        Write-Host $gitStatus
-        exit 1
+foreach ($releaseDocument in @('README.md', 'CHANGELOG.md')) {
+    if (-not (Select-String -LiteralPath $releaseDocument -SimpleMatch $version -Quiet)) {
+        Fail "$releaseDocument 未包含版本 $version"
     }
 }
 
-
-# 1. 运行测试
-if (-not $SkipTests) {
-    Write-Section "Running tests"
-    go test ./tests
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Tests failed"
-        exit 1
-    }
-    Write-Ok "Tests passed"
-} else {
-    Write-Warn "Skip tests requested"
+Invoke-Checked gh @('auth', 'status', '--hostname', 'github.com') '验证 GitHub 登录'
+$repoName = (Get-CheckedOutput gh @('repo', 'view', $Repository, '--json', 'nameWithOwner', '--jq', '.nameWithOwner') '验证 GitHub 仓库' | Select-Object -First 1).Trim()
+if ($repoName -ne $Repository) {
+    Fail 'GitHub 仓库身份不匹配'
 }
 
-
-# 2. 构建
-Write-Section "Building"
-go build ./...
-if ($LASTEXITCODE -ne 0) {
-    Write-Err "Build failed"
-    exit 1
+Write-Step '运行本地发布门禁'
+& "$Root/scripts/check-secrets.ps1"
+if ($LASTEXITCODE -ne 0) { Fail '凭据门禁失败' }
+$unformatted = @(& gofmt -l .)
+if ($LASTEXITCODE -ne 0) { Fail 'gofmt 检查失败' }
+if ($unformatted.Count -ne 0) {
+    $unformatted | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+    Fail '存在未格式化 Go 文件'
 }
-Write-Ok "Build succeeded"
+Invoke-Checked git @('diff', '--check') '检查补丁格式'
+Invoke-Checked go @('mod', 'verify') '验证根模块依赖'
+Invoke-Checked go @('build', './...') '构建根模块'
+Invoke-Checked go @('vet', './...') '运行 go vet'
+Invoke-Checked go @('run', 'github.com/kisielk/errcheck@v1.20.0', '-ignoretests', './...') '检查生产代码未处理错误'
+Invoke-Checked go @('run', 'honnef.co/go/tools/cmd/staticcheck@v0.7.0', '-checks=SA*,S*,-ST*', './...') '运行 staticcheck'
+Invoke-Checked go @('run', 'golang.org/x/vuln/cmd/govulncheck@v1.6.0', './...') '运行漏洞扫描'
+Invoke-Checked go @('test', './...', '-shuffle=on', '-count=3', '-timeout=10m') '运行根模块重复测试'
 
-
-# 3. 读取与递增版本
-Write-Section "Bumping version"
-$currentVersion = Get-CurrentVersion
-Write-ColoredHost "Current version: $currentVersion" "White"
-$newVersion = Bump-Version -CurrentVersion $currentVersion -Part $VersionPart
-Write-ColoredHost "New version: $newVersion" "Green"
-
-
-# 4. 更新 version.txt（非 DryRun）
-if (-not $DryRun) {
-    Set-Version -Version $newVersion
-} else {
-    Write-Warn "[DryRun] Would update version.txt to $newVersion"
+Push-Location benchmarks
+try {
+    Invoke-Checked go @('mod', 'verify') '验证 benchmark 模块依赖'
+    Invoke-Checked go @('vet', './...') '运行 benchmark go vet'
+    Invoke-Checked go @('run', 'github.com/kisielk/errcheck@v1.20.0', '-ignoretests', './...') '检查 benchmark 支撑代码未处理错误'
+    Invoke-Checked go @('run', 'honnef.co/go/tools/cmd/staticcheck@v0.7.0', '-checks=SA*,S*,-ST*', './...') '运行 benchmark staticcheck'
+    Invoke-Checked go @('test', '-run', '^TestReleaseGate$', '-count=1', '-timeout=12m') '运行本机 benchmark release gate'
+} finally {
+    Pop-Location
 }
+Invoke-Checked go @('run', 'github.com/goreleaser/goreleaser/v2@v2.17.0', 'check') '验证 GoReleaser 配置'
 
-
-# 5. 提交 version.txt（非 DryRun）
-if (-not $DryRun) {
-    Write-Section "Committing version.txt"
-    git add version.txt
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Failed to stage version.txt"
-        exit 1
-    }
-
-    git commit -m "chore: bump version to $newVersion"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Failed to commit version.txt"
-        exit 1
-    }
-    Write-Ok "Commit created"
-} else {
-    Write-Warn "[DryRun] Would commit version.txt"
+Write-Step '验证 main 对应 GitHub CI'
+$runsJson = Get-CheckedOutput gh @(
+    'run', 'list', '--repo', $Repository, '--workflow', 'ci.yml', '--branch', 'main',
+    '--commit', $head, '--limit', '20', '--json', 'headSha,status,conclusion,databaseId'
+) '读取 GitHub Actions 状态'
+$runs = @($runsJson -join "`n" | ConvertFrom-Json)
+$successful = @($runs | Where-Object { $_.headSha -eq $head -and $_.status -eq 'completed' -and $_.conclusion -eq 'success' })
+if ($successful.Count -eq 0) {
+    Fail '当前 main 没有成功完成的 CI（含 Linux、race、benchmark、Windows）'
 }
 
-
-# 6. 创建标签
-Write-Section "Creating git tag"
-if (-not $DryRun) {
-    git tag -a $newVersion -m "Release $newVersion"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Failed to create git tag"
-        exit 1
-    }
-    Write-Ok "Tag $newVersion created"
-} else {
-    Write-Warn "[DryRun] Would create tag $newVersion"
-}
-
-
-# 7. 推送当前分支与标签
-Write-Section "Pushing to remote"
-
-# 规范化 origin URL（GitHub 推荐带 .git 后缀，避免部分环境 push/release 异常）
-$originUrl = git remote get-url origin 2>$null
-if ($originUrl -match '^https://github\.com/[^/]+/[^/.]+$') {
-    $fixedUrl = "$originUrl.git"
-    Write-Warn "origin URL 缺少 .git 后缀，自动修正: $fixedUrl"
-    git remote set-url origin $fixedUrl
-    if ($LASTEXITCODE -eq 0) {
-        Write-Ok "origin URL 已更新"
+$previousPreference = $ErrorActionPreference
+$localTagCommit = $null
+$ErrorActionPreference = 'Continue'
+$localTagOutput = @(& git rev-parse --verify "refs/tags/$version^{commit}" 2>$null)
+$localTagExit = $LASTEXITCODE
+$ErrorActionPreference = $previousPreference
+if ($localTagExit -eq 0) {
+    $localTagCommit = ($localTagOutput | Select-Object -First 1).Trim()
+    if ($localTagCommit -ne $head) {
+        Fail "本地标签 $version 指向其他提交"
     }
 }
 
-$currentBranch = git branch --show-current
-if (-not $DryRun) {
-    Write-ColoredHost "Pushing branch $currentBranch..." "White"
-    git push origin $currentBranch
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Failed to push branch $currentBranch"
-        exit 1
-    }
-
-    Write-ColoredHost "Pushing tag $newVersion..." "White"
-    git push origin $newVersion
-    if ($LASTEXITCODE -ne 0) {
-        Write-Err "Failed to push tag $newVersion"
-        exit 1
-    }
-
-    # 自动配置 github 远程（与 origin 同 URL，兼容双 remote 推送习惯）
-    $originUrl = Get-GitRemoteUrl "origin"
-    if (Ensure-GithubRemote -OriginUrl $originUrl) {
-        Write-ColoredHost "Pushing to github remote..." "White"
-        $branchExit = Invoke-Git push github $currentBranch
-        $tagExit = Invoke-Git push github $newVersion
-        if ($branchExit -eq 0 -and $tagExit -eq 0) {
-            Write-Ok "Pushed to github remote"
-        } else {
-            Write-Warn "github remote 推送部分失败（origin 已成功时可忽略）"
-        }
-    }
-
-    Write-Ok "Pushed branch and tag"
-} else {
-    Write-Warn "[DryRun] Would push branch $currentBranch and tag $newVersion"
+$remoteTagCommit = Get-RemoteTagCommit $version
+$remoteTagExists = -not [string]::IsNullOrWhiteSpace($remoteTagCommit)
+if ($remoteTagExists -and $remoteTagCommit -ne $head) {
+    Fail "远端标签 $version 指向其他提交；请在 PR 中提升 version.txt"
 }
 
+$releaseExists = $false
+$ErrorActionPreference = 'Continue'
+& gh release view $version --repo $Repository *> $null
+$releaseExists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousPreference
+if ($releaseExists) {
+    if (-not $remoteTagExists -or $remoteTagCommit -ne $head) {
+        Fail "版本 $version 已发布但不指向当前 HEAD；请在 PR 中提升 version.txt"
+    }
+    Write-Host "Release $version 已存在且指向当前 HEAD，无需重复发布。" -ForegroundColor Green
+    exit 0
+}
 
-# 8. 摘要
-Write-Section "Release summary"
-Write-ColoredHost "Old version: $currentVersion" "White"
-Write-ColoredHost "New version: $newVersion" "Green"
-Write-ColoredHost "Branch: $currentBranch" "White"
-Write-ColoredHost "Tag: $newVersion" "Green"
-
-$repoUrl = git config --get remote.origin.url
-if ($repoUrl) {
-    $repoUrl = $repoUrl -replace '\.git$', ''
-    Write-ColoredHost "Repo: $repoUrl" "White"
-    Write-ColoredHost "Tag URL: $repoUrl/releases/tag/$newVersion" "White"
+if (($localTagCommit -or $remoteTagExists) -and -not $Resume) {
+    Fail "标签 $version 已存在但 Release 不存在；人工确认后使用 -Resume"
 }
 
 if ($DryRun) {
-    Write-Warn "DryRun completed. No changes were pushed."
+    Write-Host "DryRun 通过：将发布 $version（HEAD=$head）。" -ForegroundColor Green
+    exit 0
 }
 
-Write-Host ""
-Write-ColoredHost "========================================" "Green"
-Write-ColoredHost "Release pipeline finished" "Green"
-Write-ColoredHost "========================================" "Green"
+if (-not $localTagCommit) {
+    Invoke-Checked git @('tag', '-a', $version, '-m', "Release $version") "创建标签 $version"
+}
+if (-not $remoteTagExists) {
+    Invoke-Checked git @('push', 'origin', "refs/tags/$version") "推送标签 $version"
+}
+$publishedTagCommit = Get-RemoteTagCommit $version
+if ($publishedTagCommit -ne $head) {
+    Fail "远端标签 $version 未稳定指向当前 HEAD；拒绝创建 Release"
+}
+Invoke-Checked gh @(
+    'release', 'create', $version, '--repo', $Repository, '--verify-tag',
+    '--title', $version, '--generate-notes'
+) "创建 GitHub Release $version"
+
+Write-Host "发布完成：$version" -ForegroundColor Green

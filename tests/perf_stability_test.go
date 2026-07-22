@@ -11,22 +11,22 @@ import (
 
 // perfReport 压测报告（单次运行，约 15–30s，需真实 MySQL）。
 type perfReport struct {
-	Host              string
-	PingAvg           time.Duration
-	PingMax           time.Duration
-	FindByIdOnce      time.Duration
-	CacheGet1000      time.Duration
-	CacheSpeedup      float64
-	Sequential3Find   time.Duration
-	Concurrent3Find   time.Duration
-	BatchUpsert50     time.Duration
-	SingleSave50      time.Duration
-	SessionCycle20    time.Duration
-	DeferredPut100    time.Duration
-	FlushOnce         time.Duration
-	PoolInUse         int
-	PoolOpen          int
-	Recommendations   []string
+	Host            string
+	PingAvg         time.Duration
+	PingMax         time.Duration
+	FindByIdOnce    time.Duration
+	CacheGet1000    time.Duration
+	CacheSpeedup    float64
+	Sequential3Find time.Duration
+	Concurrent3Find time.Duration
+	BatchUpsert50   time.Duration
+	SingleSave50    time.Duration
+	SessionCycle20  time.Duration
+	DeferredPut100  time.Duration
+	FlushOnce       time.Duration
+	PoolInUse       int
+	PoolOpen        int
+	Recommendations []string
 }
 
 const perfPlayerPrefix = "perf_stab_"

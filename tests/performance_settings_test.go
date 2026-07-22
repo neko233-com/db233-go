@@ -9,6 +9,7 @@ import (
 )
 
 func TestCrudPerformanceSettings_LoadFromJSON(t *testing.T) {
+	SaveCrudPerformanceSettings(t)
 	mgr := db233.GetCrudPerformanceSettings()
 	mgr.ApplyFull(db233.DefaultCrudPerformanceSettings())
 
@@ -37,9 +38,13 @@ func TestCrudPerformanceSettings_LoadFromJSON(t *testing.T) {
 	if s.WriteBufferFlushIntervalMs != 50 {
 		t.Errorf("writeBufferFlushIntervalMs 期望 50，得到 %d", s.WriteBufferFlushIntervalMs)
 	}
+	if !s.EnableFastOrmScan || !s.EnableAllocPool || s.MaxOpenConns != 100 {
+		t.Errorf("部分 JSON 不应关闭默认生产优化: %+v", s)
+	}
 }
 
 func TestCrudPerformanceSettings_DynamicSet(t *testing.T) {
+	SaveCrudPerformanceSettings(t)
 	mgr := db233.GetCrudPerformanceSettings()
 	mgr.ApplyFull(db233.DefaultCrudPerformanceSettings())
 
@@ -59,6 +64,7 @@ func TestCrudPerformanceSettings_DynamicSet(t *testing.T) {
 }
 
 func TestCrudPerformanceSettings_LoadFromFile(t *testing.T) {
+	SaveCrudPerformanceSettings(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "performance.json")
 	content := `{"findByIdsChunkSize": 128, "batchUpsertChunkSize": 64}`
@@ -77,6 +83,7 @@ func TestCrudPerformanceSettings_LoadFromFile(t *testing.T) {
 }
 
 func TestCrudPerformanceSettings_LoadFromConfigManager(t *testing.T) {
+	SaveCrudPerformanceSettings(t)
 	cm := db233.GetConfigManager()
 	cm.Set("performance.concurrentMaxWorkers", 24)
 	cm.Set("performance.writeBufferEnabled", true)

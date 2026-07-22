@@ -13,7 +13,7 @@ echo "========================================"
 step() { echo ""; echo ">>> $1"; echo "----------------------------------------"; }
 
 step "[0/6] Secret leak check"
-"$ROOT/scripts/check-secrets.sh"
+bash "$ROOT/scripts/check-secrets.sh"
 
 step "[1/6] pkg/db233 unit tests"
 go test ./pkg/db233/ -count=1 -timeout 2m

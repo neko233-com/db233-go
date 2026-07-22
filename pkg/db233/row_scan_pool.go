@@ -6,8 +6,8 @@ import (
 
 // scanScratch 复用 Scan 目标切片与丢弃列占位，降低 Query / OrmBatch 分配。
 type scanScratch struct {
-	dest      []any
-	discards  []any
+	dest        []any
+	discards    []any
 	discardPtrs []*any
 }
 
@@ -35,9 +35,6 @@ func acquireScanScratch(columnCount int) *scanScratch {
 	} else {
 		s.discards = s.discards[:columnCount]
 		s.discardPtrs = s.discardPtrs[:columnCount]
-		for i := range s.discards {
-			s.discards[i] = nil
-		}
 	}
 	return s
 }
@@ -47,7 +44,22 @@ func (s *scanScratch) discardPtr(i int) *any {
 }
 
 func releaseScanScratch(s *scanScratch) {
+	if s == nil {
+		return
+	}
+	clearScanScratchReferences(s)
 	scanScratchPool.Put(s)
+}
+
+func clearScanScratchReferences(s *scanScratch) {
+	if s == nil {
+		return
+	}
+	// dest may point at fields in the last returned entity (or at strict scanners
+	// that contain reflect.Value handles). discards may retain driver-owned blobs.
+	// Keep backing arrays, but never let the pool keep those object graphs alive.
+	clear(s.dest)
+	clear(s.discards)
 }
 
 // rowMapPool 复用 map[string]any 作为 Scan 中间容器（内部路径；返回给调用方前会 copy）。
@@ -58,16 +70,19 @@ var rowMapPool = sync.Pool{
 }
 
 func acquireRowMap(capHint int) map[string]any {
+	if capHint > 32 {
+		return make(map[string]any, capHint)
+	}
 	m := rowMapPool.Get().(map[string]any)
 	clear(m)
-	if capHint > 0 && capHint > len(m) {
-		// 预扩容由 make 在 New 中完成；大列数场景仍按需分配返回 map
-	}
 	return m
 }
 
 func releaseRowMap(m map[string]any) {
 	if m == nil {
+		return
+	}
+	if len(m) > 256 {
 		return
 	}
 	clear(m)

@@ -1,11 +1,10 @@
 package db233
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -13,6 +12,7 @@ import (
 // 生成详细的监控报告，支持多种格式输出
 type MonitoringReportGenerator struct {
 	name string
+	mu   sync.RWMutex
 
 	// 数据源
 	performanceMonitors map[string]*PerformanceMonitor
@@ -141,51 +141,90 @@ func NewMonitoringReportGenerator(name string) *MonitoringReportGenerator {
 
 // 添加性能监控器
 func (rg *MonitoringReportGenerator) AddPerformanceMonitor(name string, monitor *PerformanceMonitor) {
+	if name == "" || monitor == nil {
+		return
+	}
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.performanceMonitors[name] = monitor
 }
 
 // 添加连接池监控器
 func (rg *MonitoringReportGenerator) AddConnectionMonitor(name string, monitor *ConnectionPoolMonitor) {
+	if name == "" || monitor == nil {
+		return
+	}
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.connectionMonitors[name] = monitor
 }
 
 // 添加健康检查器
 func (rg *MonitoringReportGenerator) AddHealthChecker(name string, checker *HealthChecker) {
+	if name == "" || checker == nil {
+		return
+	}
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.healthCheckers[name] = checker
 }
 
 // 添加指标收集器
 func (rg *MonitoringReportGenerator) AddMetricsCollector(name string, collector *MetricsCollector) {
+	if name == "" || collector == nil {
+		return
+	}
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.metricsCollectors[name] = collector
 }
 
 // 添加告警管理器
 func (rg *MonitoringReportGenerator) AddAlertManager(name string, manager *AlertManager) {
+	if name == "" || manager == nil {
+		return
+	}
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.alertManagers[name] = manager
 }
 
 // 设置报告标题
 func (rg *MonitoringReportGenerator) SetReportTitle(title string) {
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.reportTitle = title
 }
 
 // 设置报告周期
 func (rg *MonitoringReportGenerator) SetReportPeriod(period time.Duration) {
+	if period <= 0 {
+		LogWarn("监控报告周期必须大于 0: %v", period)
+		return
+	}
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.reportPeriod = period
 }
 
 // 设置是否包含图表
 func (rg *MonitoringReportGenerator) SetIncludeCharts(include bool) {
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
 	rg.includeCharts = include
 }
 
 // 设置输出格式
 func (rg *MonitoringReportGenerator) SetOutputFormats(formats []string) {
-	rg.outputFormats = formats
+	rg.mu.Lock()
+	defer rg.mu.Unlock()
+	rg.outputFormats = append([]string(nil), formats...)
 }
 
 // 生成报告数据
 func (rg *MonitoringReportGenerator) GenerateReportData() *ReportData {
+	rg.mu.RLock()
+	defer rg.mu.RUnlock()
 	report := &ReportData{
 		Title:       rg.reportTitle,
 		GeneratedAt: time.Now(),
@@ -231,8 +270,9 @@ func (rg *MonitoringReportGenerator) generateSummary() ReportSummary {
 			totalQueries += queries
 		}
 
-		if successRate, ok := report["success_rate"].(float64); ok && successRate > 0 {
-			totalErrors += int64(float64(totalQueries) * (1 - successRate))
+		if successRate, ok := report["success_rate"].(float64); ok && successRate >= 0 {
+			queries, _ := report["total_queries"].(int64)
+			totalErrors += int64(float64(queries) * (1 - successRate))
 		}
 
 		if avgTimeStr, ok := report["avg_query_time"].(string); ok {
@@ -267,6 +307,9 @@ func (rg *MonitoringReportGenerator) generateSummary() ReportSummary {
 		}
 		if summary.ActiveAlerts == 0 { // 无活跃告警加分
 			healthScore += 0.1
+		}
+		if healthScore > 1 {
+			healthScore = 1
 		}
 		summary.HealthScore = healthScore
 	}
@@ -331,6 +374,7 @@ func (rg *MonitoringReportGenerator) generateDatabaseReports() []DatabaseReport 
 
 		reports = append(reports, report)
 	}
+	sort.Slice(reports, func(i, j int) bool { return reports[i].Name < reports[j].Name })
 
 	return reports
 }
@@ -710,39 +754,25 @@ func (rg *MonitoringReportGenerator) ExportReport(filename string, format string
 
 // 导出JSON报告
 func (rg *MonitoringReportGenerator) exportJSONReport(report *ReportData, filename string) error {
-	file, err := os.Create(filename)
+	data, err := marshalSecureExportJSON(report)
 	if err != nil {
-		return fmt.Errorf("创建文件失败: %w", err)
+		return fmt.Errorf("序列化JSON监控报告失败: %w", err)
 	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-
-	if err := encoder.Encode(report); err != nil {
+	if err := writeSecureAtomicFile(filename, data); err != nil {
 		return fmt.Errorf("导出JSON报告失败: %w", err)
 	}
 
-	LogInfo("JSON监控报告已导出: %s", filename)
+	LogInfo("JSON监控报告已安全导出")
 	return nil
 }
 
 // 导出文本报告
 func (rg *MonitoringReportGenerator) exportTextReport(report *ReportData, filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("创建文件失败: %w", err)
-	}
-	defer file.Close()
-
-	// 生成文本报告
-	text := rg.generateTextReport(report)
-
-	if _, err := file.WriteString(text); err != nil {
+	if err := writeSecureAtomicFile(filename, []byte(rg.generateTextReport(report))); err != nil {
 		return fmt.Errorf("写入文本报告失败: %w", err)
 	}
 
-	LogInfo("文本监控报告已导出: %s", filename)
+	LogInfo("文本监控报告已安全导出")
 	return nil
 }
 

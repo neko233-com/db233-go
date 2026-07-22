@@ -16,10 +16,17 @@ type CacheableEntitySpec struct {
 
 // CacheableEntityRegistry 可缓存实体白名单（仅注册的 XxxEntity 可走 Session 缓存）。
 type CacheableEntityRegistry struct {
-	mu          sync.RWMutex
-	cacheable   map[string]struct{}
-	maxByType   map[string]int
-	defaultMax  int
+	mu         sync.RWMutex
+	cacheable  map[string]struct{}
+	maxByType  map[string]int
+	defaultMax int
+}
+
+// CacheableEntityRegistrySnapshot 是可用于测试隔离或临时配置回滚的不透明快照。
+type CacheableEntityRegistrySnapshot struct {
+	cacheable  map[string]struct{}
+	maxByType  map[string]int
+	defaultMax int
 }
 
 var (
@@ -40,17 +47,41 @@ func GetCacheableEntityRegistry() *CacheableEntityRegistry {
 
 // Register 注册可缓存实体类型。
 func (r *CacheableEntityRegistry) Register(spec CacheableEntitySpec) {
-	if spec.Prototype == nil {
+	if isNilStrictValue(spec.Prototype) {
 		return
+	}
+	if err := r.RegisterStrict(spec); err != nil {
+		LogError("可缓存实体注册失败: type=%T, err=%s", spec.Prototype, safeErrorForLog(err))
+	}
+}
+
+// RegisterStrict 注册可缓存实体并严格检查 WAL 类型名碰撞。
+func (r *CacheableEntityRegistry) RegisterStrict(spec CacheableEntitySpec) error {
+	if r == nil {
+		return NewValidationException("CacheableEntityRegistry 不能为 nil")
+	}
+	if isNilStrictValue(spec.Prototype) {
+		return NewValidationException("可缓存实体原型不能为 nil")
+	}
+	if err := GetEntityTypeRegistry().RegisterStrict(spec.Prototype); err != nil {
+		return err
 	}
 	typeName := EntityTypeName(spec.Prototype)
 	r.mu.Lock()
+	if r.cacheable == nil {
+		r.cacheable = make(map[string]struct{})
+	}
+	if r.maxByType == nil {
+		r.maxByType = make(map[string]int)
+	}
 	r.cacheable[typeName] = struct{}{}
 	if spec.MaxInstances > 0 {
 		r.maxByType[typeName] = spec.MaxInstances
+	} else {
+		delete(r.maxByType, typeName)
 	}
 	r.mu.Unlock()
-	GetEntityTypeRegistry().Register(spec.Prototype)
+	return nil
 }
 
 // RegisterBatch 批量注册。
@@ -58,6 +89,16 @@ func (r *CacheableEntityRegistry) RegisterBatch(specs []CacheableEntitySpec) {
 	for _, spec := range specs {
 		r.Register(spec)
 	}
+}
+
+// RegisterBatchStrict 批量严格注册，首个失败即返回。
+func (r *CacheableEntityRegistry) RegisterBatchStrict(specs []CacheableEntitySpec) error {
+	for _, spec := range specs {
+		if err := r.RegisterStrict(spec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IsCacheable 判断实体类型是否允许缓存。
@@ -89,11 +130,48 @@ func (r *CacheableEntityRegistry) MaxInstances(typeName string) int {
 	}
 	r.mu.RUnlock()
 
-	settings := GetEntityCacheSettings().Snapshot()
+	settings := entityCacheSettingsSnapshot()
 	if v, ok := settings.EntityTypeLimits[typeName]; ok && v > 0 {
 		return v
 	}
 	return 0
+}
+
+// Snapshot 返回注册表独立快照。
+func (r *CacheableEntityRegistry) Snapshot() CacheableEntityRegistrySnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return CacheableEntityRegistrySnapshot{
+		cacheable:  cloneStringSet(r.cacheable),
+		maxByType:  cloneStringIntMap(r.maxByType),
+		defaultMax: r.defaultMax,
+	}
+}
+
+// Restore 原子恢复此前快照。
+func (r *CacheableEntityRegistry) Restore(snapshot CacheableEntityRegistrySnapshot) {
+	r.mu.Lock()
+	r.cacheable = cloneStringSet(snapshot.cacheable)
+	r.maxByType = cloneStringIntMap(snapshot.maxByType)
+	r.defaultMax = snapshot.defaultMax
+	r.mu.Unlock()
+}
+
+// Clear 清空缓存白名单。已注册 Entity 类型元数据不受影响。
+func (r *CacheableEntityRegistry) Clear() {
+	r.mu.Lock()
+	r.cacheable = make(map[string]struct{})
+	r.maxByType = make(map[string]int)
+	r.defaultMax = 0
+	r.mu.Unlock()
+}
+
+func cloneStringSet(source map[string]struct{}) map[string]struct{} {
+	cloned := make(map[string]struct{}, len(source))
+	for key := range source {
+		cloned[key] = struct{}{}
+	}
+	return cloned
 }
 
 // FilterCacheable 从加载列表中过滤出可缓存的实体原型。

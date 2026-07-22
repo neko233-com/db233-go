@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 )
 
 // TransactionCrudRepository 是绑定到一笔具体事务的窄 Entity Repository。
@@ -66,69 +67,85 @@ func (r *transactionCrudRepository) lockActiveTransaction() (*sql.Tx, func(), er
 	}, nil
 }
 
-// validateActiveTransaction 在执行用户 hook 前做一次快速 identity 校验。
-// hook 返回后仍由 lockActiveTransaction 再次校验，覆盖期间发生的 Commit/Rollback。
-func (r *transactionCrudRepository) validateActiveTransaction() error {
-	if r == nil || r.manager == nil || r.tx == nil || r.base == nil {
-		return NewTransactionException("事务 Repository 未初始化")
+func (r *transactionCrudRepository) lockActiveTransactionContext(
+	ctx context.Context,
+) (*sql.Tx, context.Context, func(), error) {
+	if ctx == nil {
+		return nil, nil, nil, NewValidationException("context 不能为 nil")
 	}
-	r.manager.mu.RLock()
-	defer r.manager.mu.RUnlock()
-	if !r.manager.isActive || r.manager.tx == nil || r.manager.tx != r.tx {
-		return NewTransactionException("事务 Repository 已失效")
+	tx, unlock, err := r.lockActiveTransaction()
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	return nil
+	operationCtx, cleanup, _, ctxErr := mergeTransactionOperationContext(ctx, r.manager.txCtx)
+	if ctxErr != nil {
+		unlock()
+		return nil, nil, nil, NewTransactionExceptionWithCause(ctxErr, "事务操作上下文已结束")
+	}
+	return tx, operationCtx, func() {
+		cleanup()
+		unlock()
+	}, nil
 }
 
-func (r *transactionCrudRepository) withActiveTransaction(operation func(*sql.Tx) error) error {
-	tx, unlock, err := r.lockActiveTransaction()
+func (r *transactionCrudRepository) withActiveTransactionContext(
+	ctx context.Context,
+	operation func(*sql.Tx, context.Context) error,
+) error {
+	tx, operationCtx, unlock, err := r.lockActiveTransactionContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return operation(tx)
+	return joinErrorWithContext(operation(tx, operationCtx), operationCtx)
 }
 
 func (r *transactionCrudRepository) FindByIdContext(ctx context.Context, id any, entityType IDbEntity) (IDbEntity, error) {
 	var entity IDbEntity
-	err := r.withActiveTransaction(func(tx *sql.Tx) error {
+	err := r.withActiveTransactionContext(ctx, func(tx *sql.Tx, operationCtx context.Context) error {
 		var loadErr error
-		entity, loadErr = loadByIdStrictContext(ctx, tx, r.base, id, entityType)
+		entity, loadErr = loadByIdStrictContext(operationCtx, tx, r.base, id, entityType)
 		return loadErr
 	})
 	if err != nil || entity == nil {
 		return nil, err
 	}
 	// Rows 已消费并关闭，先释放事务锁再执行用户 hook，允许 hook 安全重入。
-	entity.DeserializeAfterLoadDb()
+	if err := runEntityDeserializeHook(entity); err != nil {
+		return nil, err
+	}
 	return entity, nil
 }
 
 func (r *transactionCrudRepository) FindByIdsContext(ctx context.Context, ids []any, entityType IDbEntity) ([]IDbEntity, error) {
 	var entities []IDbEntity
-	err := r.withActiveTransaction(func(tx *sql.Tx) error {
+	err := r.withActiveTransactionContext(ctx, func(tx *sql.Tx, operationCtx context.Context) error {
 		var loadErr error
-		entities, loadErr = loadByIdsStrictContext(ctx, tx, r.base, ids, entityType)
+		entities, loadErr = loadByIdsStrictContext(operationCtx, tx, r.base, ids, entityType)
 		return loadErr
 	})
 	if err != nil {
 		return nil, err
 	}
-	deserializeStrictEntities(entities)
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
 func (r *transactionCrudRepository) FindAllContext(ctx context.Context, entityType IDbEntity) ([]IDbEntity, error) {
 	var entities []IDbEntity
-	err := r.withActiveTransaction(func(tx *sql.Tx) error {
+	err := r.withActiveTransactionContext(ctx, func(tx *sql.Tx, operationCtx context.Context) error {
 		var loadErr error
-		entities, loadErr = loadAllStrictContext(ctx, tx, r.base, entityType)
+		entities, loadErr = loadAllStrictContext(operationCtx, tx, r.base, entityType)
 		return loadErr
 	})
 	if err != nil {
 		return nil, err
 	}
-	deserializeStrictEntities(entities)
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
@@ -139,15 +156,17 @@ func (r *transactionCrudRepository) FindByConditionContext(
 	entityType IDbEntity,
 ) ([]IDbEntity, error) {
 	var entities []IDbEntity
-	err := r.withActiveTransaction(func(tx *sql.Tx) error {
+	err := r.withActiveTransactionContext(ctx, func(tx *sql.Tx, operationCtx context.Context) error {
 		var loadErr error
-		entities, loadErr = loadByConditionStrictContext(ctx, tx, r.base, condition, params, entityType)
+		entities, loadErr = loadByConditionStrictContext(operationCtx, tx, r.base, condition, params, entityType)
 		return loadErr
 	})
 	if err != nil {
 		return nil, err
 	}
-	deserializeStrictEntities(entities)
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
@@ -155,10 +174,13 @@ func (r *transactionCrudRepository) SaveContext(ctx context.Context, entity IDbE
 	if ctx == nil {
 		return NewValidationException("context 不能为 nil")
 	}
+	if ctxErr := contextCauseError(ctx); ctxErr != nil {
+		return NewTransactionExceptionWithCause(ctxErr, "保存实体时上下文已结束")
+	}
 	if isNilStrictValue(entity) {
 		return NewValidationException("实体不能为 nil")
 	}
-	if err := r.validateActiveTransaction(); err != nil {
+	if err := r.validateEntitiesBeforeBuild([]IDbEntity{entity}); err != nil {
 		return err
 	}
 
@@ -169,16 +191,24 @@ func (r *transactionCrudRepository) SaveContext(ctx context.Context, entity IDbE
 		return err
 	}
 
-	tx, unlock, err := r.lockActiveTransaction()
+	tx, operationCtx, unlock, err := r.lockActiveTransactionContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
-	result, err := r.base.executeBatchUpsertStatement(ctx, tx.ExecContext, statement)
+	reservationKeys, err := r.prepareAutoIncrementStatement(operationCtx, tx, statement)
 	if err != nil {
-		return NewQueryExceptionWithCause(err, fmt.Sprintf("事务内保存实体到表 %s 失败", statement.tableName))
+		return err
 	}
+	result, err := r.base.executeBatchUpsertStatement(operationCtx, tx.ExecContext, statement)
+	if err != nil {
+		return NewQueryExceptionWithCause(
+			joinErrorWithContext(err, operationCtx),
+			fmt.Sprintf("事务内保存实体到表 %s 失败", statement.tableName),
+		)
+	}
+	r.manager.reservePendingAutoIncrementKeys(reservationKeys)
 	if assignIDs, idErr := r.base.batchAutoIncrementAction(statement, result); idErr != nil {
 		return NewQueryExceptionWithCause(idErr, fmt.Sprintf("获取表 %s 的自增主键失败", statement.tableName))
 	} else if assignIDs != nil {
@@ -188,8 +218,14 @@ func (r *transactionCrudRepository) SaveContext(ctx context.Context, entity IDbE
 }
 
 func (r *transactionCrudRepository) SaveBatchUpsertContext(ctx context.Context, entities []IDbEntity) error {
+	if r == nil || r.base == nil {
+		return NewTransactionException("事务 Repository 未初始化")
+	}
 	if ctx == nil {
 		return NewValidationException("context 不能为 nil")
+	}
+	if ctxErr := contextCauseError(ctx); ctxErr != nil {
+		return NewTransactionExceptionWithCause(ctxErr, "批量保存实体时上下文已结束")
 	}
 	if entities == nil {
 		return NewValidationException("实体列表不能为 nil")
@@ -209,7 +245,13 @@ func (r *transactionCrudRepository) SaveBatchUpsertContext(ctx context.Context, 
 	if len(validEntities) == 0 {
 		return NewValidationException("没有有效的实体可保存")
 	}
-	if err := r.validateActiveTransaction(); err != nil {
+	if duplicateErr := validateUniqueTransactionEntityInstances(validEntities); duplicateErr != nil {
+		return duplicateErr
+	}
+	if shapeErr := validateRepositoryBatchShapes(validEntities, r.base.getTableName); shapeErr != nil {
+		return shapeErr
+	}
+	if err := r.validateEntitiesBeforeBuild(validEntities); err != nil {
 		return err
 	}
 
@@ -232,17 +274,30 @@ func (r *transactionCrudRepository) SaveBatchUpsertContext(ctx context.Context, 
 		}
 	}
 
-	tx, unlock, err := r.lockActiveTransaction()
+	tx, operationCtx, unlock, err := r.lockActiveTransactionContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
-	for _, statement := range statements {
-		result, execErr := r.base.executeBatchUpsertStatement(ctx, tx.ExecContext, statement)
-		if execErr != nil {
-			return NewQueryExceptionWithCause(execErr, fmt.Sprintf("事务内批量 UPSERT 到表 %s 失败", statement.tableName))
+	reservationKeys := make([][]uintptr, len(statements))
+	for i, statement := range statements {
+		keys, prepareErr := r.prepareAutoIncrementStatement(operationCtx, tx, statement)
+		if prepareErr != nil {
+			return prepareErr
 		}
+		reservationKeys[i] = keys
+	}
+
+	for i, statement := range statements {
+		result, execErr := r.base.executeBatchUpsertStatement(operationCtx, tx.ExecContext, statement)
+		if execErr != nil {
+			return NewQueryExceptionWithCause(
+				joinErrorWithContext(execErr, operationCtx),
+				fmt.Sprintf("事务内批量 UPSERT 到表 %s 失败", statement.tableName),
+			)
+		}
+		r.manager.reservePendingAutoIncrementKeys(reservationKeys[i])
 		if assignIDs, idErr := r.base.batchAutoIncrementAction(statement, result); idErr != nil {
 			return NewQueryExceptionWithCause(idErr, fmt.Sprintf("获取表 %s 的自增主键失败", statement.tableName))
 		} else if assignIDs != nil {
@@ -257,6 +312,9 @@ func (r *transactionCrudRepository) DeleteByIdContext(
 	id any,
 	entityType IDbEntity,
 ) (int64, error) {
+	if r == nil || r.base == nil {
+		return 0, NewTransactionException("事务 Repository 未初始化")
+	}
 	if ctx == nil {
 		return 0, NewValidationException("context 不能为 nil")
 	}
@@ -275,6 +333,9 @@ func (r *transactionCrudRepository) DeleteByIdContext(
 	if uidColumn == "" {
 		uidColumn = "id"
 	}
+	if identifierErr := validateRepositorySQLIdentifiers(tableName, uidColumn, nil); identifierErr != nil {
+		return 0, identifierErr
+	}
 
 	return r.executeDeleteContext(ctx, "DELETE FROM "+tableName+" WHERE "+uidColumn+" = ?", []any{id}, tableName)
 }
@@ -285,6 +346,9 @@ func (r *transactionCrudRepository) DeleteByConditionContext(
 	params []any,
 	entityType IDbEntity,
 ) (int64, error) {
+	if r == nil || r.base == nil {
+		return 0, NewTransactionException("事务 Repository 未初始化")
+	}
 	if ctx == nil {
 		return 0, NewValidationException("context 不能为 nil")
 	}
@@ -299,6 +363,9 @@ func (r *transactionCrudRepository) DeleteByConditionContext(
 	if tableName == "" {
 		return 0, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
 	}
+	if identifierErr := validateRepositoryTableIdentifier(tableName); identifierErr != nil {
+		return 0, identifierErr
+	}
 	return r.executeDeleteContext(ctx, "DELETE FROM "+tableName+" WHERE "+condition, params, tableName)
 }
 
@@ -308,19 +375,149 @@ func (r *transactionCrudRepository) executeDeleteContext(
 	params []any,
 	tableName string,
 ) (int64, error) {
-	tx, unlock, err := r.lockActiveTransaction()
+	tx, operationCtx, unlock, err := r.lockActiveTransactionContext(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer unlock()
 
-	result, err := tx.ExecContext(ctx, query, params...)
+	result, err := tx.ExecContext(operationCtx, query, params...)
 	if err != nil {
-		return 0, NewQueryExceptionWithCause(err, fmt.Sprintf("事务内删除表 %s 的记录失败", tableName))
+		return 0, NewQueryExceptionWithCause(
+			joinErrorWithContext(err, operationCtx),
+			fmt.Sprintf("事务内删除表 %s 的记录失败", tableName),
+		)
 	}
 	affectedRows, err := result.RowsAffected()
 	if err != nil {
 		return 0, NewQueryExceptionWithCause(err, fmt.Sprintf("获取表 %s 删除影响行数失败", tableName))
 	}
 	return affectedRows, nil
+}
+
+func (r *transactionCrudRepository) prepareAutoIncrementStatement(
+	ctx context.Context,
+	tx *sql.Tx,
+	statement *batchUpsertStatement,
+) ([]uintptr, error) {
+	if statement == nil || !statement.assignAutoIncrement {
+		return nil, nil
+	}
+
+	keys := make([]uintptr, 0, len(statement.entities))
+	for _, entity := range statement.entities {
+		key, ok := transactionEntityIdentity(entity)
+		if !ok {
+			return nil, NewValidationException(fmt.Sprintf(
+				"事务内自增主键回填要求实体为非 nil *struct，实际类型: %T",
+				entity,
+			))
+		}
+		if _, exists := r.manager.pendingAutoIncrementKeys[key]; exists {
+			return nil, NewValidationException("同一自增实体在主键回填前不能重复保存")
+		}
+		keys = append(keys, key)
+	}
+
+	statement.autoIncrementStep = 1
+	if len(statement.entities) <= 1 {
+		return keys, nil
+	}
+	step, err := r.manager.loadAutoIncrementStep(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	statement.autoIncrementStep = step
+	return keys, nil
+}
+
+func (tm *TransactionManager) loadAutoIncrementStep(ctx context.Context, tx *sql.Tx) (int64, error) {
+	if tm.autoIncrementStepLoaded {
+		return tm.autoIncrementStep, nil
+	}
+	if tm.db == nil || tm.db.DatabaseType != EnumDatabaseTypeMySQL {
+		return 0, NewValidationException("批量自增主键回填当前仅支持 MySQL")
+	}
+	var step int64
+	if err := tx.QueryRowContext(ctx, "SELECT @@SESSION.auto_increment_increment").Scan(&step); err != nil {
+		return 0, NewQueryExceptionWithCause(
+			joinErrorWithContext(err, ctx),
+			"读取 MySQL auto_increment_increment 失败",
+		)
+	}
+	if step <= 0 {
+		return 0, NewQueryException(fmt.Sprintf("MySQL auto_increment_increment 非法: %d", step))
+	}
+	tm.autoIncrementStep = step
+	tm.autoIncrementStepLoaded = true
+	return step, nil
+}
+
+func (tm *TransactionManager) reservePendingAutoIncrementKeys(keys []uintptr) {
+	if len(keys) == 0 {
+		return
+	}
+	if tm.pendingAutoIncrementKeys == nil {
+		tm.pendingAutoIncrementKeys = make(map[uintptr]struct{}, len(keys))
+	}
+	for _, key := range keys {
+		tm.pendingAutoIncrementKeys[key] = struct{}{}
+		tm.pendingAutoIncrementOrder = append(tm.pendingAutoIncrementOrder, key)
+	}
+}
+
+func validateUniqueTransactionEntityInstances(entities []IDbEntity) error {
+	seen := make(map[uintptr]int, len(entities))
+	for index, entity := range entities {
+		key, ok := transactionEntityIdentity(entity)
+		if !ok {
+			continue
+		}
+		if firstIndex, exists := seen[key]; exists {
+			return NewValidationException(fmt.Sprintf(
+				"事务批量保存包含重复实体实例: first_index=%d, duplicate_index=%d",
+				firstIndex,
+				index,
+			))
+		}
+		seen[key] = index
+	}
+	return nil
+}
+
+func transactionEntityIdentity(entity IDbEntity) (uintptr, bool) {
+	if isNilStrictValue(entity) {
+		return 0, false
+	}
+	value := reflect.ValueOf(entity)
+	if value.Kind() != reflect.Ptr || value.Elem().Kind() != reflect.Struct {
+		return 0, false
+	}
+	return value.Pointer(), true
+}
+
+// validateEntitiesBeforeBuild 在运行用户序列化 hook 前串行检查事务身份和待回填实体。
+// 真正执行 SQL 前仍会二次校验，覆盖检查结束后的 Commit/Rollback 竞态。
+func (r *transactionCrudRepository) validateEntitiesBeforeBuild(entities []IDbEntity) error {
+	if r == nil || r.manager == nil || r.tx == nil || r.base == nil {
+		return NewTransactionException("事务 Repository 未初始化")
+	}
+	r.manager.operationMu.Lock()
+	defer r.manager.operationMu.Unlock()
+	r.manager.mu.RLock()
+	defer r.manager.mu.RUnlock()
+
+	if !r.manager.isActive || r.manager.tx == nil || r.manager.tx != r.tx {
+		return NewTransactionException("事务 Repository 已失效")
+	}
+	for _, entity := range entities {
+		key, ok := transactionEntityIdentity(entity)
+		if !ok {
+			continue
+		}
+		if _, exists := r.manager.pendingAutoIncrementKeys[key]; exists {
+			return NewValidationException("同一自增实体在主键回填前不能重复保存")
+		}
+	}
+	return nil
 }

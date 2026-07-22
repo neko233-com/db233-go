@@ -3,7 +3,7 @@ package benchmarks
 import "testing"
 
 // TestReleaseGate 发版门禁：串联框架对比 + 稳定性（需 MySQL，勿 -short）。
-// 等价于 scripts/run-benchmark.ps1 的 Phase 3+4。
+// 覆盖 scripts/run-benchmark.ps1 的框架对比、稳定性与刷盘阶段。
 // 运行: cd benchmarks && go test -run TestReleaseGate -timeout 8m -v
 func TestReleaseGate(t *testing.T) {
 	if testing.Short() {

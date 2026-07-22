@@ -10,6 +10,7 @@ import (
 )
 
 func TestEntityCacheSettings_LoadFromJSON(t *testing.T) {
+	SaveEntityCacheSettings(t)
 	mgr := db233.GetEntityCacheSettings()
 	jsonData := []byte(`{
 		"entityCache": {
@@ -41,7 +42,9 @@ func TestEntityCacheSettings_LoadFromJSON(t *testing.T) {
 }
 
 func TestCacheableEntityRegistry(t *testing.T) {
+	SaveCacheableEntityRegistry(t)
 	reg := db233.GetCacheableEntityRegistry()
+	reg.Clear()
 	reg.Register(db233.CacheableEntitySpec{
 		Prototype:    &TestBatchFindEntity{},
 		MaxInstances: 100,
@@ -58,10 +61,9 @@ func TestCacheableEntityRegistry(t *testing.T) {
 }
 
 func TestSessionLRU_Eviction(t *testing.T) {
-	db := db233.NewDb(nil, 0, nil)
-	repo := db233.NewBaseCrudRepository(db)
-	sr := db233.NewSessionRepository(repo)
-	defer sr.Stop()
+	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
+	sr := NewEmptyBatchFindSessionRepository(t, "p1", "p2", "p3")
 
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                true,
@@ -88,16 +90,15 @@ func TestSessionLRU_Eviction(t *testing.T) {
 }
 
 func TestPlayerSession_DeferredWrite(t *testing.T) {
+	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                true,
 		SessionFlushIntervalMs: 0,
 	})
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
 
-	db := db233.NewDb(nil, 0, nil)
-	repo := db233.NewBaseCrudRepository(db)
-	sr := db233.NewSessionRepository(repo)
-	defer sr.Stop()
+	sr := NewEmptyBatchFindSessionRepository(t, "defer1")
 
 	session, err := sr.OpenSession("defer1", []db233.IDbEntity{&TestBatchFindEntity{}})
 	if err != nil {
@@ -114,12 +115,15 @@ func TestPlayerSession_DeferredWrite(t *testing.T) {
 }
 
 func TestPlayerSession_NonCacheableRejected(t *testing.T) {
+	SaveCacheableEntityRegistry(t)
+	db233.GetCacheableEntityRegistry().Clear()
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
-	db := db233.NewDb(nil, 0, nil)
-	sr := db233.NewSessionRepository(db233.NewBaseCrudRepository(db))
-	defer sr.Stop()
+	sr := NewEmptyBatchFindSessionRepository(t, "x")
 
-	session, _ := sr.OpenSession("x", []db233.IDbEntity{&TestBatchFindEntity{}})
+	session, openErr := sr.OpenSession("x", []db233.IDbEntity{&TestBatchFindEntity{}})
+	if openErr != nil {
+		t.Fatalf("OpenSession 失败: %v", openErr)
+	}
 	err := session.Put(&TestPlayerBagEntity{PlayerID: "x", Gold: 1})
 	if err == nil {
 		t.Error("未注册可缓存类型应拒绝 Put")
@@ -127,20 +131,22 @@ func TestPlayerSession_NonCacheableRejected(t *testing.T) {
 }
 
 func TestEntityCacheCount(t *testing.T) {
+	SaveCacheableEntityRegistry(t)
 	reg := db233.GetCacheableEntityRegistry()
 	reg.Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}, MaxInstances: 10})
 
-	db := db233.NewDb(nil, 0, nil)
-	sr := db233.NewSessionRepository(db233.NewBaseCrudRepository(db))
-	defer sr.Stop()
+	sr := NewEmptyBatchFindSessionRepository(t, "c1")
 
-	sr.OpenSession("c1", []db233.IDbEntity{&TestBatchFindEntity{}})
+	if _, err := sr.OpenSession("c1", []db233.IDbEntity{&TestBatchFindEntity{}}); err != nil {
+		t.Fatalf("OpenSession 失败: %v", err)
+	}
 	if sr.EntityCacheCount("TestBatchFindEntity") != 0 {
-		// Load 无 DB 无数据，不计数
+		t.Fatalf("Load 无 DB 无数据时缓存计数必须为 0，实际为 %d", sr.EntityCacheCount("TestBatchFindEntity"))
 	}
 }
 
 func TestEntityCacheConfigFile(t *testing.T) {
+	SaveEntityCacheSettings(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "perf.json")
 	content := `{
@@ -164,6 +170,7 @@ func TestEntityCacheConfigFile(t *testing.T) {
 }
 
 func TestSessionFlushIntervalDynamic(t *testing.T) {
+	SaveEntityCacheSettings(t)
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                true,
 		SessionFlushIntervalMs: int(time.Minute / time.Millisecond),
@@ -177,11 +184,21 @@ func TestSessionFlushIntervalDynamic(t *testing.T) {
 }
 
 func TestInitGameDb_ReturnsSessionRepo(t *testing.T) {
+	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	db := CreateTestDb(t)
 	if db == nil {
 		return
 	}
 	defer db.Close()
+	if err := setupBatchFindTable(db); err != nil {
+		t.Fatalf("创建 InitGameDb 测试表失败: %v", err)
+	}
+	defer func() {
+		if _, err := db.DataSource.Exec("DROP TABLE IF EXISTS test_batch_find"); err != nil {
+			t.Errorf("清理 InitGameDb 测试表失败: %v", err)
+		}
+	}()
 
 	opts := db233.DefaultGameDbOptions()
 	opts.EnableLocalJournal = false
@@ -199,4 +216,28 @@ func TestInitGameDb_ReturnsSessionRepo(t *testing.T) {
 		t.Fatal("应返回 SessionRepository")
 	}
 	sr.Stop()
+}
+
+func TestEntityCacheSettings_SnapshotIsIndependent(t *testing.T) {
+	SaveEntityCacheSettings(t)
+	manager := db233.GetEntityCacheSettings()
+	inputLimits := map[string]int{"HeroEntity": 10}
+	settings := db233.DefaultEntityCacheSettings()
+	settings.EntityTypeLimits = inputLimits
+	manager.ApplyFull(settings)
+
+	inputLimits["HeroEntity"] = 99
+	snapshot := manager.Snapshot()
+	snapshot.EntityTypeLimits["HeroEntity"] = 77
+	if got := manager.Snapshot().EntityTypeLimits["HeroEntity"]; got != 10 {
+		t.Fatalf("配置 map 被外部别名修改: got=%d want=10", got)
+	}
+
+	beforeSet := manager.Snapshot()
+	if err := manager.Set("entityTypeLimits.HeroEntity", 20); err != nil {
+		t.Fatal(err)
+	}
+	if got := beforeSet.EntityTypeLimits["HeroEntity"]; got != 10 {
+		t.Fatalf("Set 原地修改旧快照: got=%d want=10", got)
+	}
 }

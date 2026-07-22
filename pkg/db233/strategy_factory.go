@@ -1,15 +1,21 @@
 package db233
 
+import "sync"
+
 // 建表策略工厂
 type TableCreationStrategyFactory struct {
+	mu         sync.RWMutex
 	strategies map[EnumDatabaseType]ITableCreationStrategy
 }
 
-var strategyFactoryInstance *TableCreationStrategyFactory
+var (
+	strategyFactoryInstance *TableCreationStrategyFactory
+	strategyFactoryOnce     sync.Once
+)
 
 // 获取策略工厂单例
 func GetStrategyFactoryInstance() *TableCreationStrategyFactory {
-	if strategyFactoryInstance == nil {
+	strategyFactoryOnce.Do(func() {
 		strategyFactoryInstance = &TableCreationStrategyFactory{
 			strategies: make(map[EnumDatabaseType]ITableCreationStrategy),
 		}
@@ -18,7 +24,7 @@ func GetStrategyFactoryInstance() *TableCreationStrategyFactory {
 		strategyFactoryInstance.strategies[EnumDatabaseTypeMySQL] = NewMySQLStrategy(cm)
 		// TODO: PostgreSQL 支持将在未来版本中实现
 		// strategyFactoryInstance.strategies[EnumDatabaseTypePostgreSQL] = NewPostgreSQLStrategy(cm)
-	}
+	})
 	return strategyFactoryInstance
 }
 
@@ -31,11 +37,14 @@ func (f *TableCreationStrategyFactory) GetStrategy(dbType EnumDatabaseType) ITab
 		dbType = EnumDatabaseTypeMySQL
 	}
 
+	f.mu.RLock()
 	strategy, exists := f.strategies[dbType]
+	defaultStrategy := f.strategies[EnumDatabaseTypeMySQL]
+	f.mu.RUnlock()
 	if !exists {
 		// 如果策略不存在，返回默认的 MySQL 策略
 		LogWarn("未找到数据库类型 %s 的策略，使用默认 MySQL 策略", dbType)
-		return f.strategies[EnumDatabaseTypeMySQL]
+		return defaultStrategy
 	}
 
 	return strategy
@@ -49,6 +58,8 @@ func (f *TableCreationStrategyFactory) RegisterStrategy(dbType EnumDatabaseType,
 		LogWarn("尝试注册 nil 策略，忽略: 类型=%s", dbType)
 		return
 	}
+	f.mu.Lock()
 	f.strategies[dbType] = strategy
+	f.mu.Unlock()
 	LogInfo("注册建表策略: 类型=%s", dbType)
 }

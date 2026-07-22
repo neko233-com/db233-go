@@ -3,8 +3,10 @@ package db233
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"math"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -30,10 +32,7 @@ func GetConfigManager() *ConfigManager {
 
 // 从JSON文件加载配置
 func (cm *ConfigManager) LoadFromFile(filename string) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
@@ -44,9 +43,11 @@ func (cm *ConfigManager) LoadFromFile(filename string) error {
 	}
 
 	// 合并配置
+	cm.mu.Lock()
 	for key, value := range config {
 		cm.configs[key] = value
 	}
+	cm.mu.Unlock()
 
 	LogInfo("配置已从文件加载: %s", filename)
 	return nil
@@ -54,20 +55,32 @@ func (cm *ConfigManager) LoadFromFile(filename string) error {
 
 // 从环境变量加载配置
 func (cm *ConfigManager) LoadFromEnv(prefix string) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		LogWarn("环境变量配置前缀不能为空")
+		return
+	}
+	loaded := make(map[string]any)
+	prefixWithSeparator := prefix
+	if prefixWithSeparator != "" {
+		prefixWithSeparator += "_"
+	}
 	envVars := os.Environ()
 	for _, envVar := range envVars {
-		if len(prefix) > 0 && len(envVar) > len(prefix) && envVar[:len(prefix)] == prefix {
-			// 解析环境变量
-			key := envVar[len(prefix)+1:] // 跳过前缀和等号
-			value := os.Getenv(prefix + "_" + key)
-			if value != "" {
-				cm.configs[key] = value
-			}
+		name, value, ok := strings.Cut(envVar, "=")
+		if !ok || (prefixWithSeparator != "" && !strings.HasPrefix(name, prefixWithSeparator)) {
+			continue
+		}
+		key := strings.TrimPrefix(name, prefixWithSeparator)
+		if key != "" {
+			loaded[key] = value
 		}
 	}
+	cm.mu.Lock()
+	for key, value := range loaded {
+		cm.configs[key] = value
+	}
+	cm.mu.Unlock()
 
 	LogInfo("配置已从环境变量加载，前缀: %s", prefix)
 }
@@ -95,9 +108,25 @@ func (cm *ConfigManager) GetInt(key string, defaultValue int) int {
 		case int:
 			return v
 		case int64:
-			return int(v)
+			converted := int(v)
+			if int64(converted) == v {
+				return converted
+			}
 		case float64:
-			return int(v)
+			if !math.IsNaN(v) && !math.IsInf(v, 0) && math.Trunc(v) == v {
+				text := strconv.FormatFloat(v, 'f', -1, 64)
+				if parsed, err := strconv.ParseInt(text, 10, strconv.IntSize); err == nil {
+					return int(parsed)
+				}
+			}
+		case json.Number:
+			if parsed, err := strconv.ParseInt(string(v), 10, strconv.IntSize); err == nil {
+				return int(parsed)
+			}
+		case string:
+			if parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, strconv.IntSize); err == nil {
+				return int(parsed)
+			}
 		}
 	}
 	return defaultValue
@@ -112,6 +141,11 @@ func (cm *ConfigManager) GetBool(key string, defaultValue bool) bool {
 		if b, ok := value.(bool); ok {
 			return b
 		}
+		if text, ok := value.(string); ok {
+			if parsed, err := strconv.ParseBool(strings.TrimSpace(text)); err == nil {
+				return parsed
+			}
+		}
 	}
 	return defaultValue
 }
@@ -121,8 +155,8 @@ func (cm *ConfigManager) Set(key string, value any) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	cm.configs[key] = value
-	LogDebug("配置已设置: %s = %v", key, value)
+	cm.configs[key] = cloneDashboardComponent(value)
+	LogDebug("配置已设置: %s", key)
 }
 
 // 获取所有配置
@@ -132,7 +166,7 @@ func (cm *ConfigManager) GetAll() map[string]any {
 
 	result := make(map[string]any)
 	for k, v := range cm.configs {
-		result[k] = v
+		result[k] = cloneDashboardComponent(v)
 	}
 	return result
 }

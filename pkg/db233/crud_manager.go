@@ -1,8 +1,10 @@
 package db233
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -58,28 +60,40 @@ type CrudManager struct {
 var crudManagerInstance *CrudManager
 var crudManagerOnce sync.Once
 
+// NewCrudManager 创建独立的 CRUD 元数据管理器。
+// 默认业务通常使用 GetCrudManagerInstance；独立实例适用于隔离测试或多租户元数据构建。
+func NewCrudManager() *CrudManager {
+	return &CrudManager{
+		tableNamePkColNameListMap:   make(map[string][]string),
+		tableNameToColNameMap:       make(map[string][]string),
+		tableToPkToColValueMap:      make(map[string]map[any]map[string]any),
+		metadataClassSet:            make(map[reflect.Type]bool),
+		typeToPrimaryKeyColumnCache: make(map[reflect.Type]string),
+	}
+}
+
 // GetCrudManagerInstance 获取单例实例。
 func GetCrudManagerInstance() *CrudManager {
 	crudManagerOnce.Do(func() {
-		crudManagerInstance = &CrudManager{
-			tableNamePkColNameListMap:   make(map[string][]string),
-			tableNameToColNameMap:       make(map[string][]string),
-			tableToPkToColValueMap:      make(map[string]map[any]map[string]any),
-			metadataClassSet:            make(map[reflect.Type]bool),
-			typeToPrimaryKeyColumnCache: make(map[reflect.Type]string),
-		}
+		crudManagerInstance = NewCrudManager()
 	})
 	return crudManagerInstance
 }
 
 // AutoInitEntity 自动初始化实体。
 func (cm *CrudManager) AutoInitEntity(entityType any) *CrudManager {
+	if cm == nil || entityType == nil {
+		return cm
+	}
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
 	t := reflect.TypeOf(entityType)
-	if t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return cm
 	}
 
 	if cm.metadataClassSet[t] {
@@ -107,7 +121,14 @@ func (cm *CrudManager) initEntityClassMetadata(entityTypes []reflect.Type) {
 
 // AutoLazyInitOrThrowError 懒初始化或抛出错误。
 func (cm *CrudManager) AutoLazyInitOrThrowError(obj any) error {
-	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Interface {
+	if cm == nil {
+		return NewValidationException("CrudManager 不能为 nil")
+	}
+	if obj == nil {
+		return NewValidationException("实体不能为 nil")
+	}
+	objType := reflect.TypeOf(obj)
+	if objType.Kind() == reflect.Ptr && objType.Elem().Kind() == reflect.Interface {
 		return NewDb233Exception("对象类型错误，不能是接口")
 	}
 
@@ -142,6 +163,7 @@ func (cm *CrudManager) configClassLazy(obj any) error {
 		return nil
 	}
 
+	cm.metadataClassSet[t] = true
 	cm.initEntityClassMetadata([]reflect.Type{t})
 	return nil
 }
@@ -153,6 +175,9 @@ func (cm *CrudManager) IsNotContainsEntity(obj any) bool {
 
 // IsContainsEntity 检查是否包含实体（并发安全）。
 func (cm *CrudManager) IsContainsEntity(obj any) bool {
+	if cm == nil || obj == nil {
+		return false
+	}
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -177,6 +202,15 @@ func (cm *CrudManager) initTableColumnMetadataByClass(entityTypes []reflect.Type
 
 // collectColumnsRecursive 递归收集列名，支持嵌入结构体。
 func (cm *CrudManager) collectColumnsRecursive(t reflect.Type, colList *[]string) {
+	cm.collectColumnsRecursiveVisited(t, colList, make(map[reflect.Type]bool))
+}
+
+func (cm *CrudManager) collectColumnsRecursiveVisited(t reflect.Type, colList *[]string, visiting map[reflect.Type]bool) {
+	if t.Kind() != reflect.Struct || visiting[t] {
+		return
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() {
@@ -192,7 +226,7 @@ func (cm *CrudManager) collectColumnsRecursive(t reflect.Type, colList *[]string
 
 			// 如果是结构体，递归收集
 			if embeddedType.Kind() == reflect.Struct {
-				cm.collectColumnsRecursive(embeddedType, colList)
+				cm.collectColumnsRecursiveVisited(embeddedType, colList, visiting)
 				continue
 			}
 		}
@@ -222,6 +256,15 @@ func (cm *CrudManager) initTablePrimaryKeyMetadataByClass(entityTypes []reflect.
 
 // collectPrimaryKeysRecursive 递归收集主键列名，支持嵌入结构体。
 func (cm *CrudManager) collectPrimaryKeysRecursive(t reflect.Type, pkList *[]string) {
+	cm.collectPrimaryKeysRecursiveVisited(t, pkList, make(map[reflect.Type]bool))
+}
+
+func (cm *CrudManager) collectPrimaryKeysRecursiveVisited(t reflect.Type, pkList *[]string, visiting map[reflect.Type]bool) {
+	if t.Kind() != reflect.Struct || visiting[t] {
+		return
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if !field.IsExported() {
@@ -237,7 +280,7 @@ func (cm *CrudManager) collectPrimaryKeysRecursive(t reflect.Type, pkList *[]str
 
 			// 如果是结构体，递归收集
 			if embeddedType.Kind() == reflect.Struct {
-				cm.collectPrimaryKeysRecursive(embeddedType, pkList)
+				cm.collectPrimaryKeysRecursiveVisited(embeddedType, pkList, visiting)
 				continue
 			}
 		}
@@ -257,6 +300,9 @@ func (cm *CrudManager) collectPrimaryKeysRecursive(t reflect.Type, pkList *[]str
 // entity: 实现了 IDbEntity 接口的实体。
 // 返回: 表名。
 func (cm *CrudManager) GetTableNameFromEntity(entity IDbEntity) string {
+	if isNilStrictValue(entity) {
+		return ""
+	}
 	return entity.TableName()
 }
 
@@ -264,6 +310,12 @@ func (cm *CrudManager) GetTableNameFromEntity(entity IDbEntity) string {
 // t: 实体类型。
 // 返回: 表名。
 func (cm *CrudManager) GetTableName(t reflect.Type) string {
+	if t == nil {
+		return ""
+	}
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
 	// 尝试创建实例并检查是否实现了 IDbEntity 接口
 	if t.Kind() == reflect.Struct {
 		// 创建指针实例
@@ -358,9 +410,15 @@ func (cm *CrudManager) IsAutoIncrement(field reflect.StructField) bool {
 // entity: 实体实例。
 // 返回: 主键列名，如果未找到则返回 "id"。
 func (cm *CrudManager) GetPrimaryKeyColumnName(entity any) string {
+	if cm == nil || entity == nil {
+		return "id"
+	}
 	t := reflect.TypeOf(entity)
-	if t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return "id"
 	}
 
 	// 先尝试从缓存读取（使用读锁）
@@ -404,6 +462,15 @@ func (cm *CrudManager) GetPrimaryKeyColumnName(entity any) string {
 // t: 结构体类型。
 // 返回: 主键列名，未找到返回空字符串。
 func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
+	return cm.findPrimaryKeyColumnRecursiveVisited(t, make(map[reflect.Type]bool))
+}
+
+func (cm *CrudManager) findPrimaryKeyColumnRecursiveVisited(t reflect.Type, visiting map[reflect.Type]bool) string {
+	if t.Kind() != reflect.Struct || visiting[t] {
+		return ""
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
 	// 遍历当前类型的所有字段
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
@@ -420,7 +487,7 @@ func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
 			// 如果嵌入的是结构体，递归查找其中的主键
 			// 这相当于在父类中查找 @Id 注解的字段
 			if embeddedType.Kind() == reflect.Struct {
-				colName := cm.findPrimaryKeyColumnRecursive(embeddedType)
+				colName := cm.findPrimaryKeyColumnRecursiveVisited(embeddedType, visiting)
 				if colName != "" {
 					// 在嵌入结构体（父类）中找到了主键
 					return colName
@@ -450,9 +517,18 @@ func (cm *CrudManager) findPrimaryKeyColumnRecursive(t reflect.Type) string {
 // entity: 实体实例。
 // 返回: 主键值，如果未找到则返回 nil。
 func (cm *CrudManager) GetPrimaryKeyValue(entity any) any {
+	if cm == nil || entity == nil {
+		return nil
+	}
 	v := reflect.ValueOf(entity)
-	if v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return nil
+		}
 		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return nil
 	}
 
 	return cm.findPrimaryKeyValueRecursive(v, v.Type())
@@ -460,6 +536,19 @@ func (cm *CrudManager) GetPrimaryKeyValue(entity any) any {
 
 // findPrimaryKeyValueRecursive 递归查找主键值，支持嵌入结构体。
 func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.Type) any {
+	return cm.findPrimaryKeyValueRecursiveVisited(v, t, make(map[reflect.Type]bool))
+}
+
+func (cm *CrudManager) findPrimaryKeyValueRecursiveVisited(
+	v reflect.Value,
+	t reflect.Type,
+	visiting map[reflect.Type]bool,
+) any {
+	if t.Kind() != reflect.Struct || visiting[t] {
+		return nil
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
@@ -480,7 +569,7 @@ func (cm *CrudManager) findPrimaryKeyValueRecursive(v reflect.Value, t reflect.T
 
 			// 如果是结构体，递归查找
 			if embeddedType.Kind() == reflect.Struct {
-				pkValue := cm.findPrimaryKeyValueRecursive(embeddedValue, embeddedType)
+				pkValue := cm.findPrimaryKeyValueRecursiveVisited(embeddedValue, embeddedType, visiting)
 				if pkValue != nil {
 					return pkValue
 				}
@@ -518,30 +607,52 @@ func (cm *CrudManager) ClearPrimaryKeyCache() {
 
 // AutoCreateTable 自动创建表。
 func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	t := reflect.TypeOf(entityType)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
+	if db == nil {
+		return NewQueryException("数据库连接未初始化")
 	}
-
-	tableName := cm.GetTableName(t)
-	if tableName == "" {
-		return NewDb233Exception("无法获取表名")
+	_, releaseGeneration, generationErr := db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return generationErr
 	}
+	defer releaseGeneration()
+	return cm.autoCreateTableUnderGenerationLease(db, entityType)
+}
 
-	// 获取建表策略
-	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
-
-	// 检查表是否已存在
-	exists, err := strategy.TableExists(db, tableName)
+// autoCreateTableUnderGenerationLease 要求调用方已持有 Db generation
+// 租约。供整批 schema orchestrator 使用，禁止再次 RLock。
+func (cm *CrudManager) autoCreateTableUnderGenerationLease(db *Db, entityType any) error {
+	t, tableName, err := validateCrudMigrationInput(cm, db, entityType)
 	if err != nil {
 		return err
 	}
-	if exists {
-		LogInfo("表已存在，跳过创建: %s", tableName)
-		return nil
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.autoCreateTableLocked(db, entityType, t, tableName, false)
+}
+
+// autoCreateTableLocked 要求调用方持有 cm.mu。knownMissing 用于 AutoMigrateTable
+// 已在同一锁域确认表不存在的路径，避免重入锁和重复探测。
+func (cm *CrudManager) autoCreateTableLocked(
+	db *Db,
+	entityType any,
+	t reflect.Type,
+	tableName string,
+	knownMissing bool,
+) error {
+	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
+	if strategy == nil {
+		return NewConfigurationException("未找到可用的建表策略")
+	}
+
+	if !knownMissing {
+		exists, existsErr := strategy.TableExists(db, tableName)
+		if existsErr != nil {
+			return NewQueryExceptionWithCause(existsErr, "检查表是否存在失败")
+		}
+		if exists {
+			LogInfo("表已存在，跳过创建: %s", tableName)
+			return nil
+		}
 	}
 
 	// 获取主键列名（已持有写锁，使用递归扫描支持嵌入结构体）
@@ -563,7 +674,7 @@ func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
 	// 生成建表SQL
 	createSQL, err := strategy.GenerateCreateTableSQL(tableName, t, uidColumn)
 	if err != nil {
-		return err
+		return NewQueryExceptionWithCause(err, "生成建表 SQL 失败")
 	}
 
 	// 执行建表
@@ -580,13 +691,39 @@ func (cm *CrudManager) AutoCreateTable(db *Db, entityType any) error {
 		if metaData != nil && len(metaData.Indexes) > 0 {
 			permissions := NewDefaultAutoDbPermission()
 			if err := cm.migrateIndexes(db, tableName, metaData.Indexes, permissions); err != nil {
-				LogError("索引迁移失败: 表=%s, 错误=%v", tableName, err)
-				// 索引迁移失败不影响表创建，只记录错误
+				return NewQueryExceptionWithCause(err, fmt.Sprintf("表 %s 已创建，但索引迁移失败", tableName))
 			}
 		}
 	}
 
 	return nil
+}
+
+func validateCrudMigrationInput(cm *CrudManager, db *Db, entityType any) (reflect.Type, string, error) {
+	if cm == nil {
+		return nil, "", NewValidationException("CrudManager 不能为 nil")
+	}
+	if db == nil || db.DataSource == nil {
+		return nil, "", NewQueryException("数据库连接未初始化")
+	}
+	if isNilStrictValue(entityType) {
+		return nil, "", NewValidationException("实体类型不能为 nil")
+	}
+	t := reflect.TypeOf(entityType)
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil, "", NewValidationException(fmt.Sprintf("实体类型必须是 struct 或 *struct，实际类型: %T", entityType))
+	}
+	if metadataErr := validateRepositoryTypeColumns(t); metadataErr != nil {
+		return nil, "", metadataErr
+	}
+	tableName := cm.GetTableName(t)
+	if tableName == "" {
+		return nil, "", NewDb233Exception("无法获取表名")
+	}
+	return t, tableName, nil
 }
 
 // tableExists 检查表是否存在（已废弃，使用策略模式）。
@@ -614,14 +751,21 @@ func (cm *CrudManager) getSQLType(field reflect.StructField) string {
 
 // AutoMigrateTableSimple 自动迁移表（创建或修改表结构，包括索引）- 简化版本，使用默认权限。
 func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
-	t := reflect.TypeOf(entityType)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
+	if db == nil {
+		return NewQueryException("数据库连接未初始化")
 	}
+	_, releaseGeneration, generationErr := db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
+	return cm.autoMigrateTableSimpleUnderGenerationLease(db, entityType)
+}
 
-	tableName := cm.GetTableName(t)
-	if tableName == "" {
-		return NewDb233Exception("无法获取表名")
+func (cm *CrudManager) autoMigrateTableSimpleUnderGenerationLease(db *Db, entityType any) error {
+	t, tableName, validationErr := validateCrudMigrationInput(cm, db, entityType)
+	if validationErr != nil {
+		return validationErr
 	}
 
 	// 获取建表策略
@@ -630,12 +774,12 @@ func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 	// 检查表是否已存在
 	exists, err := strategy.TableExists(db, tableName)
 	if err != nil {
-		return err
+		return NewQueryExceptionWithCause(err, "检查表是否存在失败")
 	}
 
 	if !exists {
-		// 表不存在，创建表（AutoCreateTable 会自己获取锁）
-		return cm.AutoCreateTable(db, entityType)
+		// 表不存在，复用已有 generation 租约，禁止重入 RLock。
+		return cm.autoCreateTableUnderGenerationLease(db, entityType)
 	}
 
 	// 表存在，获取锁后检查并添加缺失的列和索引
@@ -653,8 +797,7 @@ func (cm *CrudManager) AutoMigrateTableSimple(db *Db, entityType any) error {
 		if metaData != nil && len(metaData.Indexes) > 0 {
 			permissions := NewDefaultAutoDbPermission()
 			if err := cm.migrateIndexes(db, tableName, metaData.Indexes, permissions); err != nil {
-				LogError("索引迁移失败: 表=%s, 错误=%v", tableName, err)
-				// 索引迁移失败不影响列迁移，只记录错误
+				return NewQueryExceptionWithCause(err, fmt.Sprintf("表 %s 列迁移完成，但索引迁移失败", tableName))
 			}
 		}
 	}
@@ -675,54 +818,27 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 	// 获取现有列
 	existingColumns, err := strategy.GetExistingColumns(db, tableName)
 	if err != nil {
-		return err
+		return NewQueryExceptionWithCause(err, "获取现有列失败")
 	}
 
-	// 获取主键列名（已持有写锁，使用递归扫描支持嵌入结构体）
-	var uidColumn string
-	if t.Kind() == reflect.Struct {
-		// 检查缓存
-		if cached, exists := cm.typeToPrimaryKeyColumnCache[t]; exists {
-			uidColumn = cached
-		} else {
-			// 使用递归扫描查找主键（支持嵌入结构体）
-			uidColumn = cm.findPrimaryKeyColumnRecursive(t)
-			if uidColumn == "" {
-				uidColumn = "id"
-			}
-			cm.typeToPrimaryKeyColumnCache[t] = uidColumn
-		}
-	}
-
-	// 获取实体定义的列（使用统一的 GetColumnName 方法）
-	entityColumns := make(map[string]reflect.StructField)
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		if !field.IsExported() {
-			LogDebug("跳过未导出字段: 表=%s, 字段=%s", tableName, field.Name)
-			continue
-		}
-		colName := cm.GetColumnName(field)
-		if colName == "" {
-			LogDebug("跳过无有效列名的字段: 表=%s, 字段=%s", tableName, field.Name)
-			continue
-		}
-		entityColumns[colName] = field
-	}
+	entityColumns := cm.getEntityColumns(t)
 
 	// 找出缺失的列
-	var alterStatements []string
-	for colName, field := range entityColumns {
+	missingColumns := make([]string, 0)
+	for colName := range entityColumns {
 		if _, exists := existingColumns[colName]; !exists {
-			// 使用策略生成添加列的 SQL（新的3参数版本）
-			alterSQL, err := strategy.GenerateAddColumnSQL(tableName, field, colName)
-			if err != nil {
-				LogError("生成添加列SQL失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-				continue
-			}
-			alterStatements = append(alterStatements, alterSQL)
-			LogDebug("准备添加缺失的列: 表=%s, 列=%s, SQL=%s", tableName, colName, alterSQL)
+			missingColumns = append(missingColumns, colName)
 		}
+	}
+	sort.Strings(missingColumns)
+	alterStatements := make([]string, 0, len(missingColumns))
+	for _, colName := range missingColumns {
+		alterSQL, generateErr := strategy.GenerateAddColumnSQL(tableName, entityColumns[colName], colName)
+		if generateErr != nil {
+			return NewDb233ExceptionWithCause(generateErr, fmt.Sprintf("生成添加列 SQL 失败: 表=%s, 列=%s", tableName, colName))
+		}
+		alterStatements = append(alterStatements, alterSQL)
+		LogDebug("准备添加缺失的列: 表=%s, 列=%s, %s", tableName, colName, sqlForRuntimeLog(alterSQL))
 	}
 
 	if len(alterStatements) == 0 {
@@ -734,7 +850,7 @@ func (cm *CrudManager) alterTableAddMissingColumns(db *Db, t reflect.Type) error
 	for _, alterSQL := range alterStatements {
 		_, err = db.DataSource.Exec(alterSQL)
 		if err != nil {
-			return NewQueryExceptionWithCause(err, "修改表结构失败: "+tableName+", SQL: "+alterSQL)
+			return NewQueryExceptionWithCause(err, "修改表结构失败: "+tableName+", "+sqlForError(alterSQL))
 		}
 	}
 
@@ -766,29 +882,42 @@ func (cm *CrudManager) AutoCreateTableWithPermissions(db *Db, entityType any, pe
 
 // AutoMigrateTable 自动迁移表（支持创建列、更新列、删除列）。
 func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *AutoDbPermission) error {
+	if db == nil {
+		return NewQueryException("数据库连接未初始化")
+	}
+	_, releaseGeneration, generationErr := db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
+	return cm.autoMigrateTableUnderGenerationLease(db, entityType, permissions)
+}
+
+func (cm *CrudManager) autoMigrateTableUnderGenerationLease(
+	db *Db,
+	entityType any,
+	permissions *AutoDbPermission,
+) error {
 	if permissions == nil {
 		permissions = NewDefaultAutoDbPermission()
+	}
+	t, tableName, validationErr := validateCrudMigrationInput(cm, db, entityType)
+	if validationErr != nil {
+		return validationErr
 	}
 
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	t := reflect.TypeOf(entityType)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	tableName := cm.GetTableName(t)
-	if tableName == "" {
-		return NewDb233Exception("无法获取表名")
-	}
-
 	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
+	if strategy == nil {
+		return NewConfigurationException("未找到可用的建表策略")
+	}
 
 	// 检查表是否存在
 	exists, err := strategy.TableExists(db, tableName)
 	if err != nil {
-		return err
+		return NewQueryExceptionWithCause(err, "检查表是否存在失败")
 	}
 
 	// 表不存在，创建表
@@ -797,7 +926,7 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *Aut
 			LogWarn("创建表操作被禁用: 表=%s", tableName)
 			return nil
 		}
-		return cm.AutoCreateTable(db, entityType)
+		return cm.autoCreateTableLocked(db, entityType, t, tableName, true)
 	}
 
 	// 表已存在，检查列差异
@@ -806,19 +935,19 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *Aut
 	// 获取现有列
 	existingColumns, err := strategy.GetTableColumns(db, tableName)
 	if err != nil {
-		return fmt.Errorf("获取表列信息失败: %w", err)
+		return NewQueryExceptionWithCause(err, "获取表列信息失败")
 	}
 
 	// 获取实体字段
 	entityColumns := cm.getEntityColumns(t)
 
-	// 找出需要添加的列
-	columnsToAdd := make(map[string]reflect.StructField)
-	for colName, field := range entityColumns {
+	columnsToAdd := make([]string, 0)
+	for colName := range entityColumns {
 		if _, exists := existingColumns[colName]; !exists {
-			columnsToAdd[colName] = field
+			columnsToAdd = append(columnsToAdd, colName)
 		}
 	}
+	sort.Strings(columnsToAdd)
 
 	// 找出需要删除的列
 	columnsToDelete := make([]string, 0)
@@ -827,52 +956,50 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *Aut
 			columnsToDelete = append(columnsToDelete, colName)
 		}
 	}
+	sort.Strings(columnsToDelete)
 
-	// 添加列
-	if len(columnsToAdd) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
-		for colName, field := range columnsToAdd {
-			sql, err := strategy.GenerateAddColumnSQL(tableName, field, colName)
-			if err != nil {
-				LogError("生成添加列SQL失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-				continue
+	type columnDDL struct {
+		action string
+		column string
+		sql    string
+	}
+	ddlPlan := make([]columnDDL, 0, len(columnsToAdd)+len(columnsToDelete))
+	if permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
+		for _, colName := range columnsToAdd {
+			sqlText, generateErr := strategy.GenerateAddColumnSQL(tableName, entityColumns[colName], colName)
+			if generateErr != nil {
+				return NewDb233ExceptionWithCause(generateErr, fmt.Sprintf("生成添加列 SQL 失败: 表=%s, 列=%s", tableName, colName))
 			}
-
-			_, err = db.DataSource.Exec(sql)
-			if err != nil {
-				LogError("添加列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-			} else {
-				LogInfo("添加列成功: 表=%s, 列=%s", tableName, colName)
-			}
+			ddlPlan = append(ddlPlan, columnDDL{action: "添加", column: colName, sql: sqlText})
 		}
 	}
-
-	// 删除列
-	if len(columnsToDelete) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeDeleteColumn) {
+	if permissions.IsAllowed(EnumAutoDbOperateTypeDeleteColumn) {
 		for _, colName := range columnsToDelete {
-			sql, err := strategy.GenerateDropColumnSQL(tableName, colName)
-			if err != nil {
-				LogError("生成删除列SQL失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-				continue
+			sqlText, generateErr := strategy.GenerateDropColumnSQL(tableName, colName)
+			if generateErr != nil {
+				return NewDb233ExceptionWithCause(generateErr, fmt.Sprintf("生成删除列 SQL 失败: 表=%s, 列=%s", tableName, colName))
 			}
-
-			_, err = db.DataSource.Exec(sql)
-			if err != nil {
-				LogError("删除列失败: 表=%s, 列=%s, 错误=%v", tableName, colName, err)
-			} else {
-				LogInfo("删除列成功: 表=%s, 列=%s", tableName, colName)
-			}
+			ddlPlan = append(ddlPlan, columnDDL{action: "删除", column: colName, sql: sqlText})
 		}
 	}
+	for _, statement := range ddlPlan {
+		if _, execErr := db.DataSource.Exec(statement.sql); execErr != nil {
+			return NewQueryExceptionWithCause(
+				execErr,
+				fmt.Sprintf("%s列失败: 表=%s, 列=%s, %s", statement.action, tableName, statement.column, sqlForError(statement.sql)),
+			)
+		}
+		LogInfo("%s列成功: 表=%s, 列=%s", statement.action, tableName, statement.column)
+	}
 
-	LogInfo("表迁移完成: 表=%s, 添加列=%d, 删除列=%d", tableName, len(columnsToAdd), len(columnsToDelete))
+	LogInfo("表列迁移完成: 表=%s, 实际执行=%d", tableName, len(ddlPlan))
 
 	// 迁移索引（如果实体实现了 ITableMetaDataProvider 接口）
 	if entity, ok := entityType.(IDbEntity); ok {
 		metaData := GetTableMetaData(entity)
 		if metaData != nil && len(metaData.Indexes) > 0 {
 			if err := cm.migrateIndexes(db, tableName, metaData.Indexes, permissions); err != nil {
-				LogError("索引迁移失败: 表=%s, 错误=%v", tableName, err)
-				// 索引迁移失败不影响列迁移，只记录错误
+				return NewQueryExceptionWithCause(err, fmt.Sprintf("表 %s 列迁移完成，但索引迁移失败", tableName))
 			}
 		}
 	}
@@ -882,94 +1009,132 @@ func (cm *CrudManager) AutoMigrateTable(db *Db, entityType any, permissions *Aut
 
 // migrateIndexes 迁移索引（增删改）。
 func (cm *CrudManager) migrateIndexes(db *Db, tableName string, expectedIndexes []*IndexMetaData, permissions *AutoDbPermission) error {
+	if db == nil || db.DataSource == nil {
+		return NewQueryException("数据库连接未初始化")
+	}
+	if permissions == nil {
+		permissions = NewDefaultAutoDbPermission()
+	}
 	strategy := GetStrategyFactoryInstance().GetStrategy(db.DatabaseType)
+	if strategy == nil {
+		return NewConfigurationException("未找到可用的建表策略")
+	}
 
 	// 获取现有索引
 	existingIndexes, err := strategy.GetExistingIndexes(db, tableName)
 	if err != nil {
-		return fmt.Errorf("获取现有索引失败: %w", err)
+		return NewQueryExceptionWithCause(err, "获取现有索引失败")
 	}
 
-	// 构建期望索引的映射（索引名 -> 索引信息）
-	expectedIndexMap := make(map[string]*IndexMetaData)
-	for _, idx := range expectedIndexes {
+	expected := append([]*IndexMetaData(nil), expectedIndexes...)
+	sort.SliceStable(expected, func(i, j int) bool {
+		if expected[i] == nil {
+			return true
+		}
+		if expected[j] == nil {
+			return false
+		}
+		return expected[i].IndexName < expected[j].IndexName
+	})
+	expectedIndexMap := make(map[string]*IndexMetaData, len(expected))
+	for index, idx := range expected {
+		if idx == nil || idx.IndexName == "" || len(idx.Columns) == 0 {
+			return NewValidationException(fmt.Sprintf("期望索引无效: index=%d", index))
+		}
+		if identifierErr := validateRepositoryIdentifierSegment("索引名", idx.IndexName); identifierErr != nil {
+			return identifierErr
+		}
+		for _, columnName := range idx.Columns {
+			if identifierErr := validateRepositoryColumnIdentifier(columnName); identifierErr != nil {
+				return identifierErr
+			}
+		}
+		if _, duplicate := expectedIndexMap[idx.IndexName]; duplicate {
+			return NewValidationException(fmt.Sprintf("期望索引名重复: %s", idx.IndexName))
+		}
 		expectedIndexMap[idx.IndexName] = idx
 	}
 
-	// 找出需要添加的索引
-	indexesToAdd := make([]*IndexMetaData, 0)
-	for _, expectedIdx := range expectedIndexes {
-		if _, exists := existingIndexes[expectedIdx.IndexName]; !exists {
-			indexesToAdd = append(indexesToAdd, expectedIdx)
-		} else {
-			// 检查索引是否需要更新（列不同）
-			existingIdx := existingIndexes[expectedIdx.IndexName]
-			if !indexEqual(existingIdx, expectedIdx) {
-				// 先删除旧索引，再添加新索引
-				dropSQL, err := strategy.GenerateDropIndexSQL(tableName, existingIdx.IndexName)
-				if err != nil {
-					LogError("生成删除索引SQL失败: 表=%s, 索引=%s, 错误=%v", tableName, existingIdx.IndexName, err)
-					continue
+	type indexDDL struct {
+		action string
+		name   string
+		sql    string
+	}
+	ddlPlan := make([]indexDDL, 0)
+	allowCreate := permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn)
+	allowDelete := permissions.IsAllowed(EnumAutoDbOperateTypeDeleteColumn)
+	for _, expectedIdx := range expected {
+		existingIdx, exists := existingIndexes[expectedIdx.IndexName]
+		if !exists {
+			if allowCreate {
+				createSQL, generateErr := strategy.GenerateCreateIndexSQL(tableName, expectedIdx)
+				if generateErr != nil {
+					return NewDb233ExceptionWithCause(generateErr, fmt.Sprintf("生成创建索引 SQL 失败: 表=%s, 索引=%s", tableName, expectedIdx.IndexName))
 				}
-				_, err = db.DataSource.Exec(dropSQL)
-				if err != nil {
-					LogError("删除旧索引失败: 表=%s, 索引=%s, 错误=%v", tableName, existingIdx.IndexName, err)
-					continue
-				}
-				LogInfo("删除旧索引: 表=%s, 索引=%s", tableName, existingIdx.IndexName)
-				indexesToAdd = append(indexesToAdd, expectedIdx)
+				ddlPlan = append(ddlPlan, indexDDL{action: "创建", name: expectedIdx.IndexName, sql: createSQL})
 			}
+			continue
+		}
+		if existingIdx == nil {
+			return NewValidationException(fmt.Sprintf("数据库返回空索引元数据: 表=%s, 索引=%s", tableName, expectedIdx.IndexName))
+		}
+		if identifierErr := validateRepositoryIdentifierSegment("现有索引名", existingIdx.IndexName); identifierErr != nil {
+			return identifierErr
+		}
+		if indexEqual(existingIdx, expectedIdx) {
+			continue
+		}
+		// 替换索引必须同时允许删除和创建；禁止只删不建。
+		if !allowCreate || !allowDelete {
+			LogWarn("索引定义不同但权限不足，保持原索引: 表=%s, 索引=%s", tableName, expectedIdx.IndexName)
+			continue
+		}
+		dropSQL, dropErr := strategy.GenerateDropIndexSQL(tableName, existingIdx.IndexName)
+		if dropErr != nil {
+			return NewDb233ExceptionWithCause(dropErr, fmt.Sprintf("生成删除旧索引 SQL 失败: 表=%s, 索引=%s", tableName, existingIdx.IndexName))
+		}
+		createSQL, createErr := strategy.GenerateCreateIndexSQL(tableName, expectedIdx)
+		if createErr != nil {
+			return NewDb233ExceptionWithCause(createErr, fmt.Sprintf("生成替换索引 SQL 失败: 表=%s, 索引=%s", tableName, expectedIdx.IndexName))
+		}
+		ddlPlan = append(ddlPlan,
+			indexDDL{action: "删除旧", name: existingIdx.IndexName, sql: dropSQL},
+			indexDDL{action: "创建替换", name: expectedIdx.IndexName, sql: createSQL},
+		)
+	}
+
+	extraIndexes := make([]string, 0)
+	if allowDelete {
+		for existingName := range existingIndexes {
+			if identifierErr := validateRepositoryIdentifierSegment("现有索引名", existingName); identifierErr != nil {
+				return identifierErr
+			}
+			if _, exists := expectedIndexMap[existingName]; !exists {
+				extraIndexes = append(extraIndexes, existingName)
+			}
+		}
+		sort.Strings(extraIndexes)
+		for _, indexName := range extraIndexes {
+			dropSQL, generateErr := strategy.GenerateDropIndexSQL(tableName, indexName)
+			if generateErr != nil {
+				return NewDb233ExceptionWithCause(generateErr, fmt.Sprintf("生成删除索引 SQL 失败: 表=%s, 索引=%s", tableName, indexName))
+			}
+			ddlPlan = append(ddlPlan, indexDDL{action: "删除", name: indexName, sql: dropSQL})
 		}
 	}
 
-	// 找出需要删除的索引
-	indexesToDelete := make([]string, 0)
-	for existingName := range existingIndexes {
-		if _, exists := expectedIndexMap[existingName]; !exists {
-			indexesToDelete = append(indexesToDelete, existingName)
+	for _, statement := range ddlPlan {
+		if _, execErr := db.DataSource.Exec(statement.sql); execErr != nil {
+			return NewQueryExceptionWithCause(
+				execErr,
+				fmt.Sprintf("%s索引失败: 表=%s, 索引=%s, %s", statement.action, tableName, statement.name, sqlForError(statement.sql)),
+			)
 		}
+		LogInfo("%s索引成功: 表=%s, 索引=%s", statement.action, tableName, statement.name)
 	}
-
-	// 添加索引
-	if len(indexesToAdd) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeCreateColumn) {
-		for _, idx := range indexesToAdd {
-			createSQL, err := strategy.GenerateCreateIndexSQL(tableName, idx)
-			if err != nil {
-				LogError("生成创建索引SQL失败: 表=%s, 索引=%s, 错误=%v", tableName, idx.IndexName, err)
-				continue
-			}
-
-			_, err = db.DataSource.Exec(createSQL)
-			if err != nil {
-				LogError("创建索引失败: 表=%s, 索引=%s, 错误=%v", tableName, idx.IndexName, err)
-			} else {
-				LogInfo("创建索引成功: 表=%s, 索引=%s, 列=%v", tableName, idx.IndexName, idx.Columns)
-			}
-		}
+	if len(ddlPlan) > 0 {
+		LogInfo("索引迁移完成: 表=%s, 实际执行=%d", tableName, len(ddlPlan))
 	}
-
-	// 删除索引
-	if len(indexesToDelete) > 0 && permissions.IsAllowed(EnumAutoDbOperateTypeDeleteColumn) {
-		for _, indexName := range indexesToDelete {
-			dropSQL, err := strategy.GenerateDropIndexSQL(tableName, indexName)
-			if err != nil {
-				LogError("生成删除索引SQL失败: 表=%s, 索引=%s, 错误=%v", tableName, indexName, err)
-				continue
-			}
-
-			_, err = db.DataSource.Exec(dropSQL)
-			if err != nil {
-				LogError("删除索引失败: 表=%s, 索引=%s, 错误=%v", tableName, indexName, err)
-			} else {
-				LogInfo("删除索引成功: 表=%s, 索引=%s", tableName, indexName)
-			}
-		}
-	}
-
-	if len(indexesToAdd) > 0 || len(indexesToDelete) > 0 {
-		LogInfo("索引迁移完成: 表=%s, 添加索引=%d, 删除索引=%d", tableName, len(indexesToAdd), len(indexesToDelete))
-	}
-
 	return nil
 }
 
@@ -995,9 +1160,35 @@ func indexEqual(idx1, idx2 *IndexMetaData) bool {
 // getEntityColumns 获取实体的所有列。
 func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.StructField {
 	columns := make(map[string]reflect.StructField)
+	cm.collectEntityColumns(t, columns, make(map[reflect.Type]bool))
+	return columns
+}
 
+func (cm *CrudManager) collectEntityColumns(
+	t reflect.Type,
+	columns map[string]reflect.StructField,
+	visiting map[reflect.Type]bool,
+) {
+	if t.Kind() != reflect.Struct || visiting[t] {
+		return
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+			if embeddedType.Kind() == reflect.Struct {
+				cm.collectEntityColumns(embeddedType, columns, visiting)
+				continue
+			}
+		}
 		tag := field.Tag.Get("db")
 
 		// 跳过没有 db 标签或标记为忽略的字段
@@ -1025,8 +1216,6 @@ func (cm *CrudManager) getEntityColumns(t reflect.Type) map[string]reflect.Struc
 			columns[columnName] = field
 		}
 	}
-
-	return columns
 }
 
 // AutoMigrateAllTablesConcurrently 并发迁移所有表。
@@ -1046,16 +1235,16 @@ func (cm *CrudManager) AutoMigrateAllTablesConcurrently(db *Db, entityTypes []an
 	results := migrationManager.MigrateTablesBatch(db, entityTypes)
 
 	// 检查失败的任务
-	failedCount := 0
+	migrationErrors := make([]error, 0)
 	for tableName, err := range results {
 		if err != nil {
-			failedCount++
-			LogError("迁移失败: 表=%s, 错误=%v", tableName, err)
+			migrationErrors = append(migrationErrors, fmt.Errorf("迁移表 %s: %w", safeValueForLog(tableName), err))
+			LogError("迁移失败: 表=%s, 错误=%s", safeValueForLog(tableName), safeErrorForLog(err))
 		}
 	}
 
-	if failedCount > 0 {
-		return fmt.Errorf("并发迁移完成，但有 %d 个任务失败", failedCount)
+	if len(migrationErrors) > 0 {
+		return errors.Join(migrationErrors...)
 	}
 
 	return nil

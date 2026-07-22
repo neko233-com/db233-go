@@ -38,8 +38,12 @@ func NewConcurrentMigrationManager(config *ConcurrentMigrationConfig) *Concurren
 	if config == nil {
 		config = NewDefaultConcurrentMigrationConfig()
 	}
+	copyConfig := *config
+	if copyConfig.Permission == nil {
+		copyConfig.Permission = NewSafeAutoDbPermission()
+	}
 	return &ConcurrentMigrationManager{
-		config: config,
+		config: &copyConfig,
 	}
 }
 
@@ -48,6 +52,17 @@ func NewConcurrentMigrationManager(config *ConcurrentMigrationConfig) *Concurren
 // entities: 实体列表
 // 返回: 迁移结果（表名到错误的映射，成功的表为 nil）
 func (m *ConcurrentMigrationManager) MigrateTablesBatch(db *Db, entities []any) map[string]error {
+	if m == nil || m.config == nil {
+		return map[string]error{"__migration__": NewValidationException("并发迁移管理器未初始化")}
+	}
+	if db == nil || db.DataSource == nil {
+		return map[string]error{"__migration__": NewQueryException("数据库连接未初始化")}
+	}
+	_, releaseGeneration, generationErr := db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return map[string]error{"__migration__": generationErr}
+	}
+	defer releaseGeneration()
 	if len(entities) == 0 {
 		return make(map[string]error)
 	}
@@ -71,7 +86,7 @@ func (m *ConcurrentMigrationManager) migrateTablesSequential(db *Db, entities []
 		results[tableName] = err
 
 		if err != nil {
-			LogError("表迁移失败: 表=%s, 错误=%v", tableName, err)
+			LogError("表迁移失败: 表=%s, 错误=%s", safeValueForLog(tableName), safeErrorForLog(err))
 		} else {
 			LogInfo("表迁移成功: 表=%s", tableName)
 		}
@@ -117,7 +132,7 @@ func (m *ConcurrentMigrationManager) migrateTablesConcurrent(db *Db, entities []
 				resultsMu.Unlock()
 
 				if err != nil {
-					LogError("协程 %d 表迁移失败: 表=%s, 错误=%v", workerID, tableName, err)
+					LogError("协程 %d 表迁移失败: 表=%s, 错误=%s", workerID, safeValueForLog(tableName), safeErrorForLog(err))
 				} else {
 					LogInfo("协程 %d 表迁移成功: 表=%s", workerID, tableName)
 				}
@@ -136,17 +151,20 @@ func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity any) error {
 	// 获取元数据
 	metadata, err := GetEntityMetadataCacheInstance().GetOrBuild(entity)
 	if err != nil {
-		return fmt.Errorf("获取实体元数据失败: %w", err)
+		return NewQueryExceptionWithCause(err, "获取实体元数据失败")
 	}
 
 	// 获取策略
 	factory := GetStrategyFactoryInstance()
 	strategy := factory.GetStrategy(db.DatabaseType)
+	if strategy == nil {
+		return NewConfigurationException("未找到可用的建表策略")
+	}
 
 	// 检查表是否存在
 	exists, err := strategy.TableExists(db, metadata.TableName)
 	if err != nil {
-		return fmt.Errorf("检查表是否存在失败: %w", err)
+		return NewQueryExceptionWithCause(err, "检查表是否存在失败")
 	}
 
 	if !exists {
@@ -166,14 +184,14 @@ func (m *ConcurrentMigrationManager) migrateTable(db *Db, entity any) error {
 func (m *ConcurrentMigrationManager) createTable(db *Db, entity any, metadata *EntityMetadata, strategy ITableCreationStrategy) error {
 	createSQL, err := strategy.GenerateCreateTableSQL(metadata.TableName, metadata.EntityType, metadata.PrimaryKeyColumn)
 	if err != nil {
-		return fmt.Errorf("生成建表 SQL 失败: %w", err)
+		return NewQueryExceptionWithCause(err, "生成建表 SQL 失败")
 	}
 
-	LogInfo("创建表: 表=%s, SQL=%s", metadata.TableName, createSQL)
+	LogInfo("创建表: 表=%s, %s", metadata.TableName, sqlForRuntimeLog(createSQL))
 
 	_, err = db.DataSource.Exec(createSQL)
 	if err != nil {
-		return fmt.Errorf("执行建表 SQL 失败: %w", err)
+		return NewQueryExceptionWithCause(err, "执行建表 SQL 失败: "+sqlForError(createSQL))
 	}
 
 	return nil
@@ -184,7 +202,7 @@ func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity any, me
 	// 获取现有列
 	existingColumns, err := strategy.GetExistingColumns(db, metadata.TableName)
 	if err != nil {
-		return fmt.Errorf("获取现有列失败: %w", err)
+		return NewQueryExceptionWithCause(err, "获取现有列失败")
 	}
 
 	entityType := metadata.EntityType
@@ -207,15 +225,14 @@ func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity any, me
 				// 列不存在，添加新列
 				addSQL, err := strategy.GenerateAddColumnSQL(metadata.TableName, field, colName)
 				if err != nil {
-					LogError("生成添加列 SQL 失败: 表=%s, 列=%s, 错误=%v", metadata.TableName, colName, err)
-					continue
+					return NewDb233ExceptionWithCause(err, fmt.Sprintf("生成添加列 SQL 失败: 表=%s, 列=%s", metadata.TableName, colName))
 				}
 
-				LogInfo("添加列: 表=%s, 列=%s, SQL=%s", metadata.TableName, colName, addSQL)
+				LogInfo("添加列: 表=%s, 列=%s, %s", metadata.TableName, colName, sqlForRuntimeLog(addSQL))
 
 				_, err = db.DataSource.Exec(addSQL)
 				if err != nil {
-					LogError("执行添加列 SQL 失败: 表=%s, 列=%s, 错误=%v", metadata.TableName, colName, err)
+					return NewQueryExceptionWithCause(err, fmt.Sprintf("执行添加列 SQL 失败: 表=%s, 列=%s, %s", metadata.TableName, colName, sqlForError(addSQL)))
 				}
 			}
 		}
@@ -234,15 +251,14 @@ func (m *ConcurrentMigrationManager) updateTableStructure(db *Db, entity any, me
 			if !entityColumns[existingCol] {
 				dropSQL, err := strategy.GenerateDropColumnSQL(metadata.TableName, existingCol)
 				if err != nil {
-					LogError("生成删除列 SQL 失败: 表=%s, 列=%s, 错误=%v", metadata.TableName, existingCol, err)
-					continue
+					return NewDb233ExceptionWithCause(err, fmt.Sprintf("生成删除列 SQL 失败: 表=%s, 列=%s", metadata.TableName, existingCol))
 				}
 
-				LogWarn("删除列: 表=%s, 列=%s, SQL=%s", metadata.TableName, existingCol, dropSQL)
+				LogWarn("删除列: 表=%s, 列=%s, %s", metadata.TableName, existingCol, sqlForRuntimeLog(dropSQL))
 
 				_, err = db.DataSource.Exec(dropSQL)
 				if err != nil {
-					LogError("执行删除列 SQL 失败: 表=%s, 列=%s, 错误=%v", metadata.TableName, existingCol, err)
+					return NewQueryExceptionWithCause(err, fmt.Sprintf("执行删除列 SQL 失败: 表=%s, 列=%s, %s", metadata.TableName, existingCol, sqlForError(dropSQL)))
 				}
 			}
 		}

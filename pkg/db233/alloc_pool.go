@@ -48,6 +48,11 @@ type batchUpsertScratch struct {
 
 var batchUpsertScratchPool sync.Pool
 
+const (
+	maxPooledBatchScratchCapacity = 4096
+	maxPooledJSONBufferCapacity   = 1 << 20
+)
+
 func acquireBatchUpsertScratch() *batchUpsertScratch {
 	v := batchUpsertScratchPool.Get()
 	if v == nil {
@@ -69,6 +74,24 @@ func releaseBatchUpsertScratch(s *batchUpsertScratch) {
 	if s == nil {
 		return
 	}
+	clear(s.columns)
+	clear(s.placeholders)
+	clear(s.allValues)
+	clear(s.updateParts)
+	clear(s.rowValues)
+	clear(s.fieldMap)
+	if cap(s.columns) > maxPooledBatchScratchCapacity ||
+		cap(s.placeholders) > maxPooledBatchScratchCapacity ||
+		cap(s.allValues) > maxPooledBatchScratchCapacity ||
+		cap(s.updateParts) > maxPooledBatchScratchCapacity ||
+		cap(s.rowValues) > maxPooledBatchScratchCapacity {
+		return
+	}
+	s.columns = s.columns[:0]
+	s.placeholders = s.placeholders[:0]
+	s.allValues = s.allValues[:0]
+	s.updateParts = s.updateParts[:0]
+	s.rowValues = s.rowValues[:0]
 	batchUpsertScratchPool.Put(s)
 }
 
@@ -95,6 +118,10 @@ func releaseEntitySlice(s []IDbEntity) {
 	if s == nil {
 		return
 	}
+	clear(s)
+	if cap(s) > maxPooledBatchScratchCapacity {
+		return
+	}
 	s = s[:0]
 	entitySlicePool.Put(&s)
 }
@@ -115,6 +142,10 @@ func acquireByteBuffer() *bytes.Buffer {
 
 func releaseByteBuffer(b *bytes.Buffer) {
 	if b == nil {
+		return
+	}
+	clear(b.Bytes())
+	if b.Cap() > maxPooledJSONBufferCapacity {
 		return
 	}
 	b.Reset()

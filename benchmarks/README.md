@@ -6,7 +6,7 @@ Go ORM 框架对比 + 稳定性压测 + **发版门禁**（需 MySQL）。
 
 ```bash
 # 项目根目录
-./scripts/run-benchmark.sh      # Linux / macOS
+bash ./scripts/run-benchmark.sh # Linux / macOS
 ./scripts/run-benchmark.ps1     # Windows PowerShell
 ```
 
@@ -18,7 +18,7 @@ Go ORM 框架对比 + 稳定性压测 + **发版门禁**（需 MySQL）。
 cd benchmarks && go mod tidy
 ```
 
-连接：项目根 `config.local.json`（或 `127.0.0.1` 本地 MySQL）。
+连接：`DB233_TEST_DSN` 或项目根未跟踪的 `config.local.json`；只允许 loopback/本机 Unix socket。
 
 ## 分项命令
 

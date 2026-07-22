@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/neko233-com/db233-go/pkg/db233"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -17,6 +18,11 @@ func mustSQLX(t *testing.T, dsn string) *sqlx.DB {
 	}
 	db.SetMaxOpenConns(50)
 	db.SetMaxIdleConns(10)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("关闭 sqlx 连接失败: %s", db233.SafeErrorSummary(err))
+		}
+	})
 	return db
 }
 
@@ -34,6 +40,11 @@ func mustGORM(t *testing.T, dsn string) *gorm.DB {
 	}
 	sqlDB.SetMaxOpenConns(50)
 	sqlDB.SetMaxIdleConns(10)
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("关闭 GORM 连接失败: %s", db233.SafeErrorSummary(err))
+		}
+	})
 	return db
 }
 

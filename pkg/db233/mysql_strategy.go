@@ -2,6 +2,7 @@ package db233
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -26,8 +27,23 @@ func (s *MySQLStrategy) GetDatabaseType() EnumDatabaseType {
 
 // 生成建表 SQL（支持嵌入结构体）
 func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType reflect.Type, uidColumn string) (string, error) {
+	if s == nil || s.cm == nil {
+		return "", NewConfigurationException("MySQL 建表策略未初始化")
+	}
 	if tableName == "" {
 		return "", NewDb233Exception("无法获取表名")
+	}
+	if entityType == nil {
+		return "", NewValidationException("实体类型不能为 nil")
+	}
+	for entityType.Kind() == reflect.Ptr {
+		entityType = entityType.Elem()
+	}
+	if entityType.Kind() != reflect.Struct {
+		return "", NewValidationException("实体类型必须是 struct")
+	}
+	if metadataErr := validateRepositoryTypeColumns(entityType); metadataErr != nil {
+		return "", metadataErr
 	}
 
 	var columns []string
@@ -44,9 +60,9 @@ func (s *MySQLStrategy) GenerateCreateTableSQL(tableName string, entityType refl
 		return "", NewDb233Exception(fmt.Sprintf("表 %s 没有可用的列", tableName))
 	}
 
-	createSQL := fmt.Sprintf("CREATE TABLE `%s` (\n\t%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", tableName, strings.Join(columns, ",\n\t"))
+	createSQL := fmt.Sprintf("CREATE TABLE %s (\n\t%s\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci", quoteMySQLQualifiedIdentifier(tableName), strings.Join(columns, ",\n\t"))
 
-	LogDebug("生成 MySQL 建表SQL: 表=%s, SQL=%s", tableName, createSQL)
+	LogDebug("生成 MySQL 建表SQL: 表=%s, %s", tableName, sqlForRuntimeLog(createSQL))
 	return createSQL, nil
 }
 
@@ -83,7 +99,7 @@ func (s *MySQLStrategy) collectFieldsForCreateTable(entityType reflect.Type, tab
 
 		// 获取 SQL 类型
 		colType := s.GetSQLType(field)
-		colDef := fmt.Sprintf("`%s` %s", colName, colType)
+		colDef := fmt.Sprintf("%s %s", quoteMySQLIdentifier(colName), colType)
 
 		// 获取 db 标签（用于其他检查）
 		dbTag := field.Tag.Get("db")
@@ -112,7 +128,7 @@ func (s *MySQLStrategy) collectFieldsForCreateTable(entityType reflect.Type, tab
 		*columns = append(*columns, colDef)
 
 		if isPrimaryKey {
-			*primaryKeys = append(*primaryKeys, fmt.Sprintf("`%s`", colName))
+			*primaryKeys = append(*primaryKeys, quoteMySQLIdentifier(colName))
 		}
 	}
 }
@@ -206,6 +222,9 @@ func (s *MySQLStrategy) isComplexTypeForSQL(kind reflect.Kind, fieldType reflect
 
 // 检查表是否存在
 func (s *MySQLStrategy) TableExists(db *Db, tableName string) (bool, error) {
+	if db == nil || db.DataSource == nil {
+		return false, NewQueryException("数据库连接未初始化")
+	}
 	query := "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?"
 	row := db.DataSource.QueryRow(query, tableName)
 
@@ -219,15 +238,23 @@ func (s *MySQLStrategy) TableExists(db *Db, tableName string) (bool, error) {
 }
 
 // 获取现有表的列信息
-func (s *MySQLStrategy) GetExistingColumns(db *Db, tableName string) (map[string]bool, error) {
-	query := "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
-	rows, err := db.DataSource.Query(query, tableName)
-	if err != nil {
-		return nil, NewQueryExceptionWithCause(err, "获取表列信息失败")
+func (s *MySQLStrategy) GetExistingColumns(db *Db, tableName string) (columns map[string]bool, err error) {
+	if db == nil || db.DataSource == nil {
+		return nil, NewQueryException("数据库连接未初始化")
 	}
-	defer rows.Close()
+	query := "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+	rows, queryErr := db.DataSource.Query(query, tableName)
+	if queryErr != nil {
+		return nil, NewQueryExceptionWithCause(queryErr, "获取表列信息失败")
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			columns = nil
+			err = errors.Join(err, NewQueryExceptionWithCause(closeErr, "关闭表列信息结果集失败"))
+		}
+	}()
 
-	columns := make(map[string]bool)
+	columns = make(map[string]bool)
 	for rows.Next() {
 		var colName string
 		if err := rows.Scan(&colName); err != nil {
@@ -235,14 +262,20 @@ func (s *MySQLStrategy) GetExistingColumns(db *Db, tableName string) (map[string
 		}
 		columns[colName] = true
 	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, NewQueryExceptionWithCause(rowsErr, "遍历表列信息失败")
+	}
 
 	return columns, nil
 }
 
 // 生成添加列的 SQL (old version - kept for backward compatibility)
 func (s *MySQLStrategy) GenerateAddColumnSQLOld(tableName string, colName string, colType string, field reflect.StructField, isPrimaryKey bool) string {
+	if s == nil || s.cm == nil || tableName == "" || colName == "" || colType == "" {
+		return ""
+	}
 	dbTag := field.Tag.Get("db")
-	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
+	colDef := fmt.Sprintf("ADD COLUMN %s %s", quoteMySQLIdentifier(colName), colType)
 
 	// 检查是否自增（支持两种方式）
 	isAutoIncrement := s.cm.IsAutoIncrement(field)
@@ -258,15 +291,21 @@ func (s *MySQLStrategy) GenerateAddColumnSQLOld(tableName string, colName string
 		colDef += " NULL"
 	}
 
-	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef)
+	return fmt.Sprintf("ALTER TABLE %s %s", quoteMySQLQualifiedIdentifier(tableName), colDef)
 }
 
 // 生成添加列的 SQL (new interface version)
 func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, field reflect.StructField, colName string) (string, error) {
+	if s == nil || s.cm == nil {
+		return "", NewConfigurationException("MySQL 建表策略未初始化")
+	}
 	colType := s.GetSQLType(field)
 	dbTag := field.Tag.Get("db")
 
-	colDef := fmt.Sprintf("ADD COLUMN `%s` %s", colName, colType)
+	if tableName == "" || colName == "" {
+		return "", NewValidationException("表名和列名不能为空")
+	}
+	colDef := fmt.Sprintf("ADD COLUMN %s %s", quoteMySQLIdentifier(colName), colType)
 
 	// 检查是否自增（支持两种方式）
 	isAutoIncrement := s.cm.IsAutoIncrement(field)
@@ -284,11 +323,14 @@ func (s *MySQLStrategy) GenerateAddColumnSQL(tableName string, field reflect.Str
 		colDef += " NULL"
 	}
 
-	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef), nil
+	return fmt.Sprintf("ALTER TABLE %s %s", quoteMySQLQualifiedIdentifier(tableName), colDef), nil
 }
 
 // 获取表的所有列信息
-func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (map[string]ColumnInfo, error) {
+func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (columns map[string]ColumnInfo, err error) {
+	if db == nil || db.DataSource == nil {
+		return nil, NewQueryException("数据库连接未初始化")
+	}
 	query := `
 		SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT
 		FROM information_schema.COLUMNS
@@ -296,19 +338,24 @@ func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (map[string]Co
 		ORDER BY ORDINAL_POSITION
 	`
 
-	rows, err := db.DataSource.Query(query, tableName)
-	if err != nil {
-		return nil, fmt.Errorf("查询表列信息失败: %w", err)
+	rows, queryErr := db.DataSource.Query(query, tableName)
+	if queryErr != nil {
+		return nil, NewQueryExceptionWithCause(queryErr, "查询表列信息失败")
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			columns = nil
+			err = errors.Join(err, NewQueryExceptionWithCause(closeErr, "关闭表列信息结果集失败"))
+		}
+	}()
 
-	columns := make(map[string]ColumnInfo)
+	columns = make(map[string]ColumnInfo)
 	for rows.Next() {
 		var colName, colType, isNullable, columnKey string
 		var columnDefault sql.NullString
 
 		if err := rows.Scan(&colName, &colType, &isNullable, &columnKey, &columnDefault); err != nil {
-			return nil, fmt.Errorf("扫描列信息失败: %w", err)
+			return nil, NewQueryExceptionWithCause(err, "扫描列信息失败")
 		}
 
 		info := ColumnInfo{
@@ -324,29 +371,41 @@ func (s *MySQLStrategy) GetTableColumns(db *Db, tableName string) (map[string]Co
 
 		columns[colName] = info
 	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, NewQueryExceptionWithCause(rowsErr, "遍历表列信息失败")
+	}
 
 	return columns, nil
 }
 
 // 生成删除列的 SQL
 func (s *MySQLStrategy) GenerateDropColumnSQL(tableName string, colName string) (string, error) {
-	return fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`", tableName, colName), nil
+	if tableName == "" || colName == "" {
+		return "", NewValidationException("表名和列名不能为空")
+	}
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quoteMySQLQualifiedIdentifier(tableName), quoteMySQLIdentifier(colName)), nil
 }
 
 // 生成修改列的 SQL
 func (s *MySQLStrategy) GenerateModifyColumnSQL(tableName string, field reflect.StructField, colName string) (string, error) {
+	if s == nil || s.cm == nil {
+		return "", NewConfigurationException("MySQL 建表策略未初始化")
+	}
+	if tableName == "" || colName == "" {
+		return "", NewValidationException("表名和列名不能为空")
+	}
 	colType := s.GetSQLType(field)
 	dbTag := field.Tag.Get("db")
 
-	colDef := fmt.Sprintf("MODIFY COLUMN `%s` %s", colName, colType)
+	colDef := fmt.Sprintf("MODIFY COLUMN %s %s", quoteMySQLIdentifier(colName), colType)
 
 	// 检查是否自增
-	if strings.Contains(dbTag, "auto_increment") {
+	if s.cm.IsAutoIncrement(field) {
 		colDef += " AUTO_INCREMENT"
 	}
 
 	// 检查是否为主键
-	isPrimaryKey := strings.Contains(dbTag, "primary_key")
+	isPrimaryKey := s.cm.IsPrimaryKey(field)
 
 	// 默认允许为 NULL，除非明确标记为 not_null 或是主键
 	if strings.Contains(dbTag, "not_null") || isPrimaryKey {
@@ -355,11 +414,14 @@ func (s *MySQLStrategy) GenerateModifyColumnSQL(tableName string, field reflect.
 		colDef += " NULL"
 	}
 
-	return fmt.Sprintf("ALTER TABLE `%s` %s", tableName, colDef), nil
+	return fmt.Sprintf("ALTER TABLE %s %s", quoteMySQLQualifiedIdentifier(tableName), colDef), nil
 }
 
 // GetExistingIndexes 获取现有表的索引信息。
-func (s *MySQLStrategy) GetExistingIndexes(db *Db, tableName string) (map[string]*IndexMetaData, error) {
+func (s *MySQLStrategy) GetExistingIndexes(db *Db, tableName string) (indexes map[string]*IndexMetaData, err error) {
+	if db == nil || db.DataSource == nil {
+		return nil, NewQueryException("数据库连接未初始化")
+	}
 	query := `
 		SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) as COLUMNS, NON_UNIQUE
 		FROM information_schema.STATISTICS
@@ -367,13 +429,18 @@ func (s *MySQLStrategy) GetExistingIndexes(db *Db, tableName string) (map[string
 		GROUP BY INDEX_NAME, NON_UNIQUE
 	`
 
-	rows, err := db.DataSource.Query(query, tableName)
-	if err != nil {
-		return nil, NewQueryExceptionWithCause(err, "获取表索引信息失败")
+	rows, queryErr := db.DataSource.Query(query, tableName)
+	if queryErr != nil {
+		return nil, NewQueryExceptionWithCause(queryErr, "获取表索引信息失败")
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			indexes = nil
+			err = errors.Join(err, NewQueryExceptionWithCause(closeErr, "关闭表索引信息结果集失败"))
+		}
+	}()
 
-	indexes := make(map[string]*IndexMetaData)
+	indexes = make(map[string]*IndexMetaData)
 	for rows.Next() {
 		var indexName, columnsStr string
 		var nonUnique int
@@ -393,13 +460,16 @@ func (s *MySQLStrategy) GetExistingIndexes(db *Db, tableName string) (map[string
 			IsUnique:  nonUnique == 0,
 		}
 	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, NewQueryExceptionWithCause(rowsErr, "遍历表索引信息失败")
+	}
 
 	return indexes, nil
 }
 
 // GenerateCreateIndexSQL 生成创建索引的 SQL。
 func (s *MySQLStrategy) GenerateCreateIndexSQL(tableName string, index *IndexMetaData) (string, error) {
-	if index == nil || len(index.Columns) == 0 {
+	if tableName == "" || index == nil || index.IndexName == "" || len(index.Columns) == 0 {
 		return "", NewDb233Exception("索引信息无效：索引名为空或没有列")
 	}
 
@@ -410,19 +480,34 @@ func (s *MySQLStrategy) GenerateCreateIndexSQL(tableName string, index *IndexMet
 
 	quotedColumns := make([]string, len(index.Columns))
 	for i, col := range index.Columns {
-		quotedColumns[i] = fmt.Sprintf("`%s`", col)
+		if col == "" {
+			return "", NewValidationException("索引列名不能为空")
+		}
+		quotedColumns[i] = quoteMySQLIdentifier(col)
 	}
 
-	sql := fmt.Sprintf("CREATE %s `%s` ON `%s` (%s)",
-		indexType, index.IndexName, tableName, strings.Join(quotedColumns, ", "))
+	sql := fmt.Sprintf("CREATE %s %s ON %s (%s)",
+		indexType, quoteMySQLIdentifier(index.IndexName), quoteMySQLQualifiedIdentifier(tableName), strings.Join(quotedColumns, ", "))
 
 	return sql, nil
 }
 
 // GenerateDropIndexSQL 生成删除索引的 SQL。
 func (s *MySQLStrategy) GenerateDropIndexSQL(tableName string, indexName string) (string, error) {
-	if indexName == "" {
-		return "", NewDb233Exception("索引名不能为空")
+	if tableName == "" || indexName == "" {
+		return "", NewDb233Exception("表名和索引名不能为空")
 	}
-	return fmt.Sprintf("ALTER TABLE `%s` DROP INDEX `%s`", tableName, indexName), nil
+	return fmt.Sprintf("ALTER TABLE %s DROP INDEX %s", quoteMySQLQualifiedIdentifier(tableName), quoteMySQLIdentifier(indexName)), nil
+}
+
+func quoteMySQLIdentifier(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+func quoteMySQLQualifiedIdentifier(name string) string {
+	parts := strings.Split(name, ".")
+	for index, part := range parts {
+		parts[index] = quoteMySQLIdentifier(part)
+	}
+	return strings.Join(parts, ".")
 }

@@ -32,6 +32,7 @@ func TestLocalWriteJournal_AppendAndRemove(t *testing.T) {
 	db := db233.NewDb(nil, 0, nil)
 	repo := db233.NewBaseCrudRepository(db)
 	journal := db233.NewLocalWriteJournal(dir, repo)
+	t.Cleanup(journal.Stop)
 
 	db233.GetEntityTypeRegistry().Register(&TestBatchFindEntity{})
 

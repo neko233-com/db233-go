@@ -1,4 +1,4 @@
-# db233-go Benchmark 标准（v1.0.1+）
+# db233-go Benchmark 标准（v1.1.0+）
 
 > 发版门禁 / 压测回归的唯一规范。与 `scripts/run-benchmark.*` 保持一致。  
 > 文档索引：[README.md](./README.md) · [FAQ](./FAQ.md) · [COMPARE-ORM](./COMPARE-ORM.md)
@@ -10,10 +10,10 @@
 ./scripts/run-benchmark.ps1
 
 # Linux / macOS
-./scripts/run-benchmark.sh
+bash ./scripts/run-benchmark.sh
 ```
 
-环境：Go 1.25+、本地 MySQL `127.0.0.1:3306/db233_go`（root/root）。普通测试不读取 `config.local.json`。
+环境：Go 1.25+、本地 MySQL `127.0.0.1:3306/db233_go`（可用 root/root）。连接从 `DB233_TEST_DSN` 或未跟踪的 `config.local.json` 读取，并强制限制为本机。
 
 ## 流水线（6 阶段）
 
@@ -43,7 +43,7 @@
 | Session 读 ×1000 | ≤ GORM 估算 1000×读 / **10** |
 | 批量 UPSERT ×50 | ≤ GORM × **1.5** |
 
-## 稳定性（Phase 4）
+## 稳定性（Phase 5）
 
 | 测试 | 场景 |
 |------|------|
@@ -61,6 +61,6 @@
 ## 发版检查清单
 
 - [ ] `scripts/run-benchmark.ps1` 全绿
-- [ ] `version.txt` = `v1.0.2`
-- [ ] `CHANGELOG.md` 含 v1.0.2
+- [ ] `version.txt` = `v1.1.0`
+- [ ] `CHANGELOG.md` 含 v1.1.0
 - [ ] `go test ./tests/ -short` CI 快速模式可过（跳过 MySQL 重测项）

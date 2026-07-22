@@ -58,6 +58,10 @@ config.local.yml
 secrets/
 **/credentials*.json
 
+# Local recovery queues (may contain serialized application state)
+.db233_journal/
+.db233_failed_ops/
+
 # Build artifacts
 dist/
 build/

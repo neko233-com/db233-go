@@ -11,18 +11,18 @@ type testFastOrmEntity struct {
 	Name string `db:"name"`
 }
 
-func (e *testFastOrmEntity) TableName() string              { return "test_fast_orm" }
-func (e *testFastOrmEntity) SerializeBeforeSaveDb()         {}
-func (e *testFastOrmEntity) DeserializeAfterLoadDb()        {}
+func (e *testFastOrmEntity) TableName() string                      { return "test_fast_orm" }
+func (e *testFastOrmEntity) SerializeBeforeSaveDb()                 {}
+func (e *testFastOrmEntity) DeserializeAfterLoadDb()                {}
 func (e *testFastOrmEntity) GetTableMetaData() *db233.TableMetaData { return nil }
 
 type testWarmEnt struct {
 	ID int64 `db:"id" primary_key:"true"`
 }
 
-func (e *testWarmEnt) TableName() string              { return "test_warm_ent" }
-func (e *testWarmEnt) SerializeBeforeSaveDb()         {}
-func (e *testWarmEnt) DeserializeAfterLoadDb()        {}
+func (e *testWarmEnt) TableName() string                      { return "test_warm_ent" }
+func (e *testWarmEnt) SerializeBeforeSaveDb()                 {}
+func (e *testWarmEnt) DeserializeAfterLoadDb()                {}
 func (e *testWarmEnt) GetTableMetaData() *db233.TableMetaData { return nil }
 
 func TestFastOrmScan_FindById(t *testing.T) {

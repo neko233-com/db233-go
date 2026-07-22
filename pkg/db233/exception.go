@@ -51,8 +51,7 @@ func NewDb233ExceptionWithCode(code string, message string) *Db233Exception {
 func (e *Db233Exception) Error() string {
 	if e.Cause != nil {
 		// 尝试解析 MySQL 错误码，提供更友好的错误信息
-		causeMsg := e.Cause.Error()
-		friendlyMsg := e.formatFriendlyError(causeMsg)
+		friendlyMsg := e.formatFriendlyError(e.Cause)
 		return fmt.Sprintf("[%s] %s\n原因: %s", e.Code, e.Message, friendlyMsg)
 	}
 	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
@@ -64,24 +63,26 @@ func (e *Db233Exception) Unwrap() error {
 }
 
 // 格式化友好的错误信息
-func (e *Db233Exception) formatFriendlyError(errorMsg string) string {
+func (e *Db233Exception) formatFriendlyError(cause error) string {
+	errorMsg := safeErrorText(cause)
+	summary := safeErrorSummary(cause)
 	// 解析常见的 MySQL 错误，提供更友好的提示
 	if strings.Contains(errorMsg, "Duplicate entry") {
-		return fmt.Sprintf("数据重复冲突: %s\n提示: 尝试插入的数据与现有记录的主键或唯一键冲突，请检查数据是否已存在", errorMsg)
+		return fmt.Sprintf("数据重复冲突 (%s)\n提示: 尝试插入的数据与现有记录的主键或唯一键冲突，请检查数据是否已存在", summary)
 	}
 	if strings.Contains(errorMsg, "doesn't exist") {
-		return fmt.Sprintf("表或列不存在: %s\n提示: 请检查表名是否正确，或使用 AutoCreateTable 自动创建表", errorMsg)
+		return fmt.Sprintf("表或列不存在 (%s)\n提示: 请检查表名是否正确，或使用 AutoCreateTable 自动创建表", summary)
 	}
 	if strings.Contains(errorMsg, "Field") && strings.Contains(errorMsg, "doesn't have a default value") {
-		return fmt.Sprintf("必填字段缺失: %s\n提示: 某些必填字段未提供值，请检查实体字段是否完整", errorMsg)
+		return fmt.Sprintf("必填字段缺失 (%s)\n提示: 某些必填字段未提供值，请检查实体字段是否完整", summary)
 	}
 	if strings.Contains(errorMsg, "connection") || strings.Contains(errorMsg, "Connection") {
-		return fmt.Sprintf("数据库连接错误: %s\n提示: 请检查数据库服务是否运行，连接配置是否正确", errorMsg)
+		return fmt.Sprintf("数据库连接错误 (%s)\n提示: 请检查数据库服务是否运行，连接配置是否正确", summary)
 	}
 	if strings.Contains(errorMsg, "timeout") {
-		return fmt.Sprintf("操作超时: %s\n提示: 数据库操作超时，可能是网络问题或数据库负载过高", errorMsg)
+		return fmt.Sprintf("操作超时 (%s)\n提示: 数据库操作超时，可能是网络问题或数据库负载过高", summary)
 	}
-	return errorMsg
+	return summary
 }
 
 // 获取错误码
@@ -118,6 +119,21 @@ func NewConnectionExceptionWithCause(cause error, message string) *ConnectionExc
 // QueryException - 查询异常
 type QueryException struct {
 	*Db233Exception
+}
+
+var _ error = QueryException{}
+
+// Error intentionally redacts the underlying driver message. Database drivers
+// can echo SQL literals or bound values in their text; callers can still use
+// errors.Is/errors.As/GetCause for programmatic diagnosis.
+func (e QueryException) Error() string {
+	if e.Db233Exception == nil {
+		return "[QUERY_ERROR]"
+	}
+	if e.Cause == nil {
+		return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	}
+	return fmt.Sprintf("[%s] %s\n原因摘要: %s", e.Code, e.Message, safeErrorSummary(e.Cause))
 }
 
 // 创建查询异常

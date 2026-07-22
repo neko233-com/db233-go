@@ -19,10 +19,19 @@ type OrmHandler struct{}
 // rows: 数据库结果集。
 // returnType: 返回类型。
 // 返回: 映射后的对象列表。
-func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
-	defer rows.Close()
-
-	var results []any
+func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) (results []any) {
+	if rows == nil {
+		LogError("ORM 查询结果集为 nil")
+		return nil
+	}
+	defer func() {
+		if rowsErr := rows.Err(); rowsErr != nil {
+			LogError("ORM 行遍历失败: %s", safeErrorForLog(rowsErr))
+		}
+		if closeErr := rows.Close(); closeErr != nil {
+			LogError("关闭 ORM 查询结果集失败: %s", safeErrorForLog(closeErr))
+		}
+	}()
 
 	structType := reflect.TypeOf(returnType)
 	if structType.Kind() == reflect.Ptr {
@@ -31,7 +40,7 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 
 	columns, err := rows.Columns()
 	if err != nil {
-		log.Printf("获取列名失败: %v", err)
+		log.Printf("获取列名失败: %s", safeErrorForLog(err))
 		return results
 	}
 
@@ -43,6 +52,11 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 	}
 
 	return o.ormBatchLegacy(rows, structType, columns)
+}
+
+// OrmBatchStrict 是 OrmBatch 的 all-or-error 公开入口。
+func (o *OrmHandler) OrmBatchStrict(rows *sql.Rows, returnType any) ([]any, error) {
+	return o.ormBatchStrict(rows, returnType)
 }
 
 // ormBatchStrict 执行严格 ORM 映射，并独占 rows 的关闭责任。
@@ -89,6 +103,39 @@ func (o *OrmHandler) ormBatchStrict(rows *sql.Rows, returnType any) (results []a
 	return o.ormBatchLegacyStrict(rows, structType, columns)
 }
 
+// ormBatchCompatibleStrict 保留 legacy ORM 的宽松数值转换（例如 DECIMAL ->
+// float64），但严格传播 Query/Scan/Rows/Close/转换错误。兼容入口因此不会因
+// 精确浮点策略破坏既有业务，同时也不再把驱动故障伪装成“未找到”。
+func (o *OrmHandler) ormBatchCompatibleStrict(rows *sql.Rows, returnType any) (results []any, err error) {
+	if rows == nil {
+		return nil, NewValidationException("查询结果集不能为 nil")
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			wrappedCloseErr := NewQueryExceptionWithCause(closeErr, "关闭查询结果集失败")
+			results = nil
+			if err == nil {
+				err = wrappedCloseErr
+			} else {
+				err = errors.Join(err, wrappedCloseErr)
+			}
+		}
+	}()
+
+	structType, typeErr := strictOrmStructType(returnType)
+	if typeErr != nil {
+		return nil, typeErr
+	}
+	columns, columnsErr := rows.Columns()
+	if columnsErr != nil {
+		return nil, NewQueryExceptionWithCause(columnsErr, "获取查询列信息失败")
+	}
+	if len(columns) == 0 {
+		return nil, NewQueryException("查询结果没有列")
+	}
+	return o.ormBatchLegacyCompatibleChecked(rows, structType, columns)
+}
+
 func strictOrmStructType(returnType any) (reflect.Type, error) {
 	if returnType == nil {
 		return nil, NewValidationException("严格查询返回类型不能为 nil")
@@ -120,7 +167,7 @@ func (o *OrmHandler) ormBatchLegacy(rows *sql.Rows, structType reflect.Type, col
 
 		err := rows.Scan(dest...)
 		if err != nil {
-			log.Printf("扫描行失败: %v", err)
+			log.Printf("扫描行失败: %s", safeErrorForLog(err))
 			continue
 		}
 
@@ -131,7 +178,7 @@ func (o *OrmHandler) ormBatchLegacy(rows *sql.Rows, structType reflect.Type, col
 				if val.IsValid() {
 					convertedVal, err := o.convertValue(val, field.Type())
 					if err != nil {
-						LogDebug("字段类型转换警告: 列=%s, 源类型=%s, 目标类型=%s, 错误=%v", col, val.Type(), field.Type(), err)
+						LogDebug("字段类型转换警告: 列=%s, 源类型=%s, 目标类型=%s, 错误=%s", col, val.Type(), field.Type(), safeErrorForLog(err))
 						continue
 					}
 					field.Set(convertedVal)
@@ -150,6 +197,19 @@ func (o *OrmHandler) ormBatchLegacyStrict(rows *sql.Rows, structType reflect.Typ
 	scratch := acquireScanScratch(len(columns))
 	defer releaseScanScratch(scratch)
 
+	// Legacy mode avoids the global scan-plan cache, but column mapping itself is
+	// invariant for the whole result set. Resolve it once instead of once per row.
+	fieldPaths := make([][]int, len(columns))
+	conversionOptions := make([]strictConversionOptions, len(columns))
+	for i, column := range columns {
+		path, ok := findOrmFieldPathByColumnName(structType, column)
+		if !ok {
+			continue
+		}
+		fieldPaths[i] = path
+		conversionOptions[i] = strictConversionOptionsFor(fieldTypeByPath(structType, path))
+	}
+
 	rowIndex := 0
 	for rows.Next() {
 		newInstancePtr := reflect.New(structType)
@@ -165,8 +225,8 @@ func (o *OrmHandler) ormBatchLegacyStrict(rows *sql.Rows, structType reflect.Typ
 		}
 
 		for i, column := range columns {
-			path, ok := findOrmFieldPathByColumnName(structType, column)
-			if !ok {
+			path := fieldPaths[i]
+			if path == nil {
 				continue
 			}
 			field, fieldErr := strictFieldByIndexPath(newInstance, path)
@@ -180,9 +240,9 @@ func (o *OrmHandler) ormBatchLegacyStrict(rows *sql.Rows, structType reflect.Typ
 				)
 			}
 
-			rawSource := cloneStrictScanSourceIfNeeded(*scratch.discardPtr(i), field.Type())
-			source := reflect.ValueOf(rawSource)
-			converted, convertErr := o.convertValue(source, field.Type())
+			converted, convertErr := o.convertValueStrictWithOptions(
+				*scratch.discardPtr(i), field.Type(), conversionOptions[i],
+			)
 			if convertErr != nil {
 				return nil, NewQueryExceptionWithCause(
 					convertErr,
@@ -197,6 +257,64 @@ func (o *OrmHandler) ormBatchLegacyStrict(rows *sql.Rows, structType reflect.Typ
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return nil, NewQueryExceptionWithCause(rowsErr, fmt.Sprintf("严格 ORM 行遍历失败: next_row=%d", rowIndex))
+	}
+	return results, nil
+}
+
+func (o *OrmHandler) ormBatchLegacyCompatibleChecked(rows *sql.Rows, structType reflect.Type, columns []string) ([]any, error) {
+	results := make([]any, 0)
+	scratch := acquireScanScratch(len(columns))
+	defer releaseScanScratch(scratch)
+
+	fieldPaths := make([][]int, len(columns))
+	for i, column := range columns {
+		path, ok := findOrmFieldPathByColumnName(structType, column)
+		if ok {
+			fieldPaths[i] = path
+		}
+	}
+
+	rowIndex := 0
+	for rows.Next() {
+		newInstancePtr := reflect.New(structType)
+		newInstance := newInstancePtr.Elem()
+		dest := scratch.dest
+		for i := range dest {
+			dest[i] = scratch.discardPtr(i)
+		}
+		if scanErr := rows.Scan(dest...); scanErr != nil {
+			return nil, NewQueryExceptionWithCause(scanErr, fmt.Sprintf("ORM 扫描失败: row=%d", rowIndex))
+		}
+
+		for i, column := range columns {
+			path := fieldPaths[i]
+			if path == nil {
+				continue
+			}
+			field, fieldErr := strictFieldByIndexPath(newInstance, path)
+			if fieldErr != nil || !field.CanSet() {
+				if fieldErr == nil {
+					fieldErr = fmt.Errorf("字段不可设置")
+				}
+				return nil, NewQueryExceptionWithCause(
+					fieldErr,
+					fmt.Sprintf("ORM 字段定位失败: row=%d, column=%s, path=%v", rowIndex, column, path),
+				)
+			}
+			converted, convertErr := o.convertValue(reflect.ValueOf(*scratch.discardPtr(i)), field.Type())
+			if convertErr != nil {
+				return nil, NewQueryExceptionWithCause(
+					convertErr,
+					fmt.Sprintf("ORM 字段转换失败: row=%d, column=%s, target=%s", rowIndex, column, field.Type()),
+				)
+			}
+			field.Set(converted)
+		}
+		results = append(results, newInstancePtr.Interface())
+		rowIndex++
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, NewQueryExceptionWithCause(rowsErr, fmt.Sprintf("ORM 行遍历失败: next_row=%d", rowIndex))
 	}
 	return results, nil
 }
@@ -315,6 +433,20 @@ func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Ty
 		ptrVal := reflect.New(elemType)
 		ptrVal.Elem().Set(elemVal)
 		return ptrVal, nil
+	}
+
+	// database/sql 驱动通常把 MySQL TINYINT(1) 扫描成 int64，而 Go 不允许
+	// 直接 reflect.Convert 到 bool。兼容 ORM 入口保持 0=false、非 0=true；
+	// 严格 ORM 入口仍由 convertValueStrict 执行精确策略。
+	if targetType.Kind() == reflect.Bool {
+		switch sourceVal.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return reflect.ValueOf(sourceVal.Int() != 0).Convert(targetType), nil
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return reflect.ValueOf(sourceVal.Uint() != 0).Convert(targetType), nil
+		case reflect.Float32, reflect.Float64:
+			return reflect.ValueOf(sourceVal.Float() != 0).Convert(targetType), nil
+		}
 	}
 
 	// 特殊处理：[]uint8 (MySQL byte array) 转换。

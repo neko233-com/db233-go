@@ -1,7 +1,6 @@
 package db233
 
 import (
-	"bytes"
 	"database/sql"
 	"fmt"
 	"reflect"
@@ -15,13 +14,19 @@ type OrmScanPlan struct {
 	columns    []string
 	fieldPaths [][]int // 与 columns 对齐；nil 表示丢弃列
 	indirect   []bool  // true 表示 Scan 到 any 再 convertValue
+	strictOpts []strictConversionOptions
 }
 
 // OrmScanPlanCache 按 (实体类型 + 列签名) 缓存扫描计划。
 type OrmScanPlanCache struct {
-	mu    sync.RWMutex
-	cache map[ormScanPlanCacheKey]*OrmScanPlan
+	mu        sync.RWMutex
+	cache     map[ormScanPlanCacheKey]*OrmScanPlan
+	maxSize   int
+	order     []ormScanPlanCacheKey
+	nextEvict int
 }
+
+const defaultOrmScanPlanCacheSize = 1024
 
 type ormScanPlanCacheKey struct {
 	entityType      reflect.Type
@@ -37,9 +42,7 @@ var (
 // GetOrmScanPlanCache 获取扫描计划缓存单例。
 func GetOrmScanPlanCache() *OrmScanPlanCache {
 	ormScanPlanCacheOnce.Do(func() {
-		ormScanPlanCacheInstance = &OrmScanPlanCache{
-			cache: make(map[ormScanPlanCacheKey]*OrmScanPlan),
-		}
+		ormScanPlanCacheInstance = newOrmScanPlanCache(defaultOrmScanPlanCacheSize)
 	})
 	return ormScanPlanCacheInstance
 }
@@ -56,6 +59,9 @@ func (c *OrmScanPlanCache) GetStrictPlan(entityPrototype any, columns []string) 
 }
 
 func (c *OrmScanPlanCache) getPlan(entityPrototype any, columns []string, strict bool) (*OrmScanPlan, error) {
+	if c == nil {
+		return nil, fmt.Errorf("scan plan cache is nil")
+	}
 	if entityPrototype == nil || len(columns) == 0 {
 		return nil, fmt.Errorf("invalid scan plan input")
 	}
@@ -94,6 +100,9 @@ func (c *OrmScanPlanCache) getPlan(entityPrototype any, columns []string, strict
 		fieldPaths: make([][]int, len(columns)),
 		indirect:   make([]bool, len(columns)),
 	}
+	if strict {
+		plan.strictOpts = make([]strictConversionOptions, len(columns))
+	}
 	for i, col := range columns {
 		var path []int
 		var ok bool
@@ -115,13 +124,90 @@ func (c *OrmScanPlanCache) getPlan(entityPrototype any, columns []string, strict
 			plan.fieldPaths[i] = append([]int(nil), path...)
 			ft := fieldTypeByPath(entityType, path)
 			plan.indirect[i] = !isDirectScannableType(ft)
+			if strict {
+				plan.strictOpts[i] = strictConversionOptionsFor(ft)
+			}
 		}
 	}
 
 	c.mu.Lock()
-	c.cache[key] = plan
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	// Multiple cold callers may build the same immutable plan concurrently.
+	// Keep the first one and avoid corrupting FIFO accounting.
+	if existing, ok := c.cache[key]; ok {
+		return existing, nil
+	}
+	c.storePlanLocked(key, plan)
 	return plan, nil
+}
+
+func newOrmScanPlanCache(maxSize int) *OrmScanPlanCache {
+	if maxSize <= 0 {
+		maxSize = defaultOrmScanPlanCacheSize
+	}
+	return &OrmScanPlanCache{
+		cache:   make(map[ormScanPlanCacheKey]*OrmScanPlan),
+		maxSize: maxSize,
+		order:   make([]ormScanPlanCacheKey, 0, min(maxSize, 16)),
+	}
+}
+
+// storePlanLocked uses insertion-order eviction. Cache hits retain the existing
+// RLock-only hot path; only cold plan insertion takes the write lock.
+func (c *OrmScanPlanCache) storePlanLocked(key ormScanPlanCacheKey, plan *OrmScanPlan) {
+	if c.cache == nil {
+		c.cache = make(map[ormScanPlanCacheKey]*OrmScanPlan)
+	}
+	limit := c.maxSize
+	if limit <= 0 {
+		limit = defaultOrmScanPlanCacheSize
+		c.maxSize = limit
+	}
+
+	if len(c.cache) < limit {
+		c.cache[key] = plan
+		c.order = append(c.order, key)
+		return
+	}
+
+	if len(c.order) != limit {
+		// Recover safely from a zero-value or externally constructed cache whose
+		// private bookkeeping has not been initialized.
+		clear(c.cache)
+		c.order = c.order[:0]
+		c.nextEvict = 0
+		c.cache[key] = plan
+		c.order = append(c.order, key)
+		return
+	}
+
+	victim := c.order[c.nextEvict]
+	delete(c.cache, victim)
+	c.cache[key] = plan
+	c.order[c.nextEvict] = key
+	c.nextEvict = (c.nextEvict + 1) % limit
+}
+
+// Len returns current plan count.
+func (c *OrmScanPlanCache) Len() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.cache)
+}
+
+// Clear removes cached plans while retaining configured capacity.
+func (c *OrmScanPlanCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.cache)
+	c.order = c.order[:0]
+	c.nextEvict = 0
 }
 
 // findOrmFieldPathByColumnName 只基于结构体形状解析列路径，不依赖 IDbEntity/TableName。
@@ -154,7 +240,7 @@ func findOrmFieldPathByColumnNameRecursive(
 
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
-		if !field.IsExported() {
+		if !field.IsExported() || ormFieldIgnored(field) {
 			continue
 		}
 
@@ -221,11 +307,11 @@ func (o *OrmHandler) ormBatchFast(rows *sql.Rows, plan *OrmScanPlan) []any {
 
 		dest, err := o.buildScanDest(instance, plan, scratch)
 		if err != nil {
-			LogDebug("快速 ORM 扫描构建目标失败: %v", err)
+			LogDebug("快速 ORM 扫描构建目标失败: %s", safeErrorForLog(err))
 			continue
 		}
 		if err := rows.Scan(dest...); err != nil {
-			LogDebug("快速 ORM 扫描失败: %v", err)
+			LogDebug("快速 ORM 扫描失败: %s", safeErrorForLog(err))
 			continue
 		}
 		for i, path := range plan.fieldPaths {
@@ -242,7 +328,7 @@ func (o *OrmHandler) ormBatchFast(rows *sql.Rows, plan *OrmScanPlan) []any {
 			}
 			converted, err := o.convertValue(val, field.Type())
 			if err != nil {
-				LogDebug("快速 ORM 间接字段转换失败: 列=%s, err=%v", plan.columns[i], err)
+				LogDebug("快速 ORM 间接字段转换失败: 列=%s, err=%s", safeValueForLog(plan.columns[i]), safeErrorForLog(err))
 				continue
 			}
 			field.Set(converted)
@@ -253,33 +339,19 @@ func (o *OrmHandler) ormBatchFast(rows *sql.Rows, plan *OrmScanPlan) []any {
 }
 
 type strictFieldScanner struct {
-	orm    *OrmHandler
-	field  reflect.Value
-	column string
+	orm     *OrmHandler
+	field   reflect.Value
+	column  string
+	options strictConversionOptions
 }
 
 func (s *strictFieldScanner) Scan(source any) error {
-	source = cloneStrictScanSourceIfNeeded(source, s.field.Type())
-	converted, err := s.orm.convertValue(reflect.ValueOf(source), s.field.Type())
+	converted, err := s.orm.convertValueStrictWithOptions(source, s.field.Type(), s.options)
 	if err != nil {
 		return fmt.Errorf("列 %s 无法转换为 %s: %w", s.column, s.field.Type(), err)
 	}
 	s.field.Set(converted)
 	return nil
-}
-
-func cloneStrictScanSourceIfNeeded(source any, targetType reflect.Type) any {
-	if rawBytes, ok := source.([]byte); ok && strictScanTargetRetainsBytes(targetType) {
-		return bytes.Clone(rawBytes)
-	}
-	return source
-}
-
-func strictScanTargetRetainsBytes(targetType reflect.Type) bool {
-	for targetType.Kind() == reflect.Ptr {
-		targetType = targetType.Elem()
-	}
-	return targetType.Kind() == reflect.Slice && targetType.Elem().Kind() == reflect.Uint8
 }
 
 // ormBatchFastStrict 使用预计算字段路径执行严格扫描。
@@ -288,8 +360,8 @@ func (o *OrmHandler) ormBatchFastStrict(rows *sql.Rows, plan *OrmScanPlan) ([]an
 	if plan == nil {
 		return nil, NewValidationException("严格 ORM 扫描计划不能为 nil")
 	}
-	if len(plan.columns) != len(plan.fieldPaths) {
-		return nil, NewQueryException("严格 ORM 扫描计划列与字段路径数量不一致")
+	if len(plan.columns) != len(plan.fieldPaths) || len(plan.columns) != len(plan.strictOpts) {
+		return nil, NewQueryException("严格 ORM 扫描计划列、字段路径与转换选项数量不一致")
 	}
 
 	results := make([]any, 0)
@@ -346,7 +418,9 @@ func (o *OrmHandler) buildStrictScanDest(
 			return nil, fmt.Errorf("column=%s, path=%v: 字段不可设置", plan.columns[i], path)
 		}
 
-		scanners[i] = strictFieldScanner{orm: o, field: field, column: plan.columns[i]}
+		scanners[i] = strictFieldScanner{
+			orm: o, field: field, column: plan.columns[i], options: plan.strictOpts[i],
+		}
 		dest[i] = &scanners[i]
 	}
 	scratch.dest = dest

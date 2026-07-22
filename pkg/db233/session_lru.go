@@ -37,30 +37,43 @@ func (l *sessionLRU) Touch(playerID string) {
 	}
 }
 
-// Add 加入 LRU；若超出容量返回需淘汰的 playerID（最久未访问）。
-func (l *sessionLRU) Add(playerID string) (evicted string) {
+// Add 加入 LRU；若当前容量已缩小，返回所有需淘汰的 playerID（最久未访问优先）。
+func (l *sessionLRU) Add(playerID string) (evicted []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if el, ok := l.items[playerID]; ok {
 		l.order.MoveToBack(el)
-		return ""
+		return nil
 	}
 
-	if l.order.Len() >= l.maxSize {
+	for l.order.Len() >= l.maxSize {
 		front := l.order.Front()
-		if front != nil {
-			entry := front.Value.(*sessionLRUEntry)
-			evicted = entry.playerID
-			delete(l.items, evicted)
-			l.order.Remove(front)
+		if front == nil {
+			break
 		}
+		entry := front.Value.(*sessionLRUEntry)
+		evicted = append(evicted, entry.playerID)
+		delete(l.items, entry.playerID)
+		l.order.Remove(front)
 	}
 
 	entry := &sessionLRUEntry{playerID: playerID}
 	el := l.order.PushBack(entry)
 	l.items[playerID] = el
 	return evicted
+}
+
+// Restore 恢复此前因淘汰失败而移出的条目。允许暂时超过容量，避免丢失在线 Session。
+func (l *sessionLRU) Restore(playerID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if el, ok := l.items[playerID]; ok {
+		l.order.MoveToFront(el)
+		return
+	}
+	el := l.order.PushFront(&sessionLRUEntry{playerID: playerID})
+	l.items[playerID] = el
 }
 
 // Remove 从 LRU 移除。
@@ -80,12 +93,33 @@ func (l *sessionLRU) Len() int {
 	return l.order.Len()
 }
 
-// SetMaxSize 动态调整最大 Session 数。
-func (l *sessionLRU) SetMaxSize(maxSize int) {
-	if maxSize <= 0 {
+func (l *sessionLRU) Clear() {
+	if l == nil {
 		return
 	}
 	l.mu.Lock()
-	l.maxSize = maxSize
+	l.items = make(map[string]*list.Element)
+	l.order.Init()
 	l.mu.Unlock()
+}
+
+// SetMaxSize 动态调整最大 Session 数，并返回缩容时移出的条目。
+func (l *sessionLRU) SetMaxSize(maxSize int) (evicted []string) {
+	if maxSize <= 0 {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.maxSize = maxSize
+	for l.order.Len() > l.maxSize {
+		front := l.order.Front()
+		if front == nil {
+			break
+		}
+		entry := front.Value.(*sessionLRUEntry)
+		evicted = append(evicted, entry.playerID)
+		delete(l.items, entry.playerID)
+		l.order.Remove(front)
+	}
+	return evicted
 }

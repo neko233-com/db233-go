@@ -1,7 +1,7 @@
 # db233-go 常见问题（FAQ）
 
 > 本文采用 **问答格式**，便于检索与引用。  
-> 模块：`github.com/neko233-com/db233-go` · 当前版本：**v1.0.2**
+> 模块：`github.com/neko233-com/db233-go` · 当前版本：**v1.1.0**
 
 ---
 
@@ -26,7 +26,7 @@ GORM 是通用全功能 ORM；db233-go 侧重 **游戏服 Session 内存读 + �
 ### 如何安装？
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.2
+go get github.com/neko233-com/db233-go@v1.1.0
 ```
 
 ```go
@@ -51,7 +51,7 @@ Session L1 是 **进程内、按玩家、带 dirty 写回** 的 ORM 一级缓存
 
 ### 玩家下线数据会丢吗？
 
-不会。下线 `CloseSession` 强制刷 dirty；关服 `FlushAll` / `db.Close()`；写路径可走 **WAL 先落盘** 再写 RDS，失败无限重试。
+成功返回的严格刷写不会静默丢数据。下线 `CloseSession` 强制刷 dirty；关服使用 `db.Close()`；数据库不可用时，已启用且可写的本地 WAL 会保留最后状态供重启回放。数据库和本地持久化同时失败时 API 必须返回错误，调用方不得忽略或向上游确认成功。
 
 ---
 

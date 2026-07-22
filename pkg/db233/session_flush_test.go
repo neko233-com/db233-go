@@ -13,18 +13,18 @@ type flushTestEntity struct {
 	Level    int    `db:"level"`
 }
 
-func (e *flushTestEntity) TableName() string              { return "flush_test_entity" }
-func (e *flushTestEntity) SerializeBeforeSaveDb()       {}
-func (e *flushTestEntity) DeserializeAfterLoadDb()      {}
+func (e *flushTestEntity) TableName() string       { return "flush_test_entity" }
+func (e *flushTestEntity) SerializeBeforeSaveDb()  {}
+func (e *flushTestEntity) DeserializeAfterLoadDb() {}
 
 type flushTestEntityB struct {
 	PlayerID string `db:"playerId" primary_key:"true"`
 	Gold     int    `db:"gold"`
 }
 
-func (e *flushTestEntityB) TableName() string         { return "flush_test_entity_b" }
-func (e *flushTestEntityB) SerializeBeforeSaveDb()    {}
-func (e *flushTestEntityB) DeserializeAfterLoadDb()   {}
+func (e *flushTestEntityB) TableName() string       { return "flush_test_entity_b" }
+func (e *flushTestEntityB) SerializeBeforeSaveDb()  {}
+func (e *flushTestEntityB) DeserializeAfterLoadDb() {}
 
 type upsertRecorder struct {
 	mu          sync.Mutex
@@ -250,7 +250,7 @@ func TestFlushAllDirtyMerged_RestoresOnError(t *testing.T) {
 		repo:     repo,
 		owner:    sr,
 		entities: make(map[string]IDbEntity),
-		dirty:    map[string]IDbEntity{
+		dirty: map[string]IDbEntity{
 			repo.getTableName(&flushTestEntity{PlayerID: "err1"}): &flushTestEntity{PlayerID: "err1", Name: "x"},
 		},
 		loaded: true,

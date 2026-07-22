@@ -176,12 +176,16 @@ func TestExecuteQueryToInt64Slice(t *testing.T) {
 		t.Fatalf("设置测试表失败: %v", err)
 	}
 	defer CleanupTestTables(db)
+	repo := db233.NewBaseCrudRepository(db)
+	if err := repo.Save(&TestUser{ID: 106, Username: "int64_slice_user", Email: "int64-slice@test.com", Age: 26}); err != nil {
+		t.Fatalf("保存用户失败: %v", err)
+	}
 
 	// 查询所有用户的 ID
 	idSQL := "SELECT id FROM test_user WHERE id >= 100 ORDER BY id"
 	ids := db.ExecuteQueryToInt64Slice(idSQL)
-	if len(ids) < 0 {
-		t.Fatalf("预期查询至少 0 条记录，实际得到: %d", len(ids))
+	if len(ids) != 1 || ids[0] != 106 {
+		t.Fatalf("预期 [106]，实际得到: %v", ids)
 	}
 	t.Logf("✓ ExecuteQueryToInt64Slice 测试通过，查询结果: %v", ids)
 }
@@ -200,12 +204,16 @@ func TestExecuteQueryToStringSlice(t *testing.T) {
 		t.Fatalf("设置测试表失败: %v", err)
 	}
 	defer CleanupTestTables(db)
+	repo := db233.NewBaseCrudRepository(db)
+	if err := repo.Save(&TestUser{ID: 107, Username: "string_slice_user", Email: "string-slice@test.com", Age: 27}); err != nil {
+		t.Fatalf("保存用户失败: %v", err)
+	}
 
 	// 查询所有用户的用户名
 	usernameSQL := "SELECT username FROM test_user WHERE id >= 100 ORDER BY id"
 	usernames := db.ExecuteQueryToStringSlice(usernameSQL)
-	if len(usernames) < 0 {
-		t.Fatalf("预期查询至少 0 条记录，实际得到: %d", len(usernames))
+	if len(usernames) != 1 || usernames[0] != "string_slice_user" {
+		t.Fatalf("预期 [string_slice_user]，实际得到: %v", usernames)
 	}
 	t.Logf("✓ ExecuteQueryToStringSlice 测试通过，查询结果: %v", usernames)
 }
