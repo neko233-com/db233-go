@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // EntityCacheEvictionLRU 默认 LRU 淘汰策略。
@@ -56,27 +57,33 @@ type EntityCacheSettings struct {
 // DefaultEntityCacheSettings 默认实体缓存配置。
 func DefaultEntityCacheSettings() EntityCacheSettings {
 	return EntityCacheSettings{
-		Enabled:                     true,
-		EvictionPolicy:              EntityCacheEvictionLRU,
-		MaxSessions:                 10000,
-		SessionFlushIntervalMs:      60000,
+		Enabled:                       true,
+		EvictionPolicy:                EntityCacheEvictionLRU,
+		MaxSessions:                   10000,
+		SessionFlushIntervalMs:        60000,
 		SessionFlushIntervalJitterPct: 10,
 		SessionFlushMaxWorkers:        8,
 		SessionFlushMergeByTable:      true,
 		ShutdownFlushMaxWorkers:       8,
 		ShutdownFlushWaveIntervalMs:   20,
-		FlushOnEvict:                true,
-		EntityTypeLimits:            make(map[string]int),
-		NegativeCacheEnabled:        false,
+		FlushOnEvict:                  true,
+		EntityTypeLimits:              make(map[string]int),
+		NegativeCacheEnabled:          false,
 	}
 }
 
 // EntityCacheSettingsManager 实体缓存配置管理器（支持热更新 SessionFlushIntervalMs 等）。
 type EntityCacheSettingsManager struct {
-	mu       sync.RWMutex
-	settings EntityCacheSettings
-	onChange []func(EntityCacheSettings)
-	cache    atomic.Value // EntityCacheSettings — 无锁热路径读
+	mu             sync.RWMutex
+	settings       EntityCacheSettings
+	onChange       []entityCacheSettingsCallback
+	nextCallbackID uint64
+	cache          atomic.Value // EntityCacheSettings — immutable, package hot paths read without locks
+}
+
+type entityCacheSettingsCallback struct {
+	id uint64
+	fn func(EntityCacheSettings)
 }
 
 var (
@@ -95,14 +102,23 @@ func GetEntityCacheSettings() *EntityCacheSettingsManager {
 	return entityCacheSettingsInstance
 }
 
-// Snapshot 获取配置快照（无锁读，适合 Session 热路径）。
+// Snapshot 获取可安全修改的独立配置快照。
+// 包内热路径使用 snapshotReadOnly，避免复制 EntityTypeLimits。
 func (m *EntityCacheSettingsManager) Snapshot() EntityCacheSettings {
+	return cloneEntityCacheSettings(m.snapshotReadOnly())
+}
+
+func (m *EntityCacheSettingsManager) snapshotReadOnly() EntityCacheSettings {
 	if v := m.cache.Load(); v != nil {
 		return v.(EntityCacheSettings)
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.settings
+}
+
+func entityCacheSettingsSnapshot() EntityCacheSettings {
+	return GetEntityCacheSettings().snapshotReadOnly()
 }
 
 func (m *EntityCacheSettingsManager) publishCache() {
@@ -115,36 +131,75 @@ func (m *EntityCacheSettingsManager) ApplyFull(settings EntityCacheSettings) {
 	m.settings = normalizeEntityCacheSettings(settings)
 	m.publishCache()
 	snapshot := m.settings
-	callbacks := append([]func(EntityCacheSettings){}, m.onChange...)
+	callbacks := m.callbacksLocked()
 	m.mu.Unlock()
 	for _, cb := range callbacks {
-		cb(snapshot)
+		cb(cloneEntityCacheSettings(snapshot))
 	}
 }
 
 // Set 动态修改单项配置。
 func (m *EntityCacheSettingsManager) Set(key string, value any) error {
 	m.mu.Lock()
-	if err := applyEntityCacheKeyValue(&m.settings, key, value); err != nil {
+	next := cloneEntityCacheSettings(m.settings)
+	if err := applyEntityCacheKeyValue(&next, key, value); err != nil {
 		m.mu.Unlock()
 		return err
 	}
-	m.settings = normalizeEntityCacheSettings(m.settings)
+	m.settings = normalizeEntityCacheSettings(next)
 	m.publishCache()
 	snapshot := m.settings
-	callbacks := append([]func(EntityCacheSettings){}, m.onChange...)
+	callbacks := m.callbacksLocked()
 	m.mu.Unlock()
 	for _, cb := range callbacks {
-		cb(snapshot)
+		cb(cloneEntityCacheSettings(snapshot))
 	}
 	return nil
 }
 
-// OnChange 注册配置变更回调（如调整定时刷写间隔）。
+// OnChange 注册配置变更回调。
+//
+// Deprecated: 需要解除订阅的生命周期组件应使用 Subscribe。
+// 保留此签名以兼容 v1.0.x 已发布 API。
 func (m *EntityCacheSettingsManager) OnChange(fn func(EntityCacheSettings)) {
+	_ = m.Subscribe(fn)
+}
+
+// Subscribe 注册配置变更回调，并返回幂等取消函数。
+// 调用方生命周期结束时应取消订阅，避免保留已关闭对象。
+func (m *EntityCacheSettingsManager) Subscribe(fn func(EntityCacheSettings)) func() {
+	if fn == nil {
+		return func() {}
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onChange = append(m.onChange, fn)
+	m.nextCallbackID++
+	id := m.nextCallbackID
+	m.onChange = append(m.onChange, entityCacheSettingsCallback{id: id, fn: fn})
+	m.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			for index, callback := range m.onChange {
+				if callback.id == id {
+					m.onChange = append(m.onChange[:index], m.onChange[index+1:]...)
+					break
+				}
+			}
+			m.mu.Unlock()
+		})
+	}
+}
+
+func (m *EntityCacheSettingsManager) callbacksLocked() []func(EntityCacheSettings) {
+	callbacks := make([]func(EntityCacheSettings), 0, len(m.onChange))
+	for _, callback := range m.onChange {
+		if callback.fn != nil {
+			callbacks = append(callbacks, callback.fn)
+		}
+	}
+	return callbacks
 }
 
 // LoadFromJSON 从 JSON 加载 entityCache 节点（可与 performance 配置同文件）。
@@ -157,10 +212,15 @@ func (m *EntityCacheSettingsManager) LoadFromJSON(data []byte) error {
 	if !ok {
 		return nil
 	}
-	var settings EntityCacheSettings
-	settings = DefaultEntityCacheSettings()
+	settings := DefaultEntityCacheSettings()
 	if err := json.Unmarshal(payload, &settings); err != nil {
 		return fmt.Errorf("解析 entityCache 节点失败: %w", err)
+	}
+	if settings.SessionFlushIntervalMs < 0 {
+		return fmt.Errorf("sessionFlushIntervalMs 不能为负数")
+	}
+	if settings.ShutdownFlushWaveIntervalMs < 0 {
+		return fmt.Errorf("shutdownFlushWaveIntervalMs 不能为负数")
 	}
 	m.ApplyFull(settings)
 	return nil
@@ -178,19 +238,22 @@ func (s EntityCacheSettings) IsNegativeCacheEnabled() bool {
 
 func normalizeEntityCacheSettings(s EntityCacheSettings) EntityCacheSettings {
 	def := DefaultEntityCacheSettings()
-	if s.EvictionPolicy == "" {
+	s.EvictionPolicy = strings.ToLower(strings.TrimSpace(s.EvictionPolicy))
+	if s.EvictionPolicy != EntityCacheEvictionLRU {
 		s.EvictionPolicy = def.EvictionPolicy
 	}
 	if s.MaxSessions <= 0 {
 		s.MaxSessions = def.MaxSessions
 	}
-	if s.EntityTypeLimits == nil {
-		s.EntityTypeLimits = make(map[string]int)
+	if s.SessionFlushIntervalMs < 0 {
+		s.SessionFlushIntervalMs = def.SessionFlushIntervalMs
 	}
+	s.SessionFlushIntervalMs = clampEntityCacheDurationMilliseconds(s.SessionFlushIntervalMs)
+	s.EntityTypeLimits = cloneStringIntMap(s.EntityTypeLimits)
 	if s.SessionFlushIntervalJitterPct < 0 {
 		s.SessionFlushIntervalJitterPct = def.SessionFlushIntervalJitterPct
-	} else if s.SessionFlushIntervalJitterPct == 0 && s.SessionFlushIntervalMs > 0 {
-		s.SessionFlushIntervalJitterPct = def.SessionFlushIntervalJitterPct
+	} else if s.SessionFlushIntervalJitterPct > 100 {
+		s.SessionFlushIntervalJitterPct = 100
 	}
 	if s.SessionFlushMaxWorkers <= 0 {
 		s.SessionFlushMaxWorkers = def.SessionFlushMaxWorkers
@@ -201,7 +264,36 @@ func normalizeEntityCacheSettings(s EntityCacheSettings) EntityCacheSettings {
 	if s.ShutdownFlushWaveIntervalMs < 0 {
 		s.ShutdownFlushWaveIntervalMs = def.ShutdownFlushWaveIntervalMs
 	}
+	s.ShutdownFlushWaveIntervalMs = clampEntityCacheDurationMilliseconds(s.ShutdownFlushWaveIntervalMs)
 	return s
+}
+
+func clampEntityCacheDurationMilliseconds(value int) int {
+	if value <= 0 {
+		return value
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	maxMilliseconds := int64(maxDuration / time.Millisecond)
+	if int64(value) > maxMilliseconds {
+		return int(maxMilliseconds)
+	}
+	return value
+}
+
+func cloneEntityCacheSettings(settings EntityCacheSettings) EntityCacheSettings {
+	settings.EntityTypeLimits = cloneStringIntMap(settings.EntityTypeLimits)
+	return settings
+}
+
+func cloneStringIntMap(source map[string]int) map[string]int {
+	if len(source) == 0 {
+		return make(map[string]int)
+	}
+	cloned := make(map[string]int, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func applyEntityCacheKeyValue(settings *EntityCacheSettings, key string, value any) error {
@@ -228,6 +320,9 @@ func applyEntityCacheKeyValue(settings *EntityCacheSettings, key string, value a
 		v, err := toInt(value)
 		if err != nil {
 			return err
+		}
+		if v < 0 {
+			return fmt.Errorf("sessionFlushIntervalMs 不能为负数")
 		}
 		settings.SessionFlushIntervalMs = v
 	case "sessionFlushIntervalJitterPct":
@@ -258,6 +353,9 @@ func applyEntityCacheKeyValue(settings *EntityCacheSettings, key string, value a
 		v, err := toInt(value)
 		if err != nil {
 			return err
+		}
+		if v < 0 {
+			return fmt.Errorf("shutdownFlushWaveIntervalMs 不能为负数")
 		}
 		settings.ShutdownFlushWaveIntervalMs = v
 	case "flushOnEvict":

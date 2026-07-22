@@ -3,6 +3,7 @@ package db233
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,10 +24,11 @@ type MetricsAggregator struct {
 	aggregationRules map[string]AggregationRule
 
 	// 锁
-	mu sync.RWMutex
+	mu        sync.RWMutex
+	refreshMu sync.Mutex
 
 	// 控制
-	enabled bool
+	enabled atomic.Bool
 }
 
 // AggregatedMetric - 聚合指标
@@ -68,19 +70,24 @@ const (
 
 // 创建指标聚合器
 func NewMetricsAggregator(name string) *MetricsAggregator {
-	return &MetricsAggregator{
+	aggregator := &MetricsAggregator{
 		name:              name,
 		dataSources:       make([]MetricsDataSource, 0),
 		aggregatedMetrics: make(map[string]AggregatedMetric),
 		cacheDuration:     30 * time.Second, // 默认30秒缓存
 		lastAggregation:   time.Now().Add(-time.Hour),
 		aggregationRules:  make(map[string]AggregationRule),
-		enabled:           true,
 	}
+	aggregator.enabled.Store(true)
+	return aggregator
 }
 
 // 添加数据源
 func (ma *MetricsAggregator) AddDataSource(source MetricsDataSource) {
+	if source == nil {
+		LogWarn("忽略空指标数据源: %s", ma.name)
+		return
+	}
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	ma.dataSources = append(ma.dataSources, source)
@@ -97,6 +104,10 @@ func (ma *MetricsAggregator) AddAggregationRule(name string, rule AggregationRul
 
 // 设置缓存持续时间
 func (ma *MetricsAggregator) SetCacheDuration(duration time.Duration) {
+	if duration < 0 {
+		LogWarn("指标缓存时间不能为负数: %v", duration)
+		return
+	}
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	ma.cacheDuration = duration
@@ -104,17 +115,13 @@ func (ma *MetricsAggregator) SetCacheDuration(duration time.Duration) {
 
 // 启用聚合器
 func (ma *MetricsAggregator) Enable() {
-	ma.mu.Lock()
-	defer ma.mu.Unlock()
-	ma.enabled = true
+	ma.enabled.Store(true)
 	LogInfo("指标聚合器已启用: %s", ma.name)
 }
 
 // 禁用聚合器
 func (ma *MetricsAggregator) Disable() {
-	ma.mu.Lock()
-	defer ma.mu.Unlock()
-	ma.enabled = false
+	ma.enabled.Store(false)
 	LogInfo("指标聚合器已禁用: %s", ma.name)
 }
 
@@ -124,6 +131,7 @@ func (ma *MetricsAggregator) GetAggregatedMetric(name string) (AggregatedMetric,
 	defer ma.mu.RUnlock()
 
 	metric, exists := ma.aggregatedMetrics[name]
+	metric.DataPoints = append([]float64(nil), metric.DataPoints...)
 	return metric, exists
 }
 
@@ -134,6 +142,7 @@ func (ma *MetricsAggregator) GetAllAggregatedMetrics() map[string]AggregatedMetr
 
 	result := make(map[string]AggregatedMetric)
 	for k, v := range ma.aggregatedMetrics {
+		v.DataPoints = append([]float64(nil), v.DataPoints...)
 		result[k] = v
 	}
 
@@ -150,25 +159,33 @@ func (ma *MetricsAggregator) GetAggregatedValue(name string) any {
 
 // 刷新聚合指标
 func (ma *MetricsAggregator) RefreshMetrics() error {
-	if !ma.enabled {
+	if !ma.enabled.Load() {
 		return nil
 	}
-
-	ma.mu.Lock()
-	defer ma.mu.Unlock()
+	ma.refreshMu.Lock()
+	defer ma.refreshMu.Unlock()
 
 	now := time.Now()
-
-	// 检查缓存是否过期
+	ma.mu.RLock()
 	if now.Sub(ma.lastAggregation) < ma.cacheDuration {
+		ma.mu.RUnlock()
 		return nil // 使用缓存
 	}
+	sources := append([]MetricsDataSource(nil), ma.dataSources...)
+	rules := make(map[string]AggregationRule, len(ma.aggregationRules))
+	for name, rule := range ma.aggregationRules {
+		rules[name] = rule
+	}
+	ma.mu.RUnlock()
 
 	// 收集所有数据源的指标
 	allMetrics := make(map[string][]any)
 
-	for _, source := range ma.dataSources {
-		sourceMetrics := source.GetMetrics()
+	for _, source := range sources {
+		sourceMetrics, _, ok := readMetricsSource(source)
+		if !ok {
+			continue
+		}
 
 		for metricName, value := range sourceMetrics {
 			if _, exists := allMetrics[metricName]; !exists {
@@ -178,8 +195,9 @@ func (ma *MetricsAggregator) RefreshMetrics() error {
 		}
 	}
 
+	aggregatedMetrics := make(map[string]AggregatedMetric, len(allMetrics)+len(rules))
 	// 应用聚合规则
-	for ruleName, rule := range ma.aggregationRules {
+	for ruleName, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
@@ -190,18 +208,21 @@ func (ma *MetricsAggregator) RefreshMetrics() error {
 		}
 
 		aggregated := ma.aggregateMetrics(ruleName, matchingMetrics, rule.Aggregation)
-		ma.aggregatedMetrics[ruleName] = aggregated
+		aggregatedMetrics[ruleName] = aggregated
 	}
 
 	// 聚合未配置规则的指标（使用默认聚合）
 	for metricName, values := range allMetrics {
-		if _, exists := ma.aggregatedMetrics[metricName]; !exists {
+		if _, exists := aggregatedMetrics[metricName]; !exists {
 			aggregated := ma.aggregateMetrics(metricName, values, Avg) // 默认使用平均值
-			ma.aggregatedMetrics[metricName] = aggregated
+			aggregatedMetrics[metricName] = aggregated
 		}
 	}
 
+	ma.mu.Lock()
+	ma.aggregatedMetrics = aggregatedMetrics
 	ma.lastAggregation = now
+	ma.mu.Unlock()
 	return nil
 }
 
@@ -344,7 +365,7 @@ func (ma *MetricsAggregator) GetStatus() map[string]any {
 
 	return map[string]any{
 		"name":              ma.name,
-		"enabled":           ma.enabled,
+		"enabled":           ma.enabled.Load(),
 		"data_sources":      len(ma.dataSources),
 		"aggregation_rules": len(ma.aggregationRules),
 		"cached_metrics":    len(ma.aggregatedMetrics),
@@ -355,6 +376,8 @@ func (ma *MetricsAggregator) GetStatus() map[string]any {
 
 // 获取指标摘要
 func (ma *MetricsAggregator) GetMetricsSummary() map[string]any {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
 	summary := map[string]any{
 		"total_metrics": len(ma.aggregatedMetrics),
 		"metrics":       make([]map[string]any, 0),

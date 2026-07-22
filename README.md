@@ -6,13 +6,13 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.0.10 · Go 1.25+ |
+| **版本** | v1.1.0 · Go 1.25.12+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.10
+go get github.com/neko233-com/db233-go@v1.1.0
 ```
 
 **发版压测**：`./scripts/run-benchmark.ps1`（[BENCHMARK.md](docs/BENCHMARK.md)）  
@@ -380,6 +380,8 @@ if err := tm.Commit(); err != nil {
 - **配置管理** - 灵活的配置加载和管理
 - **日志系统** - 结构化日志记录
 
+> `MonitoringReportGenerator.ExportReport` 与 `MetricsCollector.ExportToFile` 的产物可能包含数据库、指标、标签、告警等业务监控标识。导出采用同目录临时文件原子替换，文件权限固定为 Unix `0600` / Windows 当前进程身份专用 DACL；由库新建的目录会设为私有。仍应写入受控目录，禁止提交仓库、公开下载或由不受信任进程共享。
+
 ---
 
 ## 快速开始
@@ -449,7 +451,7 @@ affected, err := db.ExecuteUpdateNamed(sql, map[string]any{
     "updatedAt": time.Now().Unix(),
 })
 if err != nil {
-    fmt.Printf("更新失败: %v\n", err)
+	    fmt.Printf("更新失败: %s\n", db233.SafeErrorSummary(err))
     return
 }
 fmt.Printf("影响行数: %d\n", affected)
@@ -512,7 +514,7 @@ user := &User{
 
 // 自动 UPSERT - 无需手动处理主键冲突
 if err := db.Save(user); err != nil {
-    fmt.Printf("保存失败: %v\n", err)
+	    fmt.Printf("保存失败: %s\n", db233.SafeErrorSummary(err))
 }
 ```
 
@@ -522,24 +524,24 @@ if err := db.Save(user); err != nil {
 // 创建
 user := &User{Name: "Bob", Email: "bob@example.com", Age: 30}
 if err := db.Save(user); err != nil {
-    fmt.Printf("创建失败: %v\n", err)
+	    fmt.Printf("创建失败: %s\n", db233.SafeErrorSummary(err))
 }
 
 // 查询
 var savedUser User
 if err := db.FindById(user.ID, &savedUser); err != nil {
-    fmt.Printf("查询失败: %v\n", err)
+	    fmt.Printf("查询失败: %s\n", db233.SafeErrorSummary(err))
 }
 
 // 更新
 user.Name = "Bob Smith"
 if err := db.Update(user); err != nil {
-    fmt.Printf("更新失败: %v\n", err)
+	    fmt.Printf("更新失败: %s\n", db233.SafeErrorSummary(err))
 }
 
 // 删除
 if err := db.Delete(user); err != nil {
-    fmt.Printf("删除失败: %v\n", err)
+	    fmt.Printf("删除失败: %s\n", db233.SafeErrorSummary(err))
 }
 ```
 
@@ -606,7 +608,7 @@ affected, err := db.ExecuteUpdateNamed(sql, map[string]any{
 })
 
 if err != nil {
-    fmt.Printf("库存扣减失败: %v\n", err)
+	    fmt.Printf("库存扣减失败: %s\n", db233.SafeErrorSummary(err))
 }
 ```
 
@@ -844,7 +846,7 @@ func main() {
 ### 升级依赖
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.10
+go get github.com/neko233-com/db233-go@v1.1.0
 ```
 
 ### 配置文件 `config/db233-performance.json`
@@ -889,6 +891,8 @@ go get github.com/neko233-com/db233-go@v1.0.10
 
 ```go
 opts := db233.DefaultGameDbOptions()
+// 生产必填：先从数据库中的持久化 epoch 元数据读取；清库/重建后必须更换。
+opts.DatabaseGeneration = dataEpoch.EpochID
 opts.PerformanceConfigPath = "config/db233-performance.json"
 opts.EntityTypes = []db233.IDbEntity{&PlayerBaseEntity{}, &PlayerBagEntity{} /* 全部玩家表 */}
 
@@ -901,9 +905,11 @@ opts.EnableEntityCache = true
 
 dbConfig := db233.NewDefaultMySQLConfig(host, port, user, pass, database)
 sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
-if err != nil { /* handle */ }
-// db.SessionRepo 已绑定，关服 db.Close() 会自动 FlushAll + Stop
+if err != nil { return err }
+// db.SessionRepo 已绑定；关服必须检查 db.Close() 返回值。
 ```
+
+`DatabaseGeneration` 会同时保护 Session、WriteBuffer、WAL 和失败重试队列。启动时必须先从数据库读取 epoch，再初始化 db233；运行中清库必须使用两阶段屏障，详见 [数据库代次与安全清库](docs/DATABASE_GENERATION.md)。
 
 ### 登录 / 在线 / 下线
 
@@ -916,13 +922,42 @@ bag := session.Get(&PlayerBagEntity{}).(*PlayerBagEntity)
 
 // 写：L1 + dirty；缓存开启时不立即写库，由定时刷写或下线/关服落库
 bag.Gold += 100
-session.Put(bag) // 或 session.MarkDirty(bag)
+if err := session.MarkDirty(bag); err != nil { return err }
 
 // 下线：强制刷写 dirty 到 DB（同一 playerId PK，WAL 保护）
-_ = sessionRepo.CloseSession(playerId)
+if err := sessionRepo.CloseSession(playerId); err != nil { return err }
 
-// 关服：db.Close() 或 sessionRepo.FlushAll() 刷写全部 Session
+// 关服：先停止业务/raw SQL 写入，再由 Close 严格刷写并关闭全部组件。
+if err := db.Close(); err != nil { return err }
 ```
+
+`MarkDirty`/`Put` 会立即捕获与业务对象隔离的不可变持久化快照；同一表和主键在下次 flush 前只保留最后一版。快照完成后继续修改内存对象不会改变已经排队的版本，下一次修改后必须再次 `MarkDirty`。调用快照时业务必须自行保证源对象没有并发写；含锁、channel、func、非导出可变状态的复杂实体应实现 `EntitySnapshotter` 提供受控深拷贝。
+
+`Db.Close()` 会先拒绝新的 managed write，再依次排空 Session、WriteBuffer、WAL 和失败队列，最后停止后台任务并关闭连接。数据库不可用时，可恢复实体会先保留在本地 WAL，但 `Close` 仍返回聚合错误供进程告警；禁止忽略该错误。`Close` 幂等，重复调用返回同一结果。直接使用 `Db.DataSource` 的写入不受自动准入控制，必须由业务侧 shutdown writer gate 先行停止并排空。
+
+### Flush 写库压力指标
+
+```go
+// lifetime：从本 Db 第一次真正 flush Exec 开始计算。
+metrics := db.FlushWriteMetrics()
+log.Printf("flush SQL/s=%.2f attempted=%d succeeded=%d failed=%d",
+    db.AverageFlushWritesPerSecond(),
+    metrics.AttemptedSQL,
+    metrics.SucceededSQL,
+    metrics.FailedSQL,
+)
+
+// 自选窗口：例如每 10 秒采样一次。
+previous := metrics
+time.Sleep(10 * time.Second)
+rates := db.FlushWriteMetrics().RateSince(previous)
+log.Printf("10s flush SQL/s=%.2f entities/s=%.2f",
+    rates.AttemptedSQLPerSecond,
+    rates.AttemptedEntitiesPerSecond,
+)
+```
+
+`AttemptedSQL` 只统计 db233 管理的状态 flush：Session（含定时、下线、关服、代次排空）、WriteBuffer、显式 `UpdateBatchUpsert` 与恢复回放真正发给 `database/sql` 的 `Exec`；不统计调用方直接使用 `DataSource` / `GetDataSource`、raw SQL 或事务 Repository 发出的写入。合并后的 SQL 只算 1 次，每个 chunk 各算 1 次；失败请求也会形成数据库压力，因此计入 attempted。SQL 构建、序列化、WAL 追加或 Prepare 在 Exec 前失败不计；Exec 成功后即计 succeeded，即使后续 `RowsAffected` 或 WAL 清理失败。`BySource` 可区分 `session`、`write_buffer`、`manual`、`wal_replay`、`fault_tolerance_replay`；指标不保存 SQL、参数、错误文本、表名或玩家标识。
 
 ### 数据不丢保证
 
@@ -930,7 +965,14 @@ _ = sessionRepo.CloseSession(playerId)
 |------|------|
 | WAL 先落盘 | `fsync` 后写库，失败保留 `pending.ndjson` |
 | 无限重试 | FaultTolerantManager 默认永不丢弃 |
-| UPSERT 幂等 | 回放/重试安全，不会产生重复脏数据 |
+| UPSERT 幂等 | 使用稳定业务主键时，实体 Save/Update/UPSERT 可安全重放 |
+| 数据库代次 | 清库后隔离旧 Session、缓冲、WAL 与失败重试，防止历史数据复活 |
+
+恢复语义是 **at-least-once**，不是跨数据库的 exactly-once。任意 `ExecuteUpdate` 在“服务端已提交、客户端收到连接错误”时可能被重复执行；这类 SQL 必须自行满足幂等性，或携带数据库唯一约束保护的业务幂等键。任何写 API 返回错误时，即使数据已进入 WAL/失败队列，业务层也不得向上游确认成功。
+
+### SQL 日志隐私
+
+默认只记录 SQL 动词；不记录 SQL 文本、长度、可字典猜测的稳定哈希、绑定参数或驱动错误原文。包级 `Log*` 运行时日志还会把所有裸字符串参数变为仅含类型的摘要，防止表名、列名、路径、配置键或玩家标识意外外泄。临时诊断可调用 `db233.SetLogFullSQL(true)`，完整 SQL 会以安全引用形式输出（控制字符会转义），参数仍不记录。完整 SQL 可能包含调用方自行拼入的字面量，只能在受控环境短时开启，诊断结束后必须恢复为 `false`。公开日志或 HTTP 错误使用 `db233.SafeErrorSummary(err)`；应用若通过 `GetLogger()` 主动记录业务字符串，应自行承担脱敏责任。
 
 ### 读路径：缓存命中零查库
 
@@ -975,12 +1017,18 @@ Go 标准库 `database/sql.DB` 即连接池。db233 两层配置：
 > **安全**：真实 host / password **只能**写在下列 gitignore 文件中。仓库内仅保留 `*.example` 占位符。  
 > 推送前执行：`./scripts/check-secrets.ps1`
 
-复制模板并填入真实连接：
+复制模板并填入真实连接（Unix 必须是 `0600` 或更严格）：
 
 ```bash
-cp config.local.json.example config.local.json
+install -m 600 config.local.json.example config.local.json
 # 或
-cp config.local.yaml.example config.local.yaml
+install -m 600 config.local.yaml.example config.local.yaml
+```
+
+Windows 使用仅当前用户/服务账号可访问的 NTFS 目录：
+
+```powershell
+Copy-Item config.local.json.example config.local.json
 ```
 
 ```json
@@ -995,7 +1043,7 @@ cp config.local.yaml.example config.local.yaml
 }
 ```
 
-`*.local.json` / `config.local.json` / `*.local.yaml` 已在 `.gitignore` 中忽略。
+`*.local.json` / `config.local.json` / `*.local.yaml` 已在 `.gitignore` 中忽略。加载器拒绝符号链接、非普通文件、超过 1 MiB 的配置，以及 Unix 下 group/other 可读写的文件；生产凭据优先由秘密管理系统注入。
 
 ```go
 // 本地开发 / 测试
@@ -1003,11 +1051,11 @@ db, dbConfig, err := db233.OpenDbFromLocalConfig("config.local.json")
 sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
 ```
 
-集成测试 `CreateTestDb(t)` 固定使用本地 MySQL：`127.0.0.1:3306 / root / root / db233_go`，避免误连远程数据库。仅 `CreateTestDbFromLocalConfig(t)` 会显式读取 `config.local.json`。
+集成测试仅从 `DB233_TEST_DSN` 或未纳入 Git 的 `config.local.json` 读取连接，并强制要求 loopback/本机 Unix socket，避免误连远程数据库。常用本地环境可使用 `127.0.0.1:3306 / root / root / db233_go`。
 
 ### Go 框架性能对比（实测）
 
-环境：本地 MySQL `127.0.0.1:3306/db233_go`，Go 1.25。
+环境：本地 MySQL `127.0.0.1:3306/db233_go`，Go 1.25.12+。
 复现：
 
 ```bash
@@ -1161,8 +1209,8 @@ db233-go 是面向 **有状态游戏逻辑服** 的 Go ORM：登录后玩家数�
 <summary><strong>如何安装与初始化游戏服？</strong></summary>
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.10
-cp config.local.json.example config.local.json   # 本地凭据，勿提交 Git
+go get github.com/neko233-com/db233-go@v1.1.0
+install -m 600 config.local.json.example config.local.json   # Unix 本地凭据，勿提交 Git
 ```
 
 ```go
@@ -1188,6 +1236,23 @@ sessionRepo, _ := db233.InitGameDb(db, dbConfig, opts) // 见上文「游戏逻�
 更多问题 → **[docs/FAQ.md](docs/FAQ.md)**（含英文 Quick Answers）
 
 ---
+
+## 普通实体统一建表与迁移
+
+业务只需提供实体原型清单，db233-go 统一完成批量建表、补列、建索引、并发幂等和最终严格验证。生产安全默认不修改类型、不删除列、不替换或删除索引：
+
+```go
+report, err := db.AutoMigrateSchema(ctx, []any{
+    &PlayerEntity{},
+    &InventoryEntity{},
+}, nil)
+if err != nil {
+    return err
+}
+_ = report
+```
+
+启动前可先用 `DryRun` 审阅计划，或调用 `VerifySchema` 做纯只读检查。完整权限、报告与 MySQL DDL 边界见 [统一 Schema 建表与迁移](docs/SCHEMA_MIGRATION.md)。
 
 ## 埋点描述文件自动建表
 
@@ -1223,11 +1288,14 @@ sessionRepo, _ := db233.InitGameDb(db, dbConfig, opts) // 见上文「游戏逻�
 ```go
 schema, plan, err := db233.ApplyTrackingSchemaFile(db, "tracking-schema.json", nil)
 if err != nil {
-    panic(err)
+	    log.Fatal(db233.SafeErrorSummary(err))
 }
 _ = plan
 
-table, _ := schema.GetTable("player_behavior_events")
+table, ok := schema.GetTable("player_behavior_events")
+if !ok {
+    log.Fatal("tracking table 未定义")
+}
 payload := map[string]any{
     "player_id":  "p001",
     "event_time": "2026-06-12T10:00:00Z",
@@ -1277,6 +1345,13 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
 
+### v1.1.0 (2026-07-22) — 生产一致性与生命周期加固
+
+- 新增数据库代次屏障，清库后旧 Session、WriteBuffer、WAL 和失败重试数据不会跨代写回
+- 补齐严格 ORM、事务、保存点、错误链、资源关闭与并发缓存的 fail-closed 契约
+- 新增真实 MySQL 100 玩家并发回归，以及 Linux/MySQL、race、benchmark 和 Windows CI 门禁
+- SQL 与配置日志默认脱敏；仅 `db233.SetLogFullSQL(true)` 显式 opt-in 可记录安全引用的完整 SQL，参数值与驱动错误原文不进入日志；公开边界统一使用 `SafeErrorSummary`
+
 ### v1.0.10 (2026-07-22) — 严格错误传播与事务能力
 
 - 新增 Strict Query、Strict Entity Repository 和事务绑定 Repository
@@ -1322,4 +1397,4 @@ Apache License 2.0 - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**文档最后更新：** 2026-07-22 · v1.0.10 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)
+**文档最后更新：** 2026-07-22 · v1.1.0 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)

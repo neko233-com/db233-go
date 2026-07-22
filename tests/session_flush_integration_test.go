@@ -9,14 +9,26 @@ import (
 	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
+func prepareSessionFlushTable(t *testing.T, db *db233.Db, playerPrefix string) func() {
+	t.Helper()
+	if err := setupBatchFindTable(db); err != nil {
+		t.Fatalf("创建 test_batch_find: %v", err)
+	}
+	return func() {
+		_, _ = db.DataSource.Exec("DELETE FROM test_batch_find WHERE playerId LIKE ?", playerPrefix+"%")
+	}
+}
+
 func TestSessionFlush_MergedPersistsToDB(t *testing.T) {
 	db := CreateTestDb(t)
 	if db == nil {
 		return
 	}
 	defer db.Close()
+	defer prepareSessionFlushTable(t, db, "mf_")()
 
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                  true,
@@ -67,13 +79,15 @@ func TestSessionFlush_ShutdownFlushAll(t *testing.T) {
 		return
 	}
 	defer db.Close()
+	defer prepareSessionFlushTable(t, db, "sd_")()
 
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                     true,
 		SessionFlushIntervalMs:      0,
-		SessionFlushMergeByTable:      true,
+		SessionFlushMergeByTable:    true,
 		ShutdownFlushMaxWorkers:     4,
 		ShutdownFlushWaveIntervalMs: 5,
 	})
@@ -104,8 +118,10 @@ func TestSessionFlush_ConcurrentCloseSession(t *testing.T) {
 		return
 	}
 	defer db.Close()
+	defer prepareSessionFlushTable(t, db, "cc_")()
 
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                true,
@@ -157,7 +173,9 @@ func TestWriteBuffer_IntegrationDedupAndFlush(t *testing.T) {
 		return
 	}
 	defer db.Close()
+	defer prepareSessionFlushTable(t, db, "wb_int")()
 
+	SaveCrudPerformanceSettings(t)
 	db233.GetCrudPerformanceSettings().ApplyFull(db233.CrudPerformanceSettings{
 		WriteBufferEnabled:         true,
 		WriteBufferMaxBatchSize:    5,
@@ -166,6 +184,7 @@ func TestWriteBuffer_IntegrationDedupAndFlush(t *testing.T) {
 	})
 
 	repo := db233.NewBaseCrudRepository(db)
+	defer repo.Close()
 	e := &TestBatchFindEntity{PlayerID: "wb_int", Name: "v1", Level: 1}
 	if err := repo.SaveBuffered(e); err != nil {
 		t.Fatal(err)
@@ -195,14 +214,16 @@ func TestSessionFlush_PeriodicTick(t *testing.T) {
 		return
 	}
 	defer db.Close()
+	defer prepareSessionFlushTable(t, db, "tick")()
 
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
 	db233.GetEntityCacheSettings().ApplyFull(db233.EntityCacheSettings{
 		Enabled:                       true,
 		SessionFlushIntervalMs:        80,
 		SessionFlushIntervalJitterPct: 0,
-		SessionFlushMergeByTable:        true,
+		SessionFlushMergeByTable:      true,
 	})
 
 	repo := db233.NewBaseCrudRepository(db)

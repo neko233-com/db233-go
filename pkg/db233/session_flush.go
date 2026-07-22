@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -14,16 +15,43 @@ func jitterDuration(base time.Duration, jitterPct int) time.Duration {
 	if jitterPct > 100 {
 		jitterPct = 100
 	}
-	delta := int64(base) * int64(jitterPct) / 100
+	baseNanos := int64(base)
+	// 先除后乘并补余数，避免接近 MaxInt64 的 duration 乘百分比溢出。
+	delta := (baseNanos/100)*int64(jitterPct) + (baseNanos%100)*int64(jitterPct)/100
 	if delta <= 0 {
 		return base
 	}
-	offset := rand.Int64N(2*delta+1) - delta
-	result := base + time.Duration(offset)
+	span := 2*uint64(delta) + 1
+	sample := rand.Uint64N(span)
+	var result time.Duration
+	if sample <= uint64(delta) {
+		decrease := time.Duration(uint64(delta) - sample)
+		result = base - decrease
+	} else {
+		increase := time.Duration(sample - uint64(delta))
+		maxIncrease := time.Duration(1<<63-1) - base
+		if increase > maxIncrease {
+			result = time.Duration(1<<63 - 1)
+		} else {
+			result = base + increase
+		}
+	}
 	if result < time.Millisecond {
 		return time.Millisecond
 	}
 	return result
+}
+
+func saturatedMilliseconds(value int) time.Duration {
+	if value <= 0 {
+		return 0
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	maxMilliseconds := int64(maxDuration / time.Millisecond)
+	if int64(value) > maxMilliseconds {
+		return maxDuration
+	}
+	return time.Duration(value) * time.Millisecond
 }
 
 func buildFlushBatchTasks(entities []IDbEntity, chunkSize int, tableNameOf func(IDbEntity) string) [][]IDbEntity {
@@ -54,15 +82,54 @@ func buildFlushBatchTasks(entities []IDbEntity, chunkSize int, tableNameOf func(
 }
 
 func (sr *SessionRepository) flushEntityBatches(tasks [][]IDbEntity, maxWorkers int, waveIntervalMs int) error {
+	return sr.flushEntityBatchesWithWriter(
+		tasks,
+		maxWorkers,
+		waveIntervalMs,
+		func(entities []IDbEntity) error {
+			return sr.repo.updateBatchUpsertWithFlushSource(entities, FlushWriteSourceSession)
+		},
+	)
+}
+
+func (sr *SessionRepository) flushPreparedEntityBatchesUnderGenerationLease(
+	tasks [][]IDbEntity,
+	maxWorkers int,
+	waveIntervalMs int,
+	databaseGeneration string,
+) error {
+	return sr.flushEntityBatchesWithWriter(
+		tasks,
+		maxWorkers,
+		waveIntervalMs,
+		func(entities []IDbEntity) error {
+			return sr.repo.updateBatchUpsertPreparedUnderGenerationLeaseWithFlushSource(
+				entities,
+				databaseGeneration,
+				FlushWriteSourceSession,
+			)
+		},
+	)
+}
+
+func (sr *SessionRepository) flushEntityBatchesWithWriter(
+	tasks [][]IDbEntity,
+	maxWorkers int,
+	waveIntervalMs int,
+	writer func([]IDbEntity) error,
+) error {
 	if len(tasks) == 0 {
 		return nil
+	}
+	if writer == nil {
+		return NewValidationException("Session flush writer 不能为 nil")
 	}
 	if maxWorkers <= 0 {
 		maxWorkers = 8
 	}
 
 	if waveIntervalMs <= 0 || len(tasks) <= maxWorkers {
-		return sr.runFlushBatchWave(tasks, maxWorkers)
+		return sr.runFlushBatchWaveWithWriter(tasks, maxWorkers, writer)
 	}
 
 	for start := 0; start < len(tasks); start += maxWorkers {
@@ -70,19 +137,36 @@ func (sr *SessionRepository) flushEntityBatches(tasks [][]IDbEntity, maxWorkers 
 		if end > len(tasks) {
 			end = len(tasks)
 		}
-		if err := sr.runFlushBatchWave(tasks[start:end], maxWorkers); err != nil {
+		if err := sr.runFlushBatchWaveWithWriter(tasks[start:end], maxWorkers, writer); err != nil {
 			return err
 		}
 		if end < len(tasks) {
-			time.Sleep(time.Duration(waveIntervalMs) * time.Millisecond)
+			time.Sleep(saturatedMilliseconds(waveIntervalMs))
 		}
 	}
 	return nil
 }
 
 func (sr *SessionRepository) runFlushBatchWave(tasks [][]IDbEntity, maxWorkers int) error {
+	return sr.runFlushBatchWaveWithWriter(
+		tasks,
+		maxWorkers,
+		func(entities []IDbEntity) error {
+			return sr.repo.updateBatchUpsertWithFlushSource(entities, FlushWriteSourceSession)
+		},
+	)
+}
+
+func (sr *SessionRepository) runFlushBatchWaveWithWriter(
+	tasks [][]IDbEntity,
+	maxWorkers int,
+	writer func([]IDbEntity) error,
+) error {
 	if len(tasks) == 0 {
 		return nil
+	}
+	if writer == nil {
+		return NewValidationException("Session flush writer 不能为 nil")
 	}
 	if maxWorkers <= 0 {
 		maxWorkers = 8
@@ -102,7 +186,7 @@ func (sr *SessionRepository) runFlushBatchWave(tasks [][]IDbEntity, maxWorkers i
 		go func(entities []IDbEntity) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := sr.repo.UpdateBatchUpsert(entities); err != nil {
+			if err := writer(entities); err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -115,8 +199,8 @@ func (sr *SessionRepository) runFlushBatchWave(tasks [][]IDbEntity, maxWorkers i
 	return firstErr
 }
 
-func (sr *SessionRepository) acquireFlushSlot() {
-	max := GetEntityCacheSettings().Snapshot().SessionFlushMaxWorkers
+func (sr *SessionRepository) acquireFlushSlot() func() {
+	max := entityCacheSettingsSnapshot().SessionFlushMaxWorkers
 	if max <= 0 {
 		max = 8
 	}
@@ -127,62 +211,98 @@ func (sr *SessionRepository) acquireFlushSlot() {
 	sem := sr.flushSem
 	sr.flushSemMu.Unlock()
 	sem <- struct{}{}
-}
-
-func (sr *SessionRepository) releaseFlushSlot() {
-	sr.flushSemMu.Lock()
-	sem := sr.flushSem
-	sr.flushSemMu.Unlock()
-	if sem != nil {
+	// release 必须绑定本次 acquire 使用的 channel；运行期调并发度会替换
+	// sr.flushSem，重新读取字段会从错误 channel 接收并永久阻塞。
+	return func() {
 		<-sem
 	}
 }
 
 func (sr *SessionRepository) flushSession(session *PlayerSession, includeWriteBuffer bool) error {
-	sr.acquireFlushSlot()
-	defer sr.releaseFlushSlot()
+	releaseSlot := sr.acquireFlushSlot()
+	defer releaseSlot()
 	return session.flushInternal(includeWriteBuffer)
 }
 
-func (sr *SessionRepository) drainAllDirtyByPlayer() map[string][]IDbEntity {
-	drained := make(map[string][]IDbEntity)
+func (sr *SessionRepository) drainAllDirtyByPlayer() (map[string][]sessionDirtySnapshot, []func()) {
+	drained := make(map[string][]sessionDirtySnapshot)
+	releases := make([]func(), 0)
 	sr.sessions.Range(func(key, value any) bool {
 		playerID := key.(string)
 		session := value.(*PlayerSession)
+		release, err := session.beginLocalOperation()
+		if err != nil {
+			return true
+		}
 		if entities := session.takeDirty(); len(entities) > 0 {
 			drained[playerID] = entities
+			releases = append(releases, release)
+		} else {
+			release()
 		}
 		return true
 	})
-	return drained
+	return drained, releases
 }
 
-func (sr *SessionRepository) restoreDirtyByPlayer(drained map[string][]IDbEntity) {
-	for playerID, entities := range drained {
+func releaseSessionOperations(releases []func()) {
+	for _, release := range releases {
+		release()
+	}
+}
+
+func (sr *SessionRepository) restoreDirtyByPlayer(drained map[string][]sessionDirtySnapshot) {
+	for playerID, snapshots := range drained {
 		if v, ok := sr.sessions.Load(playerID); ok {
-			v.(*PlayerSession).restoreDirty(entities)
+			v.(*PlayerSession).restoreDirty(snapshots)
 		}
 	}
 }
 
+func prepareSessionDirtyByPlayer(
+	drained map[string][]sessionDirtySnapshot,
+) (prepared []IDbEntity, failed map[string][]sessionDirtySnapshot, preparationErr error) {
+	failed = make(map[string][]sessionDirtySnapshot)
+	preparationErrors := make([]error, 0, 4)
+	for playerID, snapshots := range drained {
+		playerPrepared, playerFailed, err := prepareSessionDirtySnapshots(snapshots)
+		// prepareSessionDirtySnapshots mutates the slice state in place. Store it
+		// back explicitly because map index expressions are not addressable.
+		drained[playerID] = snapshots
+		prepared = append(prepared, playerPrepared...)
+		if len(playerFailed) > 0 {
+			failed[playerID] = playerFailed
+		}
+		if err != nil {
+			preparationErrors = append(preparationErrors, err)
+		}
+	}
+	return prepared, failed, errors.Join(preparationErrors...)
+}
+
 func (sr *SessionRepository) flushAllDirtyMerged(settings EntityCacheSettings) error {
-	drained := sr.drainAllDirtyByPlayer()
+	drained, releases := sr.drainAllDirtyByPlayer()
+	defer releaseSessionOperations(releases)
 	if len(drained) == 0 {
 		return nil
 	}
 
-	var all []IDbEntity
-	for _, entities := range drained {
-		all = append(all, entities...)
-	}
+	all, preparationFailed, preparationErr := prepareSessionDirtyByPlayer(drained)
 
 	chunkSize := GetCrudPerformanceSettings().Snapshot().BatchUpsertChunkSize
 	tasks := buildFlushBatchTasks(all, chunkSize, sr.repo.getTableName)
-	if err := sr.flushEntityBatches(tasks, settings.SessionFlushMaxWorkers, 0); err != nil {
+	writeErr := sr.flushPreparedEntityBatchesUnderGenerationLease(
+		tasks,
+		settings.SessionFlushMaxWorkers,
+		0,
+		sr.databaseGeneration,
+	)
+	if writeErr != nil {
 		sr.restoreDirtyByPlayer(drained)
-		return err
+	} else {
+		sr.restoreDirtyByPlayer(preparationFailed)
 	}
-	return nil
+	return errors.Join(preparationErr, writeErr)
 }
 
 func (sr *SessionRepository) flushAllDirtyPerSession(settings EntityCacheSettings) error {
@@ -211,6 +331,16 @@ func (sr *SessionRepository) flushAllDirtyPerSession(settings EntityCacheSetting
 		go func(s *PlayerSession) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			release, operationErr := s.beginLocalOperation()
+			if operationErr != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = operationErr
+				}
+				errMu.Unlock()
+				return
+			}
+			defer release()
 			if err := s.flushInternal(false); err != nil {
 				errMu.Lock()
 				if firstErr == nil {
@@ -225,13 +355,10 @@ func (sr *SessionRepository) flushAllDirtyPerSession(settings EntityCacheSetting
 }
 
 func (sr *SessionRepository) flushAllShutdown() error {
-	settings := GetEntityCacheSettings().Snapshot()
-	drained := sr.drainAllDirtyByPlayer()
-
-	var all []IDbEntity
-	for _, entities := range drained {
-		all = append(all, entities...)
-	}
+	settings := entityCacheSettingsSnapshot()
+	drained, releases := sr.drainAllDirtyByPlayer()
+	defer releaseSessionOperations(releases)
+	all, preparationFailed, preparationErr := prepareSessionDirtyByPlayer(drained)
 
 	maxWorkers := settings.ShutdownFlushMaxWorkers
 	if maxWorkers <= 0 {
@@ -241,18 +368,71 @@ func (sr *SessionRepository) flushAllShutdown() error {
 		maxWorkers = 8
 	}
 
-	var firstErr error
+	var writeErr error
 	if len(all) > 0 {
 		chunkSize := GetCrudPerformanceSettings().Snapshot().BatchUpsertChunkSize
 		tasks := buildFlushBatchTasks(all, chunkSize, sr.repo.getTableName)
-		if err := sr.flushEntityBatches(tasks, maxWorkers, settings.ShutdownFlushWaveIntervalMs); err != nil {
-			sr.restoreDirtyByPlayer(drained)
-			firstErr = err
-		}
+		writeErr = sr.flushPreparedEntityBatchesUnderGenerationLease(
+			tasks,
+			maxWorkers,
+			settings.ShutdownFlushWaveIntervalMs,
+			sr.databaseGeneration,
+		)
 	}
+	if writeErr != nil {
+		sr.restoreDirtyByPlayer(drained)
+	} else {
+		sr.restoreDirtyByPlayer(preparationFailed)
+	}
+	firstErr := errors.Join(preparationErr, writeErr)
 
-	if err := sr.repo.FlushWriteBuffer(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("FlushWriteBuffer: %w", err)
+	if err := sr.repo.flushWriteBufferUnderGenerationLease(sr.databaseGeneration); err != nil {
+		firstErr = errors.Join(firstErr, fmt.Errorf("FlushWriteBuffer: %w", err))
 	}
 	return firstErr
+}
+
+// flushAllForGenerationTransitionUnderLease 在调用方同时持有 Session generation
+// 写锁和 Db generation 写锁时，严格刷出旧代 Session 脏数据。它不能调用公开
+// UpdateBatchUpsert/FlushWriteBuffer，否则会重入 Db generation 读锁并死锁。
+func (sr *SessionRepository) flushAllForGenerationTransitionUnderLease(expectedGeneration string) error {
+	if sr == nil {
+		return nil
+	}
+	if sr.repo == nil {
+		return NewValidationException("SessionRepository 未绑定 Repository")
+	}
+	if sr.databaseGeneration != expectedGeneration {
+		return fmt.Errorf(
+			"%w: SessionRepository=%s, 当前=%s",
+			ErrDatabaseGenerationChanged,
+			safeValueForLog(sr.databaseGeneration),
+			safeValueForLog(expectedGeneration),
+		)
+	}
+
+	drained, releases := sr.drainAllDirtyByPlayer()
+	defer releaseSessionOperations(releases)
+	if len(drained) == 0 {
+		return nil
+	}
+
+	all, preparationFailed, preparationErr := prepareSessionDirtyByPlayer(drained)
+	var writeErr error
+	if len(all) > 0 {
+		writeErr = sr.repo.updateBatchUpsertPreparedUnderGenerationLeaseWithFlushSource(
+			all,
+			expectedGeneration,
+			FlushWriteSourceSession,
+		)
+	}
+	if writeErr != nil {
+		sr.restoreDirtyByPlayer(drained)
+	} else {
+		sr.restoreDirtyByPlayer(preparationFailed)
+	}
+	if err := errors.Join(preparationErr, writeErr); err != nil {
+		return fmt.Errorf("刷写 generation=%s 的 Session 脏数据: %w", safeValueForLog(expectedGeneration), err)
+	}
+	return nil
 }

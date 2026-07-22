@@ -1,6 +1,8 @@
 package benchmarks
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -30,8 +32,6 @@ func TestFrameworkCompare_Report(t *testing.T) {
 		t.Skip("短模式跳过框架对比")
 	}
 	env := openBenchEnv(t)
-	defer env.SQL.Close()
-	defer env.DB233.Close()
 
 	playerID := benchIDPrefix + "001"
 	rows := []compareRow{
@@ -50,15 +50,15 @@ func TestFrameworkCompare_Report(t *testing.T) {
 	}
 
 	t.Log("\n========== Go 框架性能对比（中位数 ms，同机 MySQL）==========")
-	t.Log(fmt.Sprintf("%-14s %12s %12s %14s %14s %8s",
-		"框架", "单次读", "登录3表", "批量写50", "Session读1k", "读倍率"))
+	t.Logf("%-14s %12s %12s %14s %14s %8s",
+		"框架", "单次读", "登录3表", "批量写50", "Session读1k", "读倍率")
 	for _, r := range rows {
 		sessionCol := "-"
 		if r.SessionRead1kMs >= 0 {
 			sessionCol = fmt.Sprintf("%.3f", r.SessionRead1kMs)
 		}
-		t.Log(fmt.Sprintf("%-14s %12.3f %12.3f %14.3f %14s %7.2fx",
-			r.Framework, r.SingleReadMs, r.Login3TableMs, r.BatchUpsert50Ms, sessionCol, r.RelSingleRead))
+		t.Logf("%-14s %12.3f %12.3f %14.3f %14s %7.2fx",
+			r.Framework, r.SingleReadMs, r.Login3TableMs, r.BatchUpsert50Ms, sessionCol, r.RelSingleRead)
 	}
 
 	db233Row := rows[0]
@@ -101,15 +101,25 @@ func runCompareDB233(t *testing.T, env *benchEnv, playerID string) compareRow {
 		t.Fatalf("OpenSession: %v", err)
 	}
 
-	single := benchMedian(t, compareRuns, func() {
-		_, _ = env.Repo.FindById(playerID, &BenchPlayerEntity{})
+	single := benchMedian(t, compareRuns, func() error {
+		_, err := env.Repo.FindById(playerID, &BenchPlayerEntity{})
+		return err
 	})
-	login := benchMedian(t, compareRuns, func() {
-		_ = env.Repo.FindByIdConcurrent(playerID, []db233.IDbEntity{
+	login := benchMedian(t, compareRuns, func() error {
+		items := env.Repo.FindByIdConcurrent(playerID, []db233.IDbEntity{
 			&BenchPlayerEntity{}, &BenchBagEntity{}, &BenchQuestEntity{},
 		}, nil)
+		for _, item := range items {
+			if item.Err != nil {
+				return item.Err
+			}
+			if item.Entity == nil {
+				return errors.New("concurrent read returned nil")
+			}
+		}
+		return nil
 	})
-	batch := benchMedian(t, compareRuns, func() {
+	batch := benchMedian(t, compareRuns, func() error {
 		ents := make([]db233.IDbEntity, 50)
 		for i := 0; i < 50; i++ {
 			ents[i] = &BenchPlayerEntity{
@@ -117,12 +127,15 @@ func runCompareDB233(t *testing.T, env *benchEnv, playerID string) compareRow {
 				Name:     "b", Level: i,
 			}
 		}
-		_ = env.Repo.UpdateBatchUpsert(ents)
+		return env.Repo.UpdateBatchUpsert(ents)
 	})
-	sessionRead := benchMedian(t, compareRuns, func() {
+	sessionRead := benchMedian(t, compareRuns, func() error {
 		for i := 0; i < 1000; i++ {
-			_ = session.Get(&BenchPlayerEntity{})
+			if session.Get(&BenchPlayerEntity{}) == nil {
+				return errors.New("session read returned nil")
+			}
 		}
+		return nil
 	})
 
 	return compareRow{
@@ -134,91 +147,147 @@ func runCompareDB233(t *testing.T, env *benchEnv, playerID string) compareRow {
 func runCompareRawSQL(t *testing.T, env *benchEnv, playerID string) compareRow {
 	t.Helper()
 	q := "SELECT playerId, name, level FROM " + benchTable + " WHERE playerId = ?"
-	single := benchMedian(t, compareRuns, func() {
+	single := benchMedian(t, compareRuns, func() error {
 		var id, name string
 		var level int
-		_ = env.SQL.QueryRow(q, playerID).Scan(&id, &name, &level)
+		return env.SQL.QueryRow(q, playerID).Scan(&id, &name, &level)
 	})
-	login := benchMedian(t, compareRuns, func() {
+	login := benchMedian(t, compareRuns, func() error {
 		var id, name string
 		var level int
-		_ = env.SQL.QueryRow(q, playerID).Scan(&id, &name, &level)
-		var gold int
-		_ = env.SQL.QueryRow("SELECT gold FROM "+benchBagTable+" WHERE playerId = ?", playerID).Scan(&gold)
-		var qd string
-		_ = env.SQL.QueryRow("SELECT questData FROM "+benchQuestTable+" WHERE playerId = ?", playerID).Scan(&qd)
-	})
-	batch := benchMedian(t, compareRuns, func() {
-		tx, _ := env.SQL.Begin()
-		stmt, _ := tx.Prepare("INSERT INTO " + benchTable + " (playerId,name,level) VALUES (?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name), level=VALUES(level)")
-		for i := 0; i < 50; i++ {
-			_, _ = stmt.Exec(fmt.Sprintf("%s_r%d", benchIDPrefix, i), "r", i)
+		if err := env.SQL.QueryRow(q, playerID).Scan(&id, &name, &level); err != nil {
+			return err
 		}
-		_ = stmt.Close()
-		_ = tx.Commit()
+		var gold int
+		if err := env.SQL.QueryRow("SELECT gold FROM "+benchBagTable+" WHERE playerId = ?", playerID).Scan(&gold); err != nil {
+			return err
+		}
+		var qd string
+		return env.SQL.QueryRow("SELECT questData FROM "+benchQuestTable+" WHERE playerId = ?", playerID).Scan(&qd)
+	})
+	batch := benchMedian(t, compareRuns, func() (returnErr error) {
+		tx, err := env.SQL.Begin()
+		if err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+					returnErr = errors.Join(returnErr, err)
+				}
+			}
+		}()
+		stmt, err := tx.Prepare("INSERT INTO " + benchTable + " (playerId,name,level) VALUES (?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name), level=VALUES(level)")
+		if err != nil {
+			return err
+		}
+		for i := 0; i < 50; i++ {
+			if _, err := stmt.Exec(fmt.Sprintf("%s_r%d", benchIDPrefix, i), "r", i); err != nil {
+				return errors.Join(err, stmt.Close())
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		committed = true
+		return nil
 	})
 	return compareRow{Framework: "database/sql", SingleReadMs: single, Login3TableMs: login, BatchUpsert50Ms: batch, SessionRead1kMs: -1}
 }
 
 func runCompareSQLX(t *testing.T, env *benchEnv, playerID string) compareRow {
 	t.Helper()
-	single := benchMedian(t, compareRuns, func() {
+	single := benchMedian(t, compareRuns, func() error {
 		var p sqlxPlayer
-		_ = env.SQLX.Get(&p, "SELECT playerId, name, level FROM "+benchTable+" WHERE playerId = ?", playerID)
+		return env.SQLX.Get(&p, "SELECT playerId, name, level FROM "+benchTable+" WHERE playerId = ?", playerID)
 	})
-	login := benchMedian(t, compareRuns, func() {
+	login := benchMedian(t, compareRuns, func() error {
 		var p sqlxPlayer
 		var b sqlxBag
 		var q sqlxQuest
-		_ = env.SQLX.Get(&p, "SELECT playerId, name, level FROM "+benchTable+" WHERE playerId = ?", playerID)
-		_ = env.SQLX.Get(&b, "SELECT playerId, gold FROM "+benchBagTable+" WHERE playerId = ?", playerID)
-		_ = env.SQLX.Get(&q, "SELECT playerId, questData FROM "+benchQuestTable+" WHERE playerId = ?", playerID)
-	})
-	batch := benchMedian(t, compareRuns, func() {
-		tx, _ := env.SQLX.Beginx()
-		for i := 0; i < 50; i++ {
-			_, _ = tx.Exec("INSERT INTO "+benchTable+" (playerId,name,level) VALUES (?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name), level=VALUES(level)",
-				fmt.Sprintf("%s_x%d", benchIDPrefix, i), "x", i)
+		if err := env.SQLX.Get(&p, "SELECT playerId, name, level FROM "+benchTable+" WHERE playerId = ?", playerID); err != nil {
+			return err
 		}
-		_ = tx.Commit()
+		if err := env.SQLX.Get(&b, "SELECT playerId, gold FROM "+benchBagTable+" WHERE playerId = ?", playerID); err != nil {
+			return err
+		}
+		return env.SQLX.Get(&q, "SELECT playerId, questData FROM "+benchQuestTable+" WHERE playerId = ?", playerID)
+	})
+	batch := benchMedian(t, compareRuns, func() (returnErr error) {
+		tx, err := env.SQLX.Beginx()
+		if err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+					returnErr = errors.Join(returnErr, err)
+				}
+			}
+		}()
+		for i := 0; i < 50; i++ {
+			if _, err := tx.Exec("INSERT INTO "+benchTable+" (playerId,name,level) VALUES (?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name), level=VALUES(level)",
+				fmt.Sprintf("%s_x%d", benchIDPrefix, i), "x", i); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		committed = true
+		return nil
 	})
 	return compareRow{Framework: "sqlx", SingleReadMs: single, Login3TableMs: login, BatchUpsert50Ms: batch, SessionRead1kMs: -1}
 }
 
 func runCompareGORM(t *testing.T, env *benchEnv, playerID string) compareRow {
 	t.Helper()
-	single := benchMedian(t, compareRuns, func() {
+	single := benchMedian(t, compareRuns, func() error {
 		var p gormPlayer
-		_ = env.GORM.Where("playerId = ?", playerID).First(&p).Error
+		return env.GORM.Where("playerId = ?", playerID).First(&p).Error
 	})
-	login := benchMedian(t, compareRuns, func() {
+	login := benchMedian(t, compareRuns, func() error {
 		var p gormPlayer
 		var b gormBag
 		var q gormQuest
-		_ = env.GORM.Where("playerId = ?", playerID).First(&p).Error
-		_ = env.GORM.Where("playerId = ?", playerID).First(&b).Error
-		_ = env.GORM.Where("playerId = ?", playerID).First(&q).Error
+		if err := env.GORM.Where("playerId = ?", playerID).First(&p).Error; err != nil {
+			return err
+		}
+		if err := env.GORM.Where("playerId = ?", playerID).First(&b).Error; err != nil {
+			return err
+		}
+		return env.GORM.Where("playerId = ?", playerID).First(&q).Error
 	})
-	batch := benchMedian(t, compareRuns, func() {
+	batch := benchMedian(t, compareRuns, func() error {
 		rows := make([]gormPlayer, 50)
 		for i := 0; i < 50; i++ {
 			rows[i] = gormPlayer{PlayerID: fmt.Sprintf("%s_g%d", benchIDPrefix, i), Name: "g", Level: i}
 		}
-		_ = env.GORM.Save(&rows).Error
+		return env.GORM.Save(&rows).Error
 	})
 	return compareRow{Framework: "GORM", SingleReadMs: single, Login3TableMs: login, BatchUpsert50Ms: batch, SessionRead1kMs: -1}
 }
 
-func benchMedian(t *testing.T, runs int, fn func()) float64 {
+func benchMedian(t *testing.T, runs int, fn func() error) float64 {
 	t.Helper()
 	for i := 0; i < compareWarmup; i++ {
-		fn()
+		if err := fn(); err != nil {
+			t.Fatalf("benchmark warmup failed: %s", db233.SafeErrorSummary(err))
+		}
 	}
 	samples := make([]float64, runs)
 	for i := 0; i < runs; i++ {
 		start := time.Now()
-		fn()
+		err := fn()
 		samples[i] = float64(time.Since(start).Microseconds()) / 1000.0
+		if err != nil {
+			t.Fatalf("benchmark sample failed: %s", db233.SafeErrorSummary(err))
+		}
 	}
 	return medianMs(samples)
 }
@@ -251,6 +320,12 @@ func SetBenchEntityCacheKey(t *testing.T, key string, value any) {
 	default:
 		t.Fatalf("unsupported key %s", key)
 	}
-	_ = db233.GetEntityCacheSettings().Set(key, value)
-	t.Cleanup(func() { _ = db233.GetEntityCacheSettings().Set(key, old) })
+	if err := db233.GetEntityCacheSettings().Set(key, value); err != nil {
+		t.Fatalf("set entity cache setting failed: %s", db233.SafeErrorSummary(err))
+	}
+	t.Cleanup(func() {
+		if err := db233.GetEntityCacheSettings().Set(key, old); err != nil {
+			t.Errorf("restore entity cache setting failed: %s", db233.SafeErrorSummary(err))
+		}
+	})
 }

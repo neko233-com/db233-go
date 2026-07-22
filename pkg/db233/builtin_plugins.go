@@ -2,6 +2,7 @@ package db233
 
 import (
 	"log"
+	"sync/atomic"
 	"time"
 )
 
@@ -9,6 +10,7 @@ import (
 // 记录 SQL 执行的详细信息
 type LoggingPlugin struct {
 	*AbstractDb233Plugin
+	logFullSQL atomic.Bool
 }
 
 // 创建日志插件
@@ -23,16 +25,30 @@ func (p *LoggingPlugin) InitPlugin() {
 	log.Println("LoggingPlugin initialized")
 }
 
+// SetLogFullSQL 控制是否记录完整 SQL。默认关闭；开启后日志可能包含敏感字面量。
+func (p *LoggingPlugin) SetLogFullSQL(enabled bool) {
+	p.logFullSQL.Store(enabled)
+}
+
 // SQL 执行前记录日志
 func (p *LoggingPlugin) PreExecuteSql(context *ExecuteSqlContext) {
-	log.Printf("[SQL-PRE] %s, Params: %v", context.Sql, context.Params)
+	if context == nil {
+		log.Print("[SQL-PRE] skipped: nil context")
+		return
+	}
+	// 参数值和数量都可能形成业务侧信道；默认与完整 SQL 模式均不记录。
+	log.Printf("[SQL-PRE] %s", sqlForComponentLog(context.Sql, p.logFullSQL.Load()))
 }
 
 // SQL 执行后记录日志
 func (p *LoggingPlugin) PostExecuteSql(context *ExecuteSqlContext) {
+	if context == nil {
+		log.Print("[SQL-POST] skipped: nil context")
+		return
+	}
 	duration := context.Duration
 	if context.Error != nil {
-		log.Printf("[SQL-POST] ERROR - Duration: %v, Error: %v", duration, context.Error)
+		log.Printf("[SQL-POST] ERROR - Duration: %v, Error: %s", duration, safeErrorForLog(context.Error))
 	} else {
 		log.Printf("[SQL-POST] SUCCESS - Duration: %v, AffectedRows: %d", duration, context.AffectedRows)
 	}
@@ -43,6 +59,7 @@ func (p *LoggingPlugin) PostExecuteSql(context *ExecuteSqlContext) {
 type PerformanceMonitorPlugin struct {
 	*AbstractDb233Plugin
 	slowQueryThreshold time.Duration
+	logFullSQL         atomic.Bool
 }
 
 // 创建性能监控插件
@@ -58,11 +75,19 @@ func (p *PerformanceMonitorPlugin) InitPlugin() {
 	log.Printf("PerformanceMonitorPlugin initialized with threshold: %v", p.slowQueryThreshold)
 }
 
+// SetLogFullSQL 控制慢查询日志是否记录完整 SQL。默认关闭。
+func (p *PerformanceMonitorPlugin) SetLogFullSQL(enabled bool) {
+	p.logFullSQL.Store(enabled)
+}
+
 // SQL 执行后检查性能
 func (p *PerformanceMonitorPlugin) PostExecuteSql(context *ExecuteSqlContext) {
+	if context == nil {
+		return
+	}
 	if context.Duration > p.slowQueryThreshold {
-		log.Printf("[SLOW-QUERY] SQL: %s, Duration: %v, Threshold: %v",
-			context.Sql, context.Duration, p.slowQueryThreshold)
+		log.Printf("[SLOW-QUERY] %s, Duration: %v, Threshold: %v",
+			sqlForComponentLog(context.Sql, p.logFullSQL.Load()), context.Duration, p.slowQueryThreshold)
 	}
 }
 
@@ -70,52 +95,45 @@ func (p *PerformanceMonitorPlugin) PostExecuteSql(context *ExecuteSqlContext) {
 // 收集 SQL 执行的各项指标
 type MetricsPlugin struct {
 	*AbstractDb233Plugin
-	metrics map[string]any
+	totalQueries    atomic.Int64
+	totalDurationNs atomic.Int64
+	errorCount      atomic.Int64
 }
 
 // 创建指标收集插件
 func NewMetricsPlugin() *MetricsPlugin {
 	return &MetricsPlugin{
 		AbstractDb233Plugin: NewAbstractDb233Plugin("metrics-plugin"),
-		metrics:             make(map[string]any),
 	}
 }
 
 // 初始化插件
 func (p *MetricsPlugin) InitPlugin() {
 	log.Println("MetricsPlugin initialized")
-	p.metrics["total_queries"] = 0
-	p.metrics["total_duration"] = time.Duration(0)
-	p.metrics["error_count"] = 0
+	p.totalQueries.Store(0)
+	p.totalDurationNs.Store(0)
+	p.errorCount.Store(0)
 }
 
 // SQL 执行后收集指标
 func (p *MetricsPlugin) PostExecuteSql(context *ExecuteSqlContext) {
-	// 更新总查询数
-	if totalQueries, ok := p.metrics["total_queries"].(int); ok {
-		p.metrics["total_queries"] = totalQueries + 1
+	if context == nil {
+		return
 	}
-
-	// 更新总耗时
-	if totalDuration, ok := p.metrics["total_duration"].(time.Duration); ok {
-		p.metrics["total_duration"] = totalDuration + context.Duration
-	}
-
-	// 更新错误数
+	p.totalQueries.Add(1)
+	p.totalDurationNs.Add(int64(context.Duration))
 	if context.Error != nil {
-		if errorCount, ok := p.metrics["error_count"].(int); ok {
-			p.metrics["error_count"] = errorCount + 1
-		}
+		p.errorCount.Add(1)
 	}
 }
 
 // 获取指标数据
 func (p *MetricsPlugin) GetMetrics() map[string]any {
-	result := make(map[string]any)
-	for k, v := range p.metrics {
-		result[k] = v
+	return map[string]any{
+		"total_queries":  int(p.totalQueries.Load()),
+		"total_duration": time.Duration(p.totalDurationNs.Load()),
+		"error_count":    int(p.errorCount.Load()),
 	}
-	return result
 }
 
 // 打印指标报告

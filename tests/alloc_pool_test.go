@@ -11,9 +11,9 @@ type testAllocPoolEntity struct {
 	Name string `db:"name"`
 }
 
-func (e *testAllocPoolEntity) TableName() string              { return "test_alloc_pool" }
-func (e *testAllocPoolEntity) SerializeBeforeSaveDb()         {}
-func (e *testAllocPoolEntity) DeserializeAfterLoadDb()        {}
+func (e *testAllocPoolEntity) TableName() string                      { return "test_alloc_pool" }
+func (e *testAllocPoolEntity) SerializeBeforeSaveDb()                 {}
+func (e *testAllocPoolEntity) DeserializeAfterLoadDb()                {}
 func (e *testAllocPoolEntity) GetTableMetaData() *db233.TableMetaData { return nil }
 
 func TestAllocPool_BatchUpsertAndFindByIds(t *testing.T) {
@@ -48,9 +48,9 @@ type testAllocOffEntity struct {
 	Name string `db:"name"`
 }
 
-func (e *testAllocOffEntity) TableName() string              { return "test_alloc_off" }
-func (e *testAllocOffEntity) SerializeBeforeSaveDb()         {}
-func (e *testAllocOffEntity) DeserializeAfterLoadDb()        {}
+func (e *testAllocOffEntity) TableName() string                      { return "test_alloc_off" }
+func (e *testAllocOffEntity) SerializeBeforeSaveDb()                 {}
+func (e *testAllocOffEntity) DeserializeAfterLoadDb()                {}
 func (e *testAllocOffEntity) GetTableMetaData() *db233.TableMetaData { return nil }
 
 func TestAllocPool_DisabledFallback(t *testing.T) {

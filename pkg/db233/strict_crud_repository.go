@@ -47,23 +47,29 @@ func NewStrictCrudRepository(db *Db) StrictCrudRepository {
 }
 
 func (r *BaseCrudRepository) FindByIdContext(ctx context.Context, id any, entityType IDbEntity) (IDbEntity, error) {
-	if r == nil {
-		return nil, NewValidationException("Repository 不能为 nil")
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	return findByIdStrictContext(ctx, strictDBRowsQueryer{db: r.db}, r, id, entityType)
 }
 
 func (r *BaseCrudRepository) FindByIdsContext(ctx context.Context, ids []any, entityType IDbEntity) ([]IDbEntity, error) {
-	if r == nil {
-		return nil, NewValidationException("Repository 不能为 nil")
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	return findByIdsStrictContext(ctx, strictDBRowsQueryer{db: r.db}, r, ids, entityType)
 }
 
 func (r *BaseCrudRepository) FindAllContext(ctx context.Context, entityType IDbEntity) ([]IDbEntity, error) {
-	if r == nil {
-		return nil, NewValidationException("Repository 不能为 nil")
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	return findAllStrictContext(ctx, strictDBRowsQueryer{db: r.db}, r, entityType)
 }
 
@@ -73,10 +79,26 @@ func (r *BaseCrudRepository) FindByConditionContext(
 	params []any,
 	entityType IDbEntity,
 ) ([]IDbEntity, error) {
-	if r == nil {
-		return nil, NewValidationException("Repository 不能为 nil")
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	return findByConditionStrictContext(ctx, strictDBRowsQueryer{db: r.db}, r, condition, params, entityType)
+}
+
+func (r *BaseCrudRepository) lockStrictReadGeneration() (func(), error) {
+	if r == nil {
+		return func() {}, NewValidationException("Repository 不能为 nil")
+	}
+	if err := r.validateSQLReady(); err != nil {
+		return func() {}, err
+	}
+	_, release, err := r.db.lockCurrentDatabaseGeneration()
+	if err != nil {
+		return func() {}, err
+	}
+	return release, nil
 }
 
 // executeQueryStrictContextWithRunner 对参数组逐一查询，任一组失败即丢弃全部结果。
@@ -105,11 +127,14 @@ func executeQueryStrictContextWithRunner(
 
 	results := make([]any, 0)
 	for groupIndex, params := range effectiveParams {
+		if ctxErr := contextCauseError(ctx); ctxErr != nil {
+			return nil, NewQueryExceptionWithCause(ctxErr, fmt.Sprintf("严格查询上下文已结束: params_group=%d", groupIndex))
+		}
 		rows, queryErr := runner.QueryContext(ctx, query, params...)
 		if queryErr != nil {
 			return nil, NewQueryExceptionWithCause(
-				queryErr,
-				fmt.Sprintf("严格查询执行失败: params_group=%d, SQL=%s", groupIndex, query),
+				joinErrorWithContext(queryErr, ctx),
+				fmt.Sprintf("严格查询执行失败: params_group=%d, %s", groupIndex, sqlForError(query)),
 			)
 		}
 
@@ -117,12 +142,226 @@ func executeQueryStrictContextWithRunner(
 		if mapErr != nil {
 			return nil, NewQueryExceptionWithCause(
 				mapErr,
-				fmt.Sprintf("严格查询映射失败: params_group=%d, SQL=%s", groupIndex, query),
+				fmt.Sprintf("严格查询映射失败: params_group=%d, %s", groupIndex, sqlForError(query)),
 			)
 		}
 		results = append(results, batch...)
 	}
 	return results, nil
+}
+
+func executeQueryCompatibleContextWithRunner(
+	ctx context.Context,
+	runner strictRowsQueryer,
+	query string,
+	paramsArray [][]any,
+	returnType any,
+) ([]any, error) {
+	if ctx == nil {
+		return nil, NewValidationException("context 不能为 nil")
+	}
+	if isNilStrictValue(runner) {
+		return nil, NewValidationException("查询 runner 不能为 nil")
+	}
+	if _, typeErr := strictOrmStructType(returnType); typeErr != nil {
+		return nil, typeErr
+	}
+	effectiveParams := paramsArray
+	if len(effectiveParams) == 0 {
+		effectiveParams = [][]any{{}}
+	}
+	results := make([]any, 0)
+	for groupIndex, params := range effectiveParams {
+		if ctxErr := contextCauseError(ctx); ctxErr != nil {
+			return nil, NewQueryExceptionWithCause(ctxErr, fmt.Sprintf("查询上下文已结束: params_group=%d", groupIndex))
+		}
+		rows, queryErr := runner.QueryContext(ctx, query, params...)
+		if queryErr != nil {
+			return nil, NewQueryExceptionWithCause(
+				joinErrorWithContext(queryErr, ctx),
+				fmt.Sprintf("查询执行失败: params_group=%d, %s", groupIndex, sqlForError(query)),
+			)
+		}
+		batch, mapErr := OrmHandlerInstance.ormBatchCompatibleStrict(rows, returnType)
+		if mapErr != nil {
+			return nil, NewQueryExceptionWithCause(
+				mapErr,
+				fmt.Sprintf("查询映射失败: params_group=%d, %s", groupIndex, sqlForError(query)),
+			)
+		}
+		results = append(results, batch...)
+	}
+	return results, nil
+}
+
+func (r *BaseCrudRepository) findByIdCompatibleContext(ctx context.Context, id any, entityType IDbEntity) (IDbEntity, error) {
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if validationErr := validateStrictRepositoryRead(ctx, strictDBRowsQueryer{db: r.db}, r, entityType); validationErr != nil {
+		return nil, validationErr
+	}
+	if id == nil {
+		return nil, NewValidationException("查询 ID 不能为 nil")
+	}
+	tableName, uidColumn, metadataErr := strictRepositoryMetadata(r, entityType)
+	if metadataErr != nil {
+		return nil, metadataErr
+	}
+	query := "SELECT * FROM " + tableName + " WHERE " + uidColumn + " = ?"
+	if GetCrudPerformanceSettings().Snapshot().EnableSqlTemplateCache {
+		query = GetSqlTemplateCache().GetFindByIdSQL(entityType, tableName, uidColumn)
+	}
+	results, queryErr := executeQueryCompatibleContextWithRunner(
+		ctx, strictDBRowsQueryer{db: r.db}, query, [][]any{{id}}, entityType,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	entities, convertErr := strictEntitiesFromResults(results)
+	if convertErr != nil {
+		return nil, convertErr
+	}
+	if len(entities) == 0 {
+		return nil, nil
+	}
+	if err := runEntityDeserializeHook(entities[0]); err != nil {
+		return nil, err
+	}
+	return entities[0], nil
+}
+
+func (r *BaseCrudRepository) findByIdsCompatibleContext(ctx context.Context, ids []any, entityType IDbEntity) ([]IDbEntity, error) {
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	runner := strictDBRowsQueryer{db: r.db}
+	if validationErr := validateStrictRepositoryRead(ctx, runner, r, entityType); validationErr != nil {
+		return nil, validationErr
+	}
+	if len(ids) == 0 {
+		return []IDbEntity{}, nil
+	}
+	validIDs := make([]any, 0, len(ids))
+	for index, id := range ids {
+		if id == nil {
+			LogWarn("FindByIds 跳过 nil ID: 索引=%d", index)
+			continue
+		}
+		validIDs = append(validIDs, id)
+	}
+	if len(validIDs) == 0 {
+		return []IDbEntity{}, nil
+	}
+	tableName, uidColumn, metadataErr := strictRepositoryMetadata(r, entityType)
+	if metadataErr != nil {
+		return nil, metadataErr
+	}
+	chunkSize := GetCrudPerformanceSettings().Snapshot().FindByIdsChunkSize
+	if chunkSize <= 0 {
+		chunkSize = len(validIDs)
+	}
+	rawResults := make([]any, 0, len(validIDs))
+	for start := 0; start < len(validIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(validIDs) {
+			end = len(validIDs)
+		}
+		chunk := validIDs[start:end]
+		var query string
+		if EnableAllocPoolEnabled() {
+			query = appendFindByIdsSQL(tableName, uidColumn, len(chunk))
+		} else {
+			placeholders := make([]string, len(chunk))
+			for i := range placeholders {
+				placeholders[i] = "?"
+			}
+			query = "SELECT * FROM " + tableName + " WHERE " + uidColumn + " IN (" + StringUtilsInstance.Join(placeholders, ",") + ")"
+		}
+		batch, queryErr := executeQueryCompatibleContextWithRunner(ctx, runner, query, [][]any{chunk}, entityType)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		rawResults = append(rawResults, batch...)
+	}
+	entities, convertErr := strictEntitiesFromResults(rawResults)
+	if convertErr != nil {
+		return nil, convertErr
+	}
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
+func (r *BaseCrudRepository) findAllCompatibleContext(ctx context.Context, entityType IDbEntity) ([]IDbEntity, error) {
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	runner := strictDBRowsQueryer{db: r.db}
+	if validationErr := validateStrictRepositoryRead(ctx, runner, r, entityType); validationErr != nil {
+		return nil, validationErr
+	}
+	tableName, _, metadataErr := strictRepositoryMetadata(r, entityType)
+	if metadataErr != nil {
+		return nil, metadataErr
+	}
+	results, queryErr := executeQueryCompatibleContextWithRunner(ctx, runner, "SELECT * FROM "+tableName, nil, entityType)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	entities, convertErr := strictEntitiesFromResults(results)
+	if convertErr != nil {
+		return nil, convertErr
+	}
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
+func (r *BaseCrudRepository) findByConditionCompatibleContext(
+	ctx context.Context,
+	condition string,
+	params []any,
+	entityType IDbEntity,
+) ([]IDbEntity, error) {
+	release, err := r.lockStrictReadGeneration()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	runner := strictDBRowsQueryer{db: r.db}
+	if validationErr := validateStrictRepositoryRead(ctx, runner, r, entityType); validationErr != nil {
+		return nil, validationErr
+	}
+	if condition == "" {
+		return nil, NewValidationException("查询条件不能为空")
+	}
+	tableName, _, metadataErr := strictRepositoryMetadata(r, entityType)
+	if metadataErr != nil {
+		return nil, metadataErr
+	}
+	results, queryErr := executeQueryCompatibleContextWithRunner(
+		ctx, runner, "SELECT * FROM "+tableName+" WHERE "+condition, [][]any{params}, entityType,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	entities, convertErr := strictEntitiesFromResults(results)
+	if convertErr != nil {
+		return nil, convertErr
+	}
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
+	return entities, nil
 }
 
 func findByIdStrictContext(
@@ -136,7 +375,9 @@ func findByIdStrictContext(
 	if err != nil || entity == nil {
 		return entity, err
 	}
-	entity.DeserializeAfterLoadDb()
+	if err := runEntityDeserializeHook(entity); err != nil {
+		return nil, err
+	}
 	return entity, nil
 }
 
@@ -188,7 +429,9 @@ func findByIdsStrictContext(
 	if err != nil {
 		return nil, err
 	}
-	deserializeStrictEntities(entities)
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
@@ -270,7 +513,9 @@ func findAllStrictContext(
 	if err != nil {
 		return nil, err
 	}
-	deserializeStrictEntities(entities)
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
@@ -311,7 +556,9 @@ func findByConditionStrictContext(
 	if err != nil {
 		return nil, err
 	}
-	deserializeStrictEntities(entities)
+	if err := deserializeStrictEntities(entities); err != nil {
+		return nil, err
+	}
 	return entities, nil
 }
 
@@ -355,6 +602,9 @@ func validateStrictRepositoryRead(
 	if ctx == nil {
 		return NewValidationException("context 不能为 nil")
 	}
+	if ctxErr := contextCauseError(ctx); ctxErr != nil {
+		return NewQueryExceptionWithCause(ctxErr, "严格查询上下文已结束")
+	}
 	if isNilStrictValue(runner) {
 		return NewValidationException("严格查询 runner 不能为 nil")
 	}
@@ -371,6 +621,9 @@ func validateStrictRepositoryRead(
 }
 
 func strictRepositoryMetadata(base *BaseCrudRepository, entityType IDbEntity) (string, string, error) {
+	if identifierErr := validateRepositoryEntityIdentifiers(entityType); identifierErr != nil {
+		return "", "", identifierErr
+	}
 	tableName := base.getTableName(entityType)
 	if tableName == "" {
 		return "", "", NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
@@ -378,6 +631,9 @@ func strictRepositoryMetadata(base *BaseCrudRepository, entityType IDbEntity) (s
 	uidColumn := GetCrudManagerInstance().GetPrimaryKeyColumnName(entityType)
 	if uidColumn == "" {
 		uidColumn = "id"
+	}
+	if identifierErr := validateRepositorySQLIdentifiers(tableName, uidColumn, nil); identifierErr != nil {
+		return "", "", identifierErr
 	}
 	return tableName, uidColumn, nil
 }
@@ -394,10 +650,13 @@ func strictEntitiesFromResults(results []any) ([]IDbEntity, error) {
 	return entities, nil
 }
 
-func deserializeStrictEntities(entities []IDbEntity) {
-	for _, entity := range entities {
-		entity.DeserializeAfterLoadDb()
+func deserializeStrictEntities(entities []IDbEntity) error {
+	for index, entity := range entities {
+		if err := runEntityDeserializeHook(entity); err != nil {
+			return NewDb233ExceptionWithCause(err, fmt.Sprintf("查询结果反序列化失败: 索引=%d", index))
+		}
 	}
+	return nil
 }
 
 func isNilStrictValue(value any) bool {

@@ -90,9 +90,11 @@ type ITableCreationStrategy interface {
 
 // ColumnInfo - 列信息
 type ColumnInfo struct {
-	Name       string
-	Type       string
-	IsNullable bool
-	IsPrimary  bool
-	Default    any
+	Name            string
+	Type            string
+	IsNullable      bool
+	IsPrimary       bool
+	IsAutoIncrement bool
+	Extra           string
+	Default         any
 }

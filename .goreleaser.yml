@@ -1,5 +1,6 @@
 # GoReleaser 配置文件
 # 用于自动化发布流程
+version: 2
 
 # 构建配置
 builds:
@@ -7,18 +8,24 @@ builds:
 
 # 归档配置
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
+    meta: true
     files:
-      # 包含主要代码
+      # 可独立审阅/构建的源码归档；Go 用户仍应优先使用 module proxy。
       - pkg/**
       - LICENSE
       - README.md
       - CHANGELOG*.md
+      - go.mod
+      - go.sum
+      - version.txt
+      - config.local.json.example
+      - config.local.yaml.example
       - docs/**
-      # 排除示例代码和测试
+      # 排除示例代码和所有层级测试
       - "!examples/**"
       - "!tests/**"
-      - "!*_test.go"
+      - "!**/*_test.go"
 
 # 发布配置
 release:
@@ -41,9 +48,9 @@ release:
     
     ## 文档
     
-    - [中文文档](docs/JPA_INHERITANCE_CN.md)
-    - [English Guide](docs/JPA_INHERITANCE_GUIDE.md)
-    - [快速参考](docs/QUICK_REFERENCE.md)
+    - [项目文档](https://github.com/neko233-com/db233-go/blob/{{ .Tag }}/README.md)
+    - [架构概览](https://github.com/neko233-com/db233-go/blob/{{ .Tag }}/docs/OVERVIEW.md)
+    - [Schema 迁移](https://github.com/neko233-com/db233-go/blob/{{ .Tag }}/docs/SCHEMA_MIGRATION.md)
 
 # 变更日志
 changelog:
@@ -53,4 +60,3 @@ changelog:
       - '^docs:'
       - '^test:'
       - '^examples:'
-

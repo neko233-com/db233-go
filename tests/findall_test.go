@@ -57,6 +57,8 @@ func TestFindAll_WithData(t *testing.T) {
 
 	// 设置日志级别为 DEBUG 以便查看详细信息
 	logger := db233.GetLogger()
+	previousLevel := logger.GetLevel()
+	defer logger.SetLevel(previousLevel)
 	logger.SetLevel(db233.DEBUG)
 
 	// 设置测试环境

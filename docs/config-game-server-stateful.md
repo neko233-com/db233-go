@@ -69,14 +69,21 @@ opts.PerformanceConfigPath = "config/db233-performance.json"
 opts.EnableLocalJournal = true
 opts.EnableWriteBuffer = true
 opts.EnableEntityCache = true
+opts.DatabaseGeneration = dataEpoch.EpochID // 先从数据库持久化元数据读取；生产必填
 opts.EntityTypes = []db233.IDbEntity{ /* 全表 */ }
 opts.CacheableEntities = []db233.CacheableEntitySpec{
     {Prototype: &PlayerBaseEntity{}},
     {Prototype: &PlayerBagEntity{}, MaxInstances: 8000},
 }
 sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
-defer db.Close()
+if err != nil {
+    return err
+}
+// shutdown 路径停止业务/raw SQL 准入后执行：
+// return db.Close() // 必须把聚合错误传播给进程监督器
 ```
+
+启动必须先完成 schema/数据库身份校验，再读取或创建持久化 epoch，最后调用 `InitGameDb`。epoch 读取失败必须退出。清库/重建时必须更换 epoch，并使用 `BeginDatabaseGenerationTransition` 覆盖“删除玩家表 + 更新 epoch”的同一事务；完整流程见 [数据库代次与安全清库](./DATABASE_GENERATION.md)。
 
 ---
 
@@ -84,15 +91,17 @@ defer db.Close()
 
 ```go
 // 登录
-session, _ := sessionRepo.OpenSession(playerId, loginTypes)
+session, err := sessionRepo.OpenSession(playerId, loginTypes)
+if err != nil { return err }
 // 读
 bag := session.Get(&PlayerBagEntity{}).(*PlayerBagEntity)
 // 写
-bag.Gold += 100; session.Put(bag)
+bag.Gold += 100
+if err := session.MarkDirty(bag); err != nil { return err }
 // 下线
-_ = sessionRepo.CloseSession(playerId)
+if err := sessionRepo.CloseSession(playerId); err != nil { return err }
 // 全局 entitysave
-repo.UpdateBatchUpsert(pendingSameTable) // 或 UpdateBatch（等价真批量）
+if err := repo.UpdateBatchUpsert(pendingSameTable); err != nil { return err }
 // 多 PK 读
 m, _ := repo.FindByIdsMap(ids, &PlayerBagEntity{})
 ```
@@ -132,6 +141,26 @@ m, _ := repo.FindByIdsMap(ids, &PlayerBagEntity{})
 
 暴露 `Stats().WaitCount` / `WaitDuration` 到 `/api/monitor`。
 
+### Flush 写库压力
+
+```go
+previous := db.FlushWriteMetrics()
+// 按业务监控周期再次采样；不要求库内启动额外统计协程。
+time.Sleep(10 * time.Second)
+current := db.FlushWriteMetrics()
+window := current.RateSince(previous)
+
+actualFlushSQLPerSecond := window.AttemptedSQLPerSecond
+lifetimeAverage := db.AverageFlushWritesPerSecond()
+sessionSQL := current.BySource[db233.FlushWriteSourceSession].AttemptedSQL
+```
+
+- `AttemptedSQL` = 真正进入 `database/sql Exec` 的 flush 次数；失败也计入 DB 压力。
+- 同表合并 SQL 计 1 次；每个 `batchUpsertChunkSize` chunk 各计 1 次，不按玩家/实体数重复计。
+- 总量包含 Session、WriteBuffer、显式状态 flush、WAL 回放和失败队列回放；`BySource` 可拆分。
+- 只统计 db233 管理的状态 flush；调用方直接使用 `DataSource` / `GetDataSource`、raw SQL 或事务 Repository 的写入不在此指标内。
+- SQL/WAL 构建、序列化和 Prepare 在 Exec 前失败不计。指标不保存 SQL、参数、错误或玩家 ID。
+
 ---
 
 ## 7. 压测指标（文档基线）
@@ -158,6 +187,7 @@ m, _ := repo.FindByIdsMap(ids, &PlayerBagEntity{})
 - [ ] 在线读走 Session
 - [ ] 不用 UpdateBatch 落盘
 - [ ] WAL 可写、关服 FlushAll
+- [ ] DatabaseGeneration 来自数据库持久化 epoch；清库使用两阶段屏障
 - [ ] 池与 login_peak 匹配
 
 ---
@@ -166,4 +196,5 @@ m, _ := repo.FindByIdsMap(ids, &PlayerBagEntity{})
 
 | 日期 | 说明 |
 |------|------|
+| 2026-07-22 | v1.1.0：持久化数据库代次与安全清库屏障 |
 | 2026-05-30 | 初版 v1.0.0 |

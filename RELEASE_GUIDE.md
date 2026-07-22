@@ -1,228 +1,58 @@
-# DB233-Go 发布流程说明
+# db233-go 生产发布流程
 
-## 📦 自动发布流程
+发布必须遵循 **PR → 审核 → CI 全绿 → 合并 main → 不可变标签 → GitHub Release**。禁止从功能分支直推、跳过测试、强推 main、覆盖或删除已发布标签。
 
-### 快速发布
+## 1. 在 PR 中准备版本
 
-```powershell
-# 默认：Patch 版本自增 (0.0.9 -> 0.0.10)
-.\publish.ps1
-
-# 或使用 CMD
-publish.cmd
-```
-
-### 版本类型
+1. 按 SemVer 更新 `version.txt`，格式必须为 `vX.Y.Z`。
+2. 更新 `CHANGELOG.md` 和受影响文档。
+3. 运行本地门禁：
 
 ```powershell
-# Patch 版本 (0.0.9 -> 0.0.10) - 小修复
-.\publish.ps1 -VersionPart patch
-
-# Minor 版本 (0.0.9 -> 0.1.0) - 新功能（向后兼容）
-.\publish.ps1 -VersionPart minor
-
-# Major 版本 (0.0.9 -> 1.0.0) - 破坏性更改
-.\publish.ps1 -VersionPart major
+./scripts/check-secrets.ps1
+gofmt -w .
+git diff --check
+go mod verify
+go build ./...
+go vet ./...
+go run github.com/kisielk/errcheck@v1.20.0 -ignoretests ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 '-checks=SA*,S*,-ST*' ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+go test ./... -shuffle=on -count=3 -timeout=10m
 ```
 
-### 可选参数
-
-```powershell
-# 模拟运行（不实际提交和推送）
-.\publish.ps1 -DryRun
-
-# 跳过测试（不推荐）
-.\publish.ps1 -SkipTests
-```
-
----
-
-## 🔄 自动化步骤
-
-发布脚本会自动执行以下操作：
-
-### 1. 版本管理
-- ✅ 读取 `version.txt` 当前版本
-- ✅ 根据参数自动计算下一个版本
-- ✅ 更新 `version.txt` 文件
-
-### 2. 代码检查
-- ✅ 拉取远程最新代码
-- ✅ 清理构建缓存
-- ✅ 编译整个项目
-- ✅ **运行所有测试（必须通过）**
-
-### 3. Git 操作
-- ✅ 自动提交所有更改
-- ✅ 创建版本标签（格式：v0.0.10）
-- ✅ 推送代码到远程仓库
-- ✅ 推送标签到远程仓库
-
-### 4. 发布摘要
-- ✅ 显示版本信息
-- ✅ 显示 GitHub Release 链接
-- ✅ 提供后续操作建议
-
----
-
-## 📋 version.txt 格式
-
-**文件位置：** `version.txt`  
-**格式：** `X.Y.Z` (语义化版本)
-
-**示例：**
-```
-0.0.9
-```
-
-**版本号说明：**
-- `X` (Major) - 主版本号：不兼容的 API 修改
-- `Y` (Minor) - 次版本号：向下兼容的功能性新增
-- `Z` (Patch) - 修订号：向下兼容的问题修正
-
----
-
-## ⚠️ 重要提示
-
-### 发布前检查清单
-
-- [ ] 所有功能已实现并测试通过
-- [ ] 更新了相关文档（README、CHANGELOG等）
-- [ ] 代码已经过 Code Review
-- [ ] 没有遗留的 TODO 或 FIXME
-- [ ] 所有测试用例通过
-- [ ] 性能没有明显下降
-
-### 测试必须通过
-
-发布脚本**强制要求所有测试通过**，如果测试失败会自动取消发布。
-
-```powershell
-# 手动运行测试
-go test ./... -v
-
-# 运行特定测试
-go test ./tests -v -run TestEmbedded
-```
-
-### 版本号选择指南
-
-| 变更类型 | 版本类型 | 示例 |
-|---------|---------|------|
-| Bug 修复 | Patch | 0.0.9 -> 0.0.10 |
-| 新增功能（兼容） | Minor | 0.0.9 -> 0.1.0 |
-| API 破坏性变更 | Major | 0.0.9 -> 1.0.0 |
-
----
-
-## 🔧 手动发布（不推荐）
-
-如果自动脚本无法使用，可以手动执行：
+Linux/macOS 的凭据门禁使用：
 
 ```bash
-# 1. 更新版本号
-echo "0.0.10" > version.txt
-
-# 2. 运行测试
-go test ./...
-
-# 3. 提交更改
-git add .
-git commit -m "chore: release version 0.0.10"
-
-# 4. 创建标签
-git tag -a v0.0.10 -m "Release version 0.0.10"
-
-# 5. 推送
-git push origin main
-git push origin v0.0.10
+bash ./scripts/check-secrets.sh
 ```
 
----
+4. 创建 PR，经 `gh pr diff` 审核，并等待 GitHub Actions 的 Linux 集成、race detector、benchmark gate 和 Windows 门禁全部成功。
+5. 合并 PR。版本号和发布说明不得在合并后临时改写。
 
-## 📝 发布后操作
-
-### 1. 创建 GitHub Release
-
-访问：https://github.com/neko233-com/db233-go/releases/new
-
-- 选择刚创建的标签（如 v0.0.10）
-- 填写 Release 标题和说明
-- 上传相关资源（如果有）
-- 发布 Release
-
-### 2. 更新 CHANGELOG
-
-编辑 `CHANGELOG.md` 或创建新的版本变更日志：
-
-```markdown
-## [0.0.10] - 2026-01-10
-
-### Added
-- 新增 JPA 风格实体继承支持
-- 自动主键检测功能
-
-### Changed
-- 优化 UPSERT 逻辑
-
-### Fixed
-- 修复嵌入结构体字段扫描问题
-```
-
-### 3. 通知团队
-
-- 📧 发送邮件通知
-- 💬 在团队频道发布消息
-- 📢 更新文档网站
-
----
-
-## 🐛 问题排查
-
-### 测试失败
+## 2. 从已同步的 main 发布
 
 ```powershell
-# 查看详细测试输出
-go test ./... -v
-
-# 只运行失败的测试
-go test ./tests -v -run TestName
+git switch main
+git pull --ff-only origin main
+./publish.ps1 -DryRun
+./publish.ps1
 ```
 
-### 推送失败
+`publish.ps1` 会重新执行 secrets、格式、依赖、build、vet、errcheck、staticcheck、govulncheck、重复测试、benchmark 和 GoReleaser 配置检查，并验证当前 HEAD 与 `origin/main` 完全一致、对应 GitHub CI 已成功。随后只推送 `version.txt` 指定的精确标签，并通过 `gh` 创建 Release；脚本不会修改 remote、提交代码、推送分支或批量推送其他标签。
 
-```bash
-# 检查远程仓库连接
-git remote -v
+若标签已正确推送但 Release 创建因网络中断失败，人工确认标签确实指向当前 main 后执行：
 
-# 重新推送
-git push origin main --force-with-lease
-git push origin v0.0.10
+```powershell
+./publish.ps1 -Resume
 ```
 
-### 版本冲突
+## 3. 发布后验证
 
-```bash
-# 删除本地标签
-git tag -d v0.0.10
-
-# 删除远程标签
-git push origin :refs/tags/v0.0.10
-
-# 重新发布
-.\publish.ps1
+```powershell
+$version = (Get-Content version.txt -Raw).Trim()
+gh release view $version --repo neko233-com/db233-go
+go list -m -versions github.com/neko233-com/db233-go
 ```
 
----
-
-## 📚 参考资源
-
-- [语义化版本规范](https://semver.org/lang/zh-CN/)
-- [Git 标签管理](https://git-scm.com/book/zh/v2/Git-基础-打标签)
-- [Go Module 发布](https://go.dev/doc/modules/publishing)
-
----
-
-**最后更新：** 2026-01-10  
-**维护者：** neko233
-
+确认 Release 可见、标签指向合并提交，并验证下游模块能解析新版本。已公开版本视为不可变；如有问题，修复后发布更高版本，不覆盖旧标签。

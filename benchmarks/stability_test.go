@@ -16,8 +16,6 @@ func TestStability_TrafficBurst(t *testing.T) {
 		t.Skip("短模式跳过稳定性压测")
 	}
 	env := openBenchEnv(t)
-	defer env.SQL.Close()
-	defer env.DB233.Close()
 
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &BenchPlayerEntity{}})
 	SaveBenchEntityCache(t)
@@ -59,19 +57,28 @@ func TestStability_TrafficBurst(t *testing.T) {
 						errCount.Add(1)
 						continue
 					}
-					_ = session.Get(&BenchPlayerEntity{})
+					if session.Get(&BenchPlayerEntity{}) == nil {
+						errCount.Add(1)
+					}
 				case 3:
 					session := sr.GetSession(pid)
-					if session != nil {
-						ent := session.Get(&BenchPlayerEntity{})
-						if ent != nil {
-							e := ent.(*BenchPlayerEntity)
-							e.Level++
-							_ = session.Put(e)
-						}
+					if session == nil {
+						errCount.Add(1)
+						continue
+					}
+					ent, ok := session.Get(&BenchPlayerEntity{}).(*BenchPlayerEntity)
+					if !ok || ent == nil {
+						errCount.Add(1)
+						continue
+					}
+					ent.Level++
+					if err := session.Put(ent); err != nil {
+						errCount.Add(1)
 					}
 				case 4:
-					_ = sr.CloseSession(pid)
+					if err := sr.CloseSession(pid); err != nil {
+						errCount.Add(1)
+					}
 				}
 			}
 		}(g)
@@ -79,13 +86,15 @@ func TestStability_TrafficBurst(t *testing.T) {
 	wg.Wait()
 	elapsed := time.Since(start)
 
-	if errCount.Load() > int64(goroutines*opsPerG/10) {
-		t.Errorf("错误过多: %d", errCount.Load())
+	if errCount.Load() != 0 {
+		t.Errorf("突发流量出现错误: %d", errCount.Load())
 	}
 	if sr.OnlineCount() > 50 {
 		t.Errorf("Session 泄漏: online=%d", sr.OnlineCount())
 	}
-	_ = sr.FlushAll()
+	if err := sr.FlushAll(); err != nil {
+		t.Fatalf("FlushAll: %s", db233.SafeErrorSummary(err))
+	}
 	if err := env.SQL.Ping(); err != nil {
 		t.Errorf("突发流量后连接池不可用: %v", err)
 	}
@@ -99,21 +108,27 @@ func TestStability_ConnectionPoolSpike(t *testing.T) {
 		t.Skip("短模式跳过")
 	}
 	env := openBenchEnv(t)
-	defer env.SQL.Close()
-	defer env.DB233.Close()
 
 	env.SQL.SetMaxOpenConns(10)
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		errCount atomic.Int64
+	)
 	for i := 0; i < 30; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
-				_, _ = env.Repo.FindById(benchIDPrefix+"001", &BenchPlayerEntity{})
+				if _, err := env.Repo.FindById(benchIDPrefix+"001", &BenchPlayerEntity{}); err != nil {
+					errCount.Add(1)
+				}
 			}
 		}()
 	}
 	wg.Wait()
+	if errCount.Load() != 0 {
+		t.Fatalf("连接池尖峰读失败: %d", errCount.Load())
+	}
 	time.Sleep(100 * time.Millisecond)
 	if err := env.SQL.Ping(); err != nil {
 		t.Fatalf("连接池尖峰后 Ping 失败: %v", err)
@@ -128,8 +143,6 @@ func TestStability_LRUBurst(t *testing.T) {
 		t.Skip("短模式跳过")
 	}
 	env := openBenchEnv(t)
-	defer env.SQL.Close()
-	defer env.DB233.Close()
 
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &BenchPlayerEntity{}})
 	SaveBenchEntityCache(t)
@@ -153,7 +166,9 @@ func TestStability_LRUBurst(t *testing.T) {
 	if c := sr.OnlineCount(); c > 35 {
 		t.Errorf("LRU 未生效，在线=%d 期望 <=35", c)
 	}
-	_ = sr.FlushAll()
+	if err := sr.FlushAll(); err != nil {
+		t.Fatalf("FlushAll: %s", db233.SafeErrorSummary(err))
+	}
 	t.Logf("[稳定] LRU 洪峰后 online=%d", sr.OnlineCount())
 }
 
@@ -162,28 +177,23 @@ func TestStability_WALBurst(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过")
 	}
-	env := openBenchEnv(t)
-	defer env.SQL.Close()
-
 	journalDir := t.TempDir()
+	env := openBenchEnv(t)
 	opts := db233.DefaultGameDbOptions()
 	opts.EnableLocalJournal = true
 	opts.EnableWriteBuffer = false
 	opts.LocalJournalPath = journalDir
 	opts.EntityTypes = []db233.IDbEntity{&BenchPlayerEntity{}}
-	local, _ := db233.LoadLocalDbConfigFromFile("../config.local.json")
-	dbCfg := db233.NewDefaultMySQLConfig("127.0.0.1", 3306, "root", "root", "db233_go")
-	if local != nil {
-		dbCfg = local.ToDbConnectionConfig()
-	}
-	sr, err := db233.InitGameDb(env.DB233, dbCfg, opts)
+	_, err := db233.InitGameDb(env.DB233, nil, opts)
 	if err != nil {
 		t.Fatalf("InitGameDb: %v", err)
 	}
-	defer sr.Stop()
 	repo := db233.NewBaseCrudRepository(env.DB233)
 
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		errCount atomic.Int64
+	)
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func(n int) {
@@ -195,14 +205,25 @@ func TestStability_WALBurst(t *testing.T) {
 					Name:     "w", Level: j,
 				}
 			}
-			_ = repo.UpdateBatchUpsert(ents)
+			if err := repo.UpdateBatchUpsert(ents); err != nil {
+				errCount.Add(1)
+			}
 		}(i)
 	}
 	wg.Wait()
+	if errCount.Load() != 0 {
+		t.Fatalf("WAL 突发写失败: %d", errCount.Load())
+	}
 	if j := env.DB233.WriteJournal; j != nil {
-		if n, err := j.PendingCount(); err == nil && n > 0 {
+		n, err := j.PendingCount()
+		if err != nil {
+			t.Fatalf("读取 WAL pending 失败: %s", db233.SafeErrorSummary(err))
+		}
+		if n > 0 {
 			t.Errorf("WAL 不应有残留 pending=%d", n)
 		}
+	} else {
+		t.Fatal("WAL 未初始化")
 	}
 	t.Log("[稳定] WAL 突发写完成，无 pending 残留")
 }

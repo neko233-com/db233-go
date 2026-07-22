@@ -8,12 +8,11 @@ import (
 
 func TestNegativeCache_DefaultOff(t *testing.T) {
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	_ = db233.GetEntityCacheSettings().Set("negativeCacheEnabled", false)
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
 
-	db := db233.NewDb(nil, 0, nil)
-	sr := db233.NewSessionRepository(db233.NewBaseCrudRepository(db))
-	defer sr.Stop()
+	sr := NewEmptyBatchFindSessionRepository(t, "neg_off")
 
 	session, err := sr.OpenSession("neg_off", []db233.IDbEntity{&TestBatchFindEntity{}})
 	if err != nil {
@@ -29,12 +28,11 @@ func TestNegativeCache_DefaultOff(t *testing.T) {
 
 func TestNegativeCache_SessionOverride(t *testing.T) {
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	_ = db233.GetEntityCacheSettings().Set("negativeCacheEnabled", false)
 
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
-	db := db233.NewDb(nil, 0, nil)
-	sr := db233.NewSessionRepository(db233.NewBaseCrudRepository(db))
-	defer sr.Stop()
+	sr := NewEmptyBatchFindSessionRepository(t, "neg_sess")
 
 	session, err := sr.OpenSession("neg_sess", []db233.IDbEntity{&TestBatchFindEntity{}})
 	if err != nil {
@@ -58,12 +56,11 @@ func TestNegativeCache_SessionOverride(t *testing.T) {
 
 func TestNegativeCache_GlobalOnSessionOff(t *testing.T) {
 	SaveEntityCacheSettings(t)
+	SaveCacheableEntityRegistry(t)
 	_ = db233.GetEntityCacheSettings().Set("negativeCacheEnabled", true)
 
 	db233.GetCacheableEntityRegistry().Register(db233.CacheableEntitySpec{Prototype: &TestBatchFindEntity{}})
-	db := db233.NewDb(nil, 0, nil)
-	sr := db233.NewSessionRepository(db233.NewBaseCrudRepository(db))
-	defer sr.Stop()
+	sr := NewEmptyBatchFindSessionRepository(t, "neg_global")
 
 	session, err := sr.OpenSession("neg_global", []db233.IDbEntity{&TestBatchFindEntity{}})
 	if err != nil {

@@ -10,6 +10,7 @@
 | 5 分钟了解是什么、适不适合 | [OVERVIEW.md](./OVERVIEW.md) |
 | 和 GORM / sqlx / raw SQL 怎么选 | [COMPARE-ORM.md](./COMPARE-ORM.md) |
 | 有状态游戏逻辑服怎么配 | [config-game-server-stateful.md](./config-game-server-stateful.md) |
+| 安全清库、重建后防旧数据复活 | [DATABASE_GENERATION.md](./DATABASE_GENERATION.md) |
 | 游戏英雄/背包等复杂 map 如何存一列 | [game-complex-json-columns.md](./game-complex-json-columns.md) |
 | Web / API 无状态服怎么配 | [config-web-server.md](./config-web-server.md) |
 | 压测怎么跑、通过标准 | [BENCHMARK.md](./BENCHMARK.md) |
@@ -27,7 +28,10 @@
 | 批量写（单 SQL UPSERT） | `UpdateBatchUpsert` / `SaveBatchUpsert` |
 | 批量读 | `FindByIds` / `FindByIdsMap` |
 | 本地凭据（勿提交 Git） | `config.local.json` / `config.local.yaml` |
+| 数据库代次屏障 | `DatabaseGeneration` / `BeginDatabaseGenerationTransition` |
+| 统一建表与迁移 | [SCHEMA_MIGRATION.md](SCHEMA_MIGRATION.md) |
 | 性能 JSON | `config/db233-performance.*.example.json` |
+| 私密原子监控导出 | `MonitoringReportGenerator.ExportReport` / `MetricsCollector.ExportToFile` |
 
 ## 本地凭据安全
 
@@ -35,6 +39,8 @@
 
 - `config.local.json` 或 `config.local.yaml`（见根目录 `*.example` 模板）
 - 推送前：`./scripts/check-secrets.ps1`
+
+监控报告与指标导出可能包含数据库名、指标名、标签和告警等业务标识。db233-go 使用 owner-only 文件权限与同目录原子替换；生产仍须选择受控目录，不得提交 Git 或公开分发。
 
 ## 维护者
 

@@ -114,6 +114,7 @@ type TrackingSchemaReloader struct {
 	mu       sync.RWMutex
 	current  *TrackingSchema
 	lastHash string
+	running  bool
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 }
@@ -427,6 +428,14 @@ func PlanTrackingSchema(db *Db, schema *TrackingSchema, options *TrackingSchemaA
 
 // ApplyTrackingSchema 执行描述文件同步。默认只创建表、补列、建索引，不删列。
 func ApplyTrackingSchema(db *Db, schema *TrackingSchema, options *TrackingSchemaApplyOptions) (TrackingSchemaPlan, error) {
+	if db == nil || db.DataSource == nil {
+		return TrackingSchemaPlan{}, NewConfigurationException("db 不能为空")
+	}
+	_, releaseGeneration, generationErr := db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return TrackingSchemaPlan{}, generationErr
+	}
+	defer releaseGeneration()
 	plan, err := PlanTrackingSchema(db, schema, options)
 	if err != nil {
 		return plan, err
@@ -437,7 +446,7 @@ func ApplyTrackingSchema(db *Db, schema *TrackingSchema, options *TrackingSchema
 	}
 	for _, stmt := range plan.Statements {
 		if _, err := db.DataSource.Exec(stmt.SQL); err != nil {
-			return plan, NewQueryExceptionWithCause(err, "埋点表结构同步失败: "+stmt.SQL)
+			return plan, NewQueryExceptionWithCause(err, "埋点表结构同步失败: "+sqlForError(stmt.SQL))
 		}
 	}
 	return plan, nil
@@ -518,43 +527,73 @@ func NewTrackingSchemaReloader(db *Db, path string, interval time.Duration, opti
 		path:     path,
 		interval: interval,
 		options:  options,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
 	}
 }
 
 // OnReload 设置热重载成功回调。
 func (r *TrackingSchemaReloader) OnReload(fn func(*TrackingSchema, TrackingSchemaPlan)) *TrackingSchemaReloader {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.onReload = fn
 	return r
 }
 
 // OnError 设置热重载失败回调。
 func (r *TrackingSchemaReloader) OnError(fn func(error)) *TrackingSchemaReloader {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.onError = fn
 	return r
 }
 
 // Start 启动热重载轮询。
 func (r *TrackingSchemaReloader) Start() {
-	go r.loop()
+	r.mu.Lock()
+	if r.running {
+		r.mu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	r.running = true
+	r.stopCh = stopCh
+	r.doneCh = doneCh
+	r.mu.Unlock()
+	go r.loop(stopCh, doneCh)
 }
 
 // Stop 停止热重载轮询。
 func (r *TrackingSchemaReloader) Stop() {
-	close(r.stopCh)
-	<-r.doneCh
+	r.mu.Lock()
+	if !r.running {
+		r.mu.Unlock()
+		return
+	}
+	doneCh := r.doneCh
+	if r.stopCh != nil {
+		close(r.stopCh)
+		r.stopCh = nil
+	}
+	r.mu.Unlock()
+
+	<-doneCh
+	r.mu.Lock()
+	if r.doneCh == doneCh {
+		r.running = false
+		r.doneCh = nil
+	}
+	r.mu.Unlock()
 }
 
 // Current 返回当前已加载描述。
 func (r *TrackingSchemaReloader) Current() *TrackingSchema {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.current
+	return cloneTrackingSchema(r.current)
 }
 
-func (r *TrackingSchemaReloader) loop() {
-	defer close(r.doneCh)
+func (r *TrackingSchemaReloader) loop(stopCh <-chan struct{}, doneCh chan<- struct{}) {
+	defer close(doneCh)
 	r.reloadOnce()
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -562,7 +601,7 @@ func (r *TrackingSchemaReloader) loop() {
 		select {
 		case <-ticker.C:
 			r.reloadOnce()
-		case <-r.stopCh:
+		case <-stopCh:
 			return
 		}
 	}
@@ -586,7 +625,7 @@ func (r *TrackingSchemaReloader) reloadOnce() {
 		cache, err := LoadTrackingSchemaLocalCache(cachePath)
 		if err == nil && cache.SchemaHash == hash && sameTrackingSchemaPath(cache.SchemaPath, r.path) {
 			r.mu.Lock()
-			r.current = schema
+			r.current = cloneTrackingSchema(schema)
 			r.lastHash = hash
 			r.mu.Unlock()
 			return
@@ -612,20 +651,77 @@ func (r *TrackingSchemaReloader) reloadOnce() {
 		}
 	}
 	r.mu.Lock()
-	r.current = schema
+	r.current = cloneTrackingSchema(schema)
 	r.lastHash = hash
+	onReload := r.onReload
 	r.mu.Unlock()
-	if r.onReload != nil {
-		r.onReload(schema, plan)
+	if onReload != nil {
+		onReload(cloneTrackingSchema(schema), cloneTrackingSchemaPlan(plan))
 	}
 }
 
 func (r *TrackingSchemaReloader) emitError(err error) {
-	if r.onError != nil {
-		r.onError(err)
+	r.mu.RLock()
+	onError := r.onError
+	r.mu.RUnlock()
+	if onError != nil {
+		onError(err)
 		return
 	}
-	LogError("埋点描述热重载失败: %v", err)
+	LogError("埋点描述热重载失败: %s", safeErrorForLog(err))
+}
+
+func cloneTrackingSchema(schema *TrackingSchema) *TrackingSchema {
+	if schema == nil {
+		return nil
+	}
+	clone := &TrackingSchema{Version: schema.Version, Tables: make([]TrackingTable, len(schema.Tables))}
+	for i, table := range schema.Tables {
+		clone.Tables[i] = table
+		clone.Tables[i].Columns = make([]TrackingColumn, len(table.Columns))
+		for columnIndex, column := range table.Columns {
+			clone.Tables[i].Columns[columnIndex] = column
+			clone.Tables[i].Columns[columnIndex].Enum = append([]string(nil), column.Enum...)
+			clone.Tables[i].Columns[columnIndex].Default = cloneTrackingValue(column.Default)
+			if column.Nullable != nil {
+				nullable := *column.Nullable
+				clone.Tables[i].Columns[columnIndex].Nullable = &nullable
+			}
+		}
+		clone.Tables[i].Indexes = make([]TrackingIndex, len(table.Indexes))
+		for index, item := range table.Indexes {
+			clone.Tables[i].Indexes[index] = item
+			clone.Tables[i].Indexes[index].Columns = append([]string(nil), item.Columns...)
+		}
+	}
+	return clone
+}
+
+func cloneTrackingSchemaPlan(plan TrackingSchemaPlan) TrackingSchemaPlan {
+	plan.Statements = append([]TrackingSchemaStatement(nil), plan.Statements...)
+	plan.Warnings = append([]string(nil), plan.Warnings...)
+	return plan
+}
+
+func cloneTrackingValue(value any) any {
+	switch item := value.(type) {
+	case map[string]any:
+		clone := make(map[string]any, len(item))
+		for key, nested := range item {
+			clone[key] = cloneTrackingValue(nested)
+		}
+		return clone
+	case []any:
+		clone := make([]any, len(item))
+		for index, nested := range item {
+			clone[index] = cloneTrackingValue(nested)
+		}
+		return clone
+	case []string:
+		return append([]string(nil), item...)
+	default:
+		return item
+	}
 }
 
 func normalizeTrackingApplyOptions(options *TrackingSchemaApplyOptions) TrackingSchemaApplyOptions {
@@ -1040,11 +1136,20 @@ func InsertTrackingPayload(db *Db, table *TrackingTable, payload map[string]any)
 	if db == nil || db.DataSource == nil {
 		return nil, NewConfigurationException("db 不能为空")
 	}
+	_, releaseGeneration, generationErr := db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return nil, generationErr
+	}
+	defer releaseGeneration()
 	sqlStr, values, err := table.BuildTrackingInsertSQL(payload)
 	if err != nil {
 		return nil, err
 	}
-	return db.DataSource.Exec(sqlStr, values...)
+	result, execErr := db.DataSource.Exec(sqlStr, values...)
+	if execErr != nil {
+		return nil, NewQueryExceptionWithCause(execErr, "埋点写入失败: "+sqlForError(sqlStr))
+	}
+	return result, nil
 }
 
 // TrackingSchemaTables 返回稳定排序后的表名，便于上层检查当前已加载 DSL。

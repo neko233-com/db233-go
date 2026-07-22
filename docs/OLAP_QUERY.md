@@ -135,8 +135,9 @@ for _, result := range results {
 package main
 
 import (
-    "fmt"
-    "github.com/neko233-com/db233-go/pkg/db233"
+	    "fmt"
+	    "log"
+	    "github.com/neko233-com/db233-go/pkg/db233"
 )
 
 func main() {
@@ -147,14 +148,18 @@ func main() {
         Port:         3306,
         Database:     "test_db",
         Username:     "root",
-        Password:     "root",
+        Password:     "<password>",
     }
     
-    db, err := config.CreateDb(0, nil)
-    if err != nil {
-        panic(err)
-    }
-    defer db.Close()
+	    db, err := config.CreateDb(0, nil)
+	    if err != nil {
+	        log.Fatal(db233.SafeErrorSummary(err))
+	    }
+	    defer func() {
+	        if closeErr := db.Close(); closeErr != nil {
+	            log.Printf("关闭数据库失败: %s", db233.SafeErrorSummary(closeErr))
+	        }
+	    }()
 
     // 1. COUNT 查询
     var countType int64

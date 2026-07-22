@@ -1,14 +1,20 @@
 package db233
 
 import (
+	stdsql "database/sql"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// ErrMigrationMetadataOutOfSync 表示 MySQL 隐式提交语句已成功，但迁移记录更新失败。
+// 此时不能伪装成已回滚；调用方必须先核对数据库结构，再修复 schema_migrations。
+var ErrMigrationMetadataOutOfSync = errors.New("migration SQL succeeded but schema_migrations update failed")
 
 // MigrationManager - 数据迁移管理器
 // 管理数据库模式迁移，支持版本控制和回滚
@@ -38,6 +44,14 @@ func NewMigrationManager(db *Db, migrationsDir string) *MigrationManager {
 
 // 初始化迁移表
 func (mm *MigrationManager) Init() error {
+	if mm == nil || mm.db == nil || mm.db.DataSource == nil {
+		return NewQueryException("迁移数据库未初始化")
+	}
+	_, releaseGeneration, generationErr := mm.db.lockCurrentDatabaseGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
 	createTableSQL := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			version BIGINT PRIMARY KEY,
@@ -65,7 +79,7 @@ func (mm *MigrationManager) CreateMigration(name string) error {
 	upContent := fmt.Sprintf("-- Migration: %s\n-- Version: %d\n-- Created: %s\n\n-- Add your up migration SQL here\n\n",
 		name, version, time.Now().Format(time.RFC3339))
 
-	err := ioutil.WriteFile(upFile, []byte(upContent), 0644)
+	err := os.WriteFile(upFile, []byte(upContent), 0o644)
 	if err != nil {
 		return NewConfigurationExceptionWithCause(err, "创建上迁文件失败")
 	}
@@ -74,7 +88,7 @@ func (mm *MigrationManager) CreateMigration(name string) error {
 	downContent := fmt.Sprintf("-- Migration: %s\n-- Version: %d\n-- Created: %s\n\n-- Add your down migration SQL here\n\n",
 		name, version, time.Now().Format(time.RFC3339))
 
-	err = ioutil.WriteFile(downFile, []byte(downContent), 0644)
+	err = os.WriteFile(downFile, []byte(downContent), 0o644)
 	if err != nil {
 		return NewConfigurationExceptionWithCause(err, "创建下迁文件失败")
 	}
@@ -126,9 +140,9 @@ func (mm *MigrationManager) Down(steps int) error {
 		return nil
 	}
 
-	// 反转顺序（最新的先回滚）
-	for i := len(appliedMigrations) - 1; i >= 0; i-- {
-		appliedMigrations[i] = appliedMigrations[len(appliedMigrations)-1-i]
+	// 反转顺序（最新的先回滚）。必须交换两端；单向覆盖会复制元素并丢失版本。
+	for left, right := 0, len(appliedMigrations)-1; left < right; left, right = left+1, right-1 {
+		appliedMigrations[left], appliedMigrations[right] = appliedMigrations[right], appliedMigrations[left]
 	}
 
 	// 限制步骤数
@@ -204,6 +218,9 @@ func (mm *MigrationManager) GetStatus() ([]Migration, error) {
 
 // 应用单个迁移
 func (mm *MigrationManager) applyMigration(migration Migration, isUp bool) error {
+	if mm == nil || mm.db == nil || mm.db.DataSource == nil {
+		return NewQueryException("迁移数据库未初始化")
+	}
 	var sql string
 	var operation string
 
@@ -219,12 +236,64 @@ func (mm *MigrationManager) applyMigration(migration Migration, isUp bool) error
 		return fmt.Errorf("迁移 %d_%s 的 %s SQL 为空", migration.Version, migration.Name, strings.ToLower(operation))
 	}
 
+	// MySQL DDL 会在执行前后隐式 COMMIT，无法与 schema_migrations 记录组成原子事务。
+	// 显式走两阶段并在第二阶段失败时返回可检查的“元数据不同步”错误，禁止误报回滚成功。
+	if mm.db.DatabaseType == EnumDatabaseTypeMySQL && mysqlMigrationHasImplicitCommit(sql) {
+		_, releaseGeneration, generationErr := mm.db.lockCurrentDatabaseGeneration()
+		if generationErr != nil {
+			return generationErr
+		}
+		defer releaseGeneration()
+		if _, err := mm.db.DataSource.Exec(sql); err != nil {
+			wrappedErr := NewQueryExceptionWithCause(err, fmt.Sprintf("%s迁移 SQL 失败: %s", operation, sqlForError(sql)))
+			LogError("%s迁移失败 %d_%s: %s, %s", operation, migration.Version, migration.Name, safeErrorForLog(err), sqlForRuntimeLog(sql))
+			return wrappedErr
+		}
+
+		var recordResult stdsql.Result
+		var recordErr error
+		if isUp {
+			recordResult, recordErr = mm.db.DataSource.Exec(
+				fmt.Sprintf("INSERT INTO %s (version, name) VALUES (?, ?)", mm.tableName),
+				migration.Version,
+				migration.Name,
+			)
+		} else {
+			recordResult, recordErr = mm.db.DataSource.Exec(
+				fmt.Sprintf("DELETE FROM %s WHERE version = ?", mm.tableName),
+				migration.Version,
+			)
+		}
+		if recordErr == nil {
+			affectedRows, affectedErr := recordResult.RowsAffected()
+			if affectedErr != nil {
+				recordErr = fmt.Errorf("无法确认迁移记录更新结果: %w", affectedErr)
+			} else if affectedRows != 1 {
+				recordErr = fmt.Errorf("迁移记录更新行数异常: got=%d, want=1", affectedRows)
+			}
+		}
+		if recordErr != nil {
+			stateErr := NewQueryExceptionWithCause(
+				errors.Join(ErrMigrationMetadataOutOfSync, recordErr),
+				fmt.Sprintf(
+					"%s迁移 SQL 已执行，但迁移记录更新失败；数据库结构与 schema_migrations 可能不一致",
+					operation,
+				),
+			)
+			LogError("%s迁移元数据不同步 %d_%s: %v", operation, migration.Version, migration.Name, stateErr)
+			return stateErr
+		}
+
+		LogInfo("%s迁移成功 %d_%s", operation, migration.Version, migration.Name)
+		return nil
+	}
+
 	// 在事务中执行迁移
 	err := WithTransaction(mm.db, func(tm *TransactionManager) error {
 		// 执行迁移SQL
 		_, err := tm.Exec(sql)
 		if err != nil {
-			return err
+			return NewQueryExceptionWithCause(err, fmt.Sprintf("%s迁移 SQL 失败: %s", operation, sqlForError(sql)))
 		}
 
 		// 更新迁移记录
@@ -239,7 +308,7 @@ func (mm *MigrationManager) applyMigration(migration Migration, isUp bool) error
 	})
 
 	if err != nil {
-		LogError("%s迁移失败 %d_%s: %v", operation, migration.Version, migration.Name, err)
+		LogError("%s迁移失败 %d_%s: %s, %s", operation, migration.Version, migration.Name, safeErrorForLog(err), sqlForRuntimeLog(sql))
 		return err
 	}
 
@@ -275,15 +344,20 @@ func (mm *MigrationManager) getPendingMigrations() ([]Migration, error) {
 }
 
 // 获取已应用的迁移
-func (mm *MigrationManager) getAppliedMigrations() ([]Migration, error) {
+func (mm *MigrationManager) getAppliedMigrations() (result []Migration, resultErr error) {
 	query := fmt.Sprintf("SELECT version, name, applied_at FROM %s ORDER BY version", mm.tableName)
 	rows, err := mm.db.DataSource.Query(query)
 	if err != nil {
 		return nil, NewQueryExceptionWithCause(err, "查询已应用迁移失败")
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			result = nil
+			resultErr = errors.Join(resultErr, NewQueryExceptionWithCause(closeErr, "关闭已应用迁移结果集失败"))
+		}
+	}()
 
-	var migrations []Migration
+	var appliedRecords []Migration
 	for rows.Next() {
 		var migration Migration
 		var appliedAt time.Time
@@ -292,7 +366,41 @@ func (mm *MigrationManager) getAppliedMigrations() ([]Migration, error) {
 			return nil, NewQueryExceptionWithCause(err, "扫描迁移记录失败")
 		}
 		migration.AppliedAt = &appliedAt
-		migrations = append(migrations, migration)
+		appliedRecords = append(appliedRecords, migration)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, NewQueryExceptionWithCause(err, "遍历已应用迁移失败")
+	}
+
+	definitions, err := mm.getAllMigrations()
+	if err != nil {
+		return nil, err
+	}
+	definitionsByVersion := make(map[int64]Migration, len(definitions))
+	for _, definition := range definitions {
+		definitionsByVersion[definition.Version] = definition
+	}
+
+	migrations := make([]Migration, 0, len(appliedRecords))
+	for _, record := range appliedRecords {
+		definition, exists := definitionsByVersion[record.Version]
+		if !exists {
+			return nil, NewConfigurationException(fmt.Sprintf(
+				"已应用迁移 %d_%s 缺少本地 up/down 文件，无法安全回滚",
+				record.Version,
+				record.Name,
+			))
+		}
+		if definition.Name != record.Name {
+			return nil, NewConfigurationException(fmt.Sprintf(
+				"迁移 %d 名称不一致: 数据库=%s, 本地=%s",
+				record.Version,
+				record.Name,
+				definition.Name,
+			))
+		}
+		definition.AppliedAt = record.AppliedAt
+		migrations = append(migrations, definition)
 	}
 
 	return migrations, nil
@@ -300,7 +408,7 @@ func (mm *MigrationManager) getAppliedMigrations() ([]Migration, error) {
 
 // 获取所有迁移文件
 func (mm *MigrationManager) getAllMigrations() ([]Migration, error) {
-	files, err := ioutil.ReadDir(mm.migrationsDir)
+	files, err := os.ReadDir(mm.migrationsDir)
 	if err != nil {
 		return nil, NewConfigurationExceptionWithCause(err, "读取迁移目录失败")
 	}
@@ -310,7 +418,7 @@ func (mm *MigrationManager) getAllMigrations() ([]Migration, error) {
 		if strings.HasSuffix(file.Name(), ".up.sql") {
 			migration, err := mm.parseMigrationFile(file.Name())
 			if err != nil {
-				LogWarn("解析迁移文件失败 %s: %v", file.Name(), err)
+				LogWarn("解析迁移文件失败 %s: %s", safeValueForLog(file.Name()), safeErrorForLog(err))
 				continue
 			}
 			migrations = append(migrations, migration)
@@ -342,7 +450,7 @@ func (mm *MigrationManager) parseMigrationFile(filename string) (Migration, erro
 
 	// 读取上迁SQL
 	upFile := filepath.Join(mm.migrationsDir, filename)
-	upSQL, err := ioutil.ReadFile(upFile)
+	upSQL, err := os.ReadFile(upFile)
 	if err != nil {
 		return Migration{}, fmt.Errorf("读取上迁文件失败: %w", err)
 	}
@@ -350,7 +458,7 @@ func (mm *MigrationManager) parseMigrationFile(filename string) (Migration, erro
 	// 读取下迁SQL
 	downFile := strings.Replace(filename, ".up.sql", ".down.sql", 1)
 	downFilePath := filepath.Join(mm.migrationsDir, downFile)
-	downSQL, err := ioutil.ReadFile(downFilePath)
+	downSQL, err := os.ReadFile(downFilePath)
 	if err != nil {
 		return Migration{}, fmt.Errorf("读取下迁文件失败: %w", err)
 	}
@@ -364,13 +472,18 @@ func (mm *MigrationManager) parseMigrationFile(filename string) (Migration, erro
 }
 
 // 获取已应用的版本
-func (mm *MigrationManager) getAppliedVersions() ([]int64, error) {
+func (mm *MigrationManager) getAppliedVersions() (result []int64, resultErr error) {
 	query := fmt.Sprintf("SELECT version FROM %s ORDER BY version", mm.tableName)
 	rows, err := mm.db.DataSource.Query(query)
 	if err != nil {
 		return nil, NewQueryExceptionWithCause(err, "查询已应用版本失败")
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			result = nil
+			resultErr = errors.Join(resultErr, NewQueryExceptionWithCause(closeErr, "关闭已应用版本结果集失败"))
+		}
+	}()
 
 	var versions []int64
 	for rows.Next() {
@@ -381,8 +494,134 @@ func (mm *MigrationManager) getAppliedVersions() ([]int64, error) {
 		}
 		versions = append(versions, version)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, NewQueryExceptionWithCause(err, "遍历已应用版本失败")
+	}
 
 	return versions, nil
+}
+
+// mysqlMigrationHasImplicitCommit 识别 MySQL 会隐式提交的迁移语句。
+// 仅读取每条顶层语句首关键字；跳过字符串、标识符和普通注释，避免误判正文内容。
+func mysqlMigrationHasImplicitCommit(sqlText string) bool {
+	sqlText = strings.TrimPrefix(sqlText, "\ufeff")
+	implicitCommitKeywords := map[string]struct{}{
+		"ANALYZE":   {},
+		"ALTER":     {},
+		"BEGIN":     {},
+		"CACHE":     {},
+		"CREATE":    {},
+		"DROP":      {},
+		"FLUSH":     {},
+		"GRANT":     {},
+		"INSTALL":   {},
+		"LOAD":      {},
+		"LOCK":      {},
+		"OPTIMIZE":  {},
+		"RENAME":    {},
+		"REPAIR":    {},
+		"RESET":     {},
+		"REVOKE":    {},
+		"START":     {},
+		"TRUNCATE":  {},
+		"UNINSTALL": {},
+		"UNLOCK":    {},
+	}
+
+	atStatementStart := true
+	for i := 0; i < len(sqlText); {
+		ch := sqlText[i]
+		if isSQLSpace(ch) || ch == ';' {
+			if ch == ';' {
+				atStatementStart = true
+			}
+			i++
+			continue
+		}
+		if ch == '-' && i+1 < len(sqlText) && sqlText[i+1] == '-' {
+			i = skipSQLLine(sqlText, i+2)
+			continue
+		}
+		if ch == '#' {
+			i = skipSQLLine(sqlText, i+1)
+			continue
+		}
+		if ch == '/' && i+1 < len(sqlText) && sqlText[i+1] == '*' {
+			// MySQL 版本注释 /*! ... */ 中内容会执行；保守按隐式提交处理。
+			if i+2 < len(sqlText) && sqlText[i+2] == '!' {
+				return true
+			}
+			i = skipSQLBlockComment(sqlText, i+2)
+			continue
+		}
+
+		if atStatementStart {
+			start := i
+			for i < len(sqlText) && isSQLWordByte(sqlText[i]) {
+				i++
+			}
+			if start == i {
+				atStatementStart = false
+			} else {
+				if _, exists := implicitCommitKeywords[strings.ToUpper(sqlText[start:i])]; exists {
+					return true
+				}
+				atStatementStart = false
+			}
+			continue
+		}
+
+		if ch == '\'' || ch == '"' || ch == '`' {
+			i = skipSQLQuoted(sqlText, i, ch)
+			continue
+		}
+		i++
+	}
+	return false
+}
+
+func isSQLSpace(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f'
+}
+
+func isSQLWordByte(ch byte) bool {
+	return ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
+}
+
+func skipSQLLine(sqlText string, i int) int {
+	for i < len(sqlText) && sqlText[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+func skipSQLBlockComment(sqlText string, i int) int {
+	for i+1 < len(sqlText) {
+		if sqlText[i] == '*' && sqlText[i+1] == '/' {
+			return i + 2
+		}
+		i++
+	}
+	return len(sqlText)
+}
+
+func skipSQLQuoted(sqlText string, i int, quote byte) int {
+	i++
+	for i < len(sqlText) {
+		if sqlText[i] == '\\' {
+			i += 2
+			continue
+		}
+		if sqlText[i] == quote {
+			if i+1 < len(sqlText) && sqlText[i+1] == quote {
+				i += 2
+				continue
+			}
+			return i + 1
+		}
+		i++
+	}
+	return len(sqlText)
 }
 
 // 获取当前版本

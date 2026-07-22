@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -74,14 +76,29 @@ type BaseCrudRepository struct {
 	db           *Db
 	writeBuffer  *WriteBuffer
 	writeJournal *LocalWriteJournal
+	journalMu    sync.RWMutex
 	wbMu         sync.Mutex
+	closed       bool
+	closeMu      sync.Mutex
+	closeOnce    sync.Once
+	closeErr     error
 
 	testHookMu     sync.Mutex
 	testUpsertHook func([]IDbEntity) error // 仅测试注入
 }
 
+// ErrCrudRepositoryClosed 表示 Repository 的后台资源已关闭。
+var ErrCrudRepositoryClosed = errors.New("CRUD Repository 已关闭")
+
+// ErrWriteJournalCleanup 表示数据库写入已成功，但对应 WAL 条目清理失败。
+// UPSERT 可安全重放；调用方必须保留该错误，不能把操作报告为完全成功。
+var ErrWriteJournalCleanup = errors.New("database write succeeded but WAL cleanup failed")
+
 // SetTestUpsertHook 测试专用：拦截 UpdateBatchUpsert（nil 恢复默认）。
 func (r *BaseCrudRepository) SetTestUpsertHook(hook func([]IDbEntity) error) {
+	if r == nil {
+		return
+	}
 	r.testHookMu.Lock()
 	defer r.testHookMu.Unlock()
 	r.testUpsertHook = hook
@@ -89,11 +106,21 @@ func (r *BaseCrudRepository) SetTestUpsertHook(hook func([]IDbEntity) error) {
 
 // SetWriteJournal 绑定本地 WAL（InitGameDb 调用）。
 func (r *BaseCrudRepository) SetWriteJournal(journal *LocalWriteJournal) {
+	if r == nil {
+		return
+	}
+	r.journalMu.Lock()
+	defer r.journalMu.Unlock()
 	r.writeJournal = journal
 }
 
 // GetWriteJournal 返回绑定的 WAL。
 func (r *BaseCrudRepository) GetWriteJournal() *LocalWriteJournal {
+	if r == nil {
+		return nil
+	}
+	r.journalMu.RLock()
+	defer r.journalMu.RUnlock()
 	return r.writeJournal
 }
 
@@ -106,28 +133,106 @@ func NewBaseCrudRepository(db *Db) *BaseCrudRepository {
 	return r
 }
 
+// Close 停止并刷清当前 Repository 的写缓冲。可安全重复、并发调用。
+func (r *BaseCrudRepository) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	if r.closed {
+		return r.closeErr
+	}
+	databaseGeneration := ""
+	releaseGeneration := func() {}
+	if r.db != nil {
+		var err error
+		databaseGeneration, releaseGeneration, err = r.db.lockCurrentDatabaseGeneration()
+		if err != nil {
+			return err
+		}
+	}
+	defer releaseGeneration()
+	return r.closeUnderGenerationLeaseLocked(databaseGeneration)
+}
+
+// closeUnderGenerationLease 要求调用方持有当前 Db generation 的读或写租约。
+// 它让普通 Close 与 Db.Close/切代互斥，保证 unregister 前 pending 已刷完。
+func (r *BaseCrudRepository) closeUnderGenerationLease(databaseGeneration string) error {
+	if r == nil {
+		return nil
+	}
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	return r.closeUnderGenerationLeaseLocked(databaseGeneration)
+}
+
+func (r *BaseCrudRepository) closeUnderGenerationLeaseLocked(databaseGeneration string) error {
+	r.closeOnce.Do(func() {
+		r.wbMu.Lock()
+		r.closed = true
+		buffer := r.writeBuffer
+		r.wbMu.Unlock()
+		if buffer != nil {
+			if stopErr := buffer.stopUnderGenerationLease(databaseGeneration); stopErr != nil {
+				r.closeErr = NewDb233ExceptionWithCause(stopErr, "停止写缓冲失败")
+			}
+		}
+		if r.db != nil {
+			r.db.unregisterBufferedRepository(r)
+		}
+	})
+	return r.closeErr
+}
+
 // 获取绑定的数据源
 func (r *BaseCrudRepository) GetBindingDataSource() *sql.DB {
+	if r == nil || r.db == nil {
+		return nil
+	}
 	return r.db.GetDataSource()
 }
 
 // 获取数据库实例
 func (r *BaseCrudRepository) GetDb() *Db {
+	if r == nil {
+		return nil
+	}
 	return r.db
+}
+
+func (r *BaseCrudRepository) lockCurrentWriteGeneration() (string, func(), error) {
+	if r == nil || r.db == nil {
+		return "", func() {}, NewQueryException("数据库连接未初始化")
+	}
+	return r.db.lockCurrentDatabaseGeneration()
 }
 
 // 保存实体
 func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	// 参数验证
-	if entity == nil {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	if isNilStrictValue(entity) {
 		return NewValidationException("实体不能为 nil")
 	}
-	if r.writeJournal != nil {
-		return r.saveBatchUpsertWithJournal([]IDbEntity{entity}, 1)
+	if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+		return identifierErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
+	if r.GetWriteJournal() != nil {
+		return r.saveBatchUpsertWithJournal([]IDbEntity{entity}, 1, databaseGeneration, false)
 	}
 
 	// 调用保存前的序列化钩子
-	entity.SerializeBeforeSaveDb()
+	if err := runEntitySerializeHook(entity); err != nil {
+		return err
+	}
 
 	// 获取表名
 	tableName := r.getTableName(entity)
@@ -136,7 +241,10 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	}
 
 	// 获取字段
-	fields := r.getFields(entity)
+	fields, fieldsErr := r.getFields(entity)
+	if fieldsErr != nil {
+		return fieldsErr
+	}
 	if len(fields) == 0 {
 		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段，请检查字段是否包含 db 标签", entity))
 	}
@@ -146,6 +254,14 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	uidColumn := cm.GetPrimaryKeyColumnName(entity)
 	if uidColumn == "" {
 		uidColumn = "id"
+	}
+	fieldNames := make([]string, 0, len(fields))
+	for name := range fields {
+		fieldNames = append(fieldNames, name)
+	}
+	sort.Strings(fieldNames)
+	if identifierErr := validateRepositorySQLIdentifiers(tableName, uidColumn, fieldNames); identifierErr != nil {
+		return identifierErr
 	}
 
 	// 获取主键值（自动从 struct 字段读取）
@@ -159,7 +275,8 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	// 检查主键是否为自增主键
 	isAutoIncrement := r.isAutoIncrementPrimaryKey(entity, uidColumn)
 
-	for name, value := range fields {
+	for _, name := range fieldNames {
+		value := fields[name]
 		// 主键字段的特殊处理
 		if name == uidColumn {
 			// 检查值是否为零值
@@ -175,14 +292,14 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 				}
 			}
 			// 主键有值，正常包含
-			LogDebug("包含主键字段: 表=%s, 主键列=%s, 主键值=%v, 自增=%v", tableName, uidColumn, value, isAutoIncrement)
+			LogDebug("包含主键字段: 表=%s, 主键列=%s, 自增=%v", tableName, uidColumn, isAutoIncrement)
 		}
 
 		// 对于非主键字段，即使值为空也要包含（让数据库处理 NOT NULL 约束）
 		// 如果值为 nil 或零值，提供默认值
 		finalValue := r.getDefaultValueIfEmpty(value, name)
 		if finalValue != value {
-			LogDebug("为字段提供默认值: 表=%s, 字段=%s, 原值=%v, 默认值=%v", tableName, name, value, finalValue)
+			LogDebug("为字段提供默认值: 表=%s, 字段=%s", tableName, name)
 		}
 
 		columns = append(columns, name)
@@ -228,12 +345,12 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 			// MySQL 语法：INSERT INTO ... VALUES ... ON DUPLICATE KEY UPDATE ...
 			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ") ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
 			finalValues = values
-			LogDebug("执行 UPSERT (强制): 表=%s, 主键列=%s, 主键值=%v, 字段数=%d", tableName, uidColumn, uidValue, len(columns))
+			LogDebug("执行 UPSERT (强制): 表=%s, 主键列=%s, 字段数=%d", tableName, uidColumn, len(columns))
 		} else {
 			// 只有主键字段，使用普通 INSERT IGNORE（避免重复错误）
 			sql = "INSERT IGNORE INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES (" + StringUtilsInstance.Join(placeholders, ",") + ")"
 			finalValues = values
-			LogDebug("执行 INSERT IGNORE (仅主键): 表=%s, 主键列=%s, 主键值=%v", tableName, uidColumn, uidValue)
+			LogDebug("执行 INSERT IGNORE (仅主键): 表=%s, 主键列=%s", tableName, uidColumn)
 		}
 	} else {
 		// 没有主键值（自增主键），使用普通 INSERT
@@ -247,14 +364,12 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	if err != nil {
 		// 友好的错误提示
 		if isConnectionError(err) {
-			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
-			r.recordFailedOperationWithEntity("Save", tableName, sql, finalValues, uidValue, entity)
-			if r.db.FaultTolerantMgr != nil {
-				r.db.FaultTolerantMgr.CheckAndReconnect()
-			}
-			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%s", tableName, safeErrorForLog(err))
+			recoveryErr := r.recordFailedOperationWithEntity("Save", tableName, sql, finalValues, uidValue, entity, databaseGeneration)
+			r.triggerFaultTolerantReconnect()
+			return NewQueryExceptionWithCause(errors.Join(err, recoveryErr), "数据库连接已关闭或不可用，请检查网络连接")
 		} else {
-			LogError("保存实体失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
+			LogError("保存实体失败: 表=%s, 错误=%s, %s", tableName, safeErrorForLog(err), sqlForRuntimeLog(sql))
 			return NewQueryExceptionWithCause(err, fmt.Sprintf("保存实体到表 %s 失败", tableName))
 		}
 	}
@@ -263,10 +378,13 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 	lastInsertId, err := result.LastInsertId()
 	if err == nil && lastInsertId > 0 {
 		r.setPrimaryKeyValue(entity, lastInsertId)
-		LogDebug("自增主键已设置: 表=%s, 主键列=%s, 值=%d", tableName, uidColumn, lastInsertId)
+		LogDebug("自增主键已设置: 表=%s, 主键列=%s", tableName, uidColumn)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, rowsAffectedErr := result.RowsAffected()
+	if rowsAffectedErr != nil {
+		return NewQueryExceptionWithCause(rowsAffectedErr, fmt.Sprintf("获取表 %s 保存影响行数失败", tableName))
+	}
 	if rowsAffected == 1 {
 		LogDebug("保存成功 (INSERT): 表=%s, 影响行数=%d", tableName, rowsAffected)
 	} else if rowsAffected == 2 {
@@ -280,9 +398,18 @@ func (r *BaseCrudRepository) Save(entity IDbEntity) error {
 
 // 设置主键值（支持嵌入结构体和多种主键标签方式）
 func (r *BaseCrudRepository) setPrimaryKeyValue(entity any, id int64) {
+	if entity == nil {
+		return
+	}
 	v := reflect.ValueOf(entity)
 	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return
+		}
 		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return
 	}
 
 	cm := GetCrudManagerInstance()
@@ -302,7 +429,12 @@ func (r *BaseCrudRepository) setPrimaryKeyValueRecursive(v reflect.Value, t refl
 
 			if embeddedType.Kind() == reflect.Ptr {
 				if embeddedValue.IsNil() {
-					continue
+					elementType := embeddedType.Elem()
+					if !embeddedValue.CanSet() || elementType.Kind() != reflect.Struct ||
+						!repositoryTypeContainsPrimaryKey(elementType, cm, make(map[reflect.Type]bool)) {
+						continue
+					}
+					embeddedValue.Set(reflect.New(elementType))
 				}
 				embeddedValue = embeddedValue.Elem()
 				embeddedType = embeddedType.Elem()
@@ -323,14 +455,42 @@ func (r *BaseCrudRepository) setPrimaryKeyValueRecursive(v reflect.Value, t refl
 				switch fieldValue.Kind() {
 				case reflect.Int, reflect.Int64, reflect.Int32, reflect.Int16, reflect.Int8:
 					fieldValue.SetInt(id)
-					LogDebug("主键值已设置: 字段=%s, 值=%d", field.Name, id)
+					LogDebug("主键值已设置: 字段=%s", field.Name)
 					return true
 				case reflect.Uint, reflect.Uint64, reflect.Uint32, reflect.Uint16, reflect.Uint8:
 					fieldValue.SetUint(uint64(id))
-					LogDebug("主键值已设置: 字段=%s, 值=%d", field.Name, id)
+					LogDebug("主键值已设置: 字段=%s", field.Name)
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func repositoryTypeContainsPrimaryKey(t reflect.Type, cm *CrudManager, visiting map[reflect.Type]bool) bool {
+	if visiting[t] {
+		return false
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
+	for index := 0; index < t.NumField(); index++ {
+		field := t.Field(index)
+		if !field.IsExported() {
+			continue
+		}
+		if field.Anonymous {
+			embeddedType := field.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+			if embeddedType.Kind() == reflect.Struct && repositoryTypeContainsPrimaryKey(embeddedType, cm, visiting) {
+				return true
+			}
+			continue
+		}
+		if cm.IsPrimaryKey(field) || cm.IsAutoIncrement(field) {
+			return true
 		}
 	}
 	return false
@@ -340,6 +500,9 @@ func (r *BaseCrudRepository) setPrimaryKeyValueRecursive(v reflect.Value, t refl
 // entity: 实现了 IDbEntity 接口的实体。
 // 返回: 表名。
 func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
+	if isNilStrictValue(entity) {
+		return ""
+	}
 	// 直接调用 TableName() 方法
 	tableName := entity.TableName()
 	if tableName != "" {
@@ -348,42 +511,78 @@ func (r *BaseCrudRepository) getTableName(entity IDbEntity) string {
 
 	// 如果 TableName() 返回空字符串，使用类型名转换为 snake_case（向后兼容）
 	t := reflect.TypeOf(entity)
-	if t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return ""
 	}
 	return StringUtilsInstance.CamelToSnake(t.Name())
 }
 
 // 获取字段（支持嵌入结构体）
-func (r *BaseCrudRepository) getFields(entity any) map[string]any {
+func (r *BaseCrudRepository) getFields(entity any) (map[string]any, error) {
 	if EnableAllocPoolEnabled() {
 		scratch := acquireFieldMap()
-		r.getFieldsInto(entity, scratch)
+		if err := r.getFieldsInto(entity, scratch); err != nil {
+			releaseFieldMap(scratch)
+			return nil, err
+		}
 		out := make(map[string]any, len(scratch))
 		for k, v := range scratch {
 			out[k] = v
 		}
 		releaseFieldMap(scratch)
-		return out
+		return out, nil
 	}
 	fields := make(map[string]any)
-	r.getFieldsInto(entity, fields)
-	return fields
+	if err := r.getFieldsInto(entity, fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
 }
 
 // getFieldsInto 扫描实体字段写入 fields（可复用 map，调用方负责 clear）。
-func (r *BaseCrudRepository) getFieldsInto(entity any, fields map[string]any) {
+func (r *BaseCrudRepository) getFieldsInto(entity any, fields map[string]any) error {
+	if isNilStrictValue(entity) {
+		return NewValidationException("实体不能为 nil")
+	}
+	if fields == nil {
+		return NewValidationException("字段目标 map 不能为 nil")
+	}
 	v := reflect.ValueOf(entity)
-	if v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return NewValidationException("实体不能为 nil")
+		}
 		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return NewValidationException(fmt.Sprintf("实体必须是 struct 或 *struct，实际类型: %T", entity))
 	}
 	t := v.Type()
 	entityTypeName := t.Name()
-	r.scanFieldsRecursive(v, t, entityTypeName, fields)
+	return r.scanFieldsRecursive(v, t, entityTypeName, fields)
 }
 
 // 递归扫描字段（处理嵌入结构体）
-func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type, entityTypeName string, fields map[string]any) {
+func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type, entityTypeName string, fields map[string]any) error {
+	return r.scanFieldsRecursivePath(v, t, entityTypeName, fields, make(map[reflect.Type]bool))
+}
+
+func (r *BaseCrudRepository) scanFieldsRecursivePath(
+	v reflect.Value,
+	t reflect.Type,
+	entityTypeName string,
+	fields map[string]any,
+	visiting map[reflect.Type]bool,
+) error {
+	if visiting[t] {
+		return NewValidationException(fmt.Sprintf("实体包含递归匿名嵌入结构: %s", t))
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
+
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
@@ -402,7 +601,13 @@ func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type
 			// 如果是指针，需要解引用
 			if embeddedType.Kind() == reflect.Ptr {
 				if embeddedValue.IsNil() {
-					LogDebug("跳过 nil 嵌入结构体: 实体=%s, 字段=%s", entityTypeName, field.Name)
+					embeddedType = embeddedType.Elem()
+					if embeddedType.Kind() == reflect.Struct {
+						// 仍扫描零值结构，确保同一实体类型的 SQL 列集合不依赖首条记录。
+						if err := r.scanFieldsRecursivePath(reflect.Zero(embeddedType), embeddedType, entityTypeName, fields, visiting); err != nil {
+							return err
+						}
+					}
 					continue
 				}
 				embeddedValue = embeddedValue.Elem()
@@ -412,7 +617,9 @@ func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type
 			// 如果是结构体，递归扫描
 			if embeddedType.Kind() == reflect.Struct {
 				LogDebug("递归扫描嵌入结构体: 实体=%s, 嵌入字段=%s", entityTypeName, field.Name)
-				r.scanFieldsRecursive(embeddedValue, embeddedType, entityTypeName, fields)
+				if err := r.scanFieldsRecursivePath(embeddedValue, embeddedType, entityTypeName, fields, visiting); err != nil {
+					return err
+				}
 				continue
 			}
 		}
@@ -468,9 +675,11 @@ func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type
 			// 尝试序列化为 JSON
 			jsonValue, err := r.serializeComplexType(value, fieldType)
 			if err != nil {
-				LogWarn("跳过复杂类型字段（序列化失败）: 实体=%s, 字段=%s, 列名=%s, 类型=%s, 错误=%v",
-					entityTypeName, field.Name, columnName, fieldType.String(), err)
-				continue
+				return NewValidationExceptionWithCause(
+					err,
+					fmt.Sprintf("复杂字段序列化失败: 实体=%s, 字段=%s, 列名=%s, 类型=%s",
+						entityTypeName, field.Name, columnName, fieldType.String()),
+				)
 			}
 			value = jsonValue
 			LogDebug("序列化复杂类型字段: 实体=%s, 字段=%s, 列名=%s, 类型=%s",
@@ -479,6 +688,7 @@ func (r *BaseCrudRepository) scanFieldsRecursive(v reflect.Value, t reflect.Type
 
 		fields[columnName] = value
 	}
+	return nil
 }
 
 // 判断是否为复杂类型（需要序列化）
@@ -702,6 +912,9 @@ func (r *BaseCrudRepository) isZeroValue(value any) bool {
 
 // 批量保存实体（真正的批量INSERT，一次SQL插入多条）
 func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
 	// 参数验证
 	if entities == nil {
 		return NewValidationException("实体列表不能为 nil")
@@ -713,9 +926,12 @@ func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 	// 过滤掉 nil 实体
 	validEntities := make([]IDbEntity, 0, len(entities))
 	for i, entity := range entities {
-		if entity == nil {
+		if isNilStrictValue(entity) {
 			LogWarn("批量保存跳过 nil 实体: 索引=%d", i)
 			continue
+		}
+		if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+			return NewValidationExceptionWithCause(identifierErr, fmt.Sprintf("批量保存实体标识符非法: 索引=%d", i))
 		}
 		validEntities = append(validEntities, entity)
 	}
@@ -723,22 +939,38 @@ func (r *BaseCrudRepository) SaveBatch(entities []IDbEntity) error {
 	if len(validEntities) == 0 {
 		return NewValidationException("没有有效的实体可保存")
 	}
+	if shapeErr := validateRepositoryBatchShapes(validEntities, r.getTableName); shapeErr != nil {
+		return shapeErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
 
 	chunkSize := GetCrudPerformanceSettings().Snapshot().BatchInsertChunkSize
-	for start := 0; start < len(validEntities); start += chunkSize {
-		end := start + chunkSize
-		if end > len(validEntities) {
-			end = len(validEntities)
-		}
-		if err := r.saveBatchInsertOnce(validEntities[start:end]); err != nil {
-			return err
+	if chunkSize <= 0 {
+		chunkSize = DefaultCrudPerformanceSettings().BatchInsertChunkSize
+	}
+	if chunkSize <= 0 {
+		chunkSize = len(validEntities)
+	}
+	for _, group := range groupEntitiesByTable(validEntities, r.getTableName) {
+		for start := 0; start < len(group); start += chunkSize {
+			end := start + chunkSize
+			if end > len(group) {
+				end = len(group)
+			}
+			if err := r.saveBatchInsertOnce(group[start:end], databaseGeneration); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 // saveBatchInsertOnce 单次批量 INSERT（内部方法，不含分块逻辑）。
-func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) error {
+func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity, databaseGeneration string) error {
 	if len(validEntities) == 0 {
 		return nil
 	}
@@ -747,18 +979,35 @@ func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) erro
 
 	// 获取第一个实体的表名和字段结构（假设所有实体类型相同）
 	firstEntity := validEntities[0]
+	if isNilStrictValue(firstEntity) {
+		return NewValidationException("批量保存首个实体不能为 nil")
+	}
 	tableName := r.getTableName(firstEntity)
 	if tableName == "" {
 		return NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
 	}
 
 	// 调用保存前的序列化钩子
-	for _, entity := range validEntities {
-		entity.SerializeBeforeSaveDb()
+	for index, entity := range validEntities {
+		if isNilStrictValue(entity) {
+			return NewValidationException(fmt.Sprintf("批量保存实体不能为 nil: 索引=%d", index))
+		}
+		if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+			return NewValidationExceptionWithCause(identifierErr, fmt.Sprintf("批量保存实体标识符非法: 索引=%d", index))
+		}
+		if r.getTableName(entity) != tableName {
+			return NewValidationException("单个批量 INSERT 只能包含同一张表的实体")
+		}
+		if err := runEntitySerializeHook(entity); err != nil {
+			return NewDb233ExceptionWithCause(err, fmt.Sprintf("批量保存序列化失败: 索引=%d", index))
+		}
 	}
 
 	// 获取字段结构（使用第一个实体）
-	firstFields := r.getFields(firstEntity)
+	firstFields, fieldsErr := r.getFields(firstEntity)
+	if fieldsErr != nil {
+		return fieldsErr
+	}
 	if len(firstFields) == 0 {
 		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段，请检查字段是否包含 db 标签", firstEntity))
 	}
@@ -779,9 +1028,33 @@ func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) erro
 		}
 		columns = append(columns, name)
 	}
+	sort.Strings(columns)
 
 	if len(columns) == 0 {
 		return NewValidationException(fmt.Sprintf("表 %s 没有可插入的字段", tableName))
+	}
+	if identifierErr := validateRepositorySQLIdentifiers(tableName, uidColumn, columns); identifierErr != nil {
+		return identifierErr
+	}
+	hasPrimaryKey := false
+	for _, column := range columns {
+		if column == uidColumn {
+			hasPrimaryKey = true
+			break
+		}
+	}
+	if hasPrimaryKey {
+		for _, entity := range validEntities {
+			if r.isZeroValue(cm.GetPrimaryKeyValue(entity)) {
+				return NewValidationException(fmt.Sprintf("批量 INSERT 要求所有实体主键 %s 非零值", uidColumn))
+			}
+		}
+	} else if isAutoIncrement {
+		for _, entity := range validEntities {
+			if !r.isZeroValue(cm.GetPrimaryKeyValue(entity)) {
+				return NewValidationException(fmt.Sprintf("批量自增 INSERT 要求所有实体主键 %s 均为零值", uidColumn))
+			}
+		}
 	}
 
 	// 构建批量INSERT SQL: INSERT INTO table (col1, col2) VALUES (?, ?), (?, ?), ...
@@ -802,7 +1075,9 @@ func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) erro
 
 	for _, entity := range validEntities {
 		clear(fieldScratch)
-		r.getFieldsInto(entity, fieldScratch)
+		if fieldsErr := r.getFieldsInto(entity, fieldScratch); fieldsErr != nil {
+			return fieldsErr
+		}
 		var rowValues []any
 		if batchScratch != nil {
 			batchScratch.rowValues = batchScratch.rowValues[:0]
@@ -830,42 +1105,40 @@ func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) erro
 		sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " + StringUtilsInstance.Join(placeholders, ",")
 	}
 
-	LogDebug("执行批量INSERT: 表=%s, 记录数=%d, 字段数=%d, SQL=%s", tableName, len(validEntities), len(columns), sql)
+	LogDebug("执行批量INSERT: 表=%s, 记录数=%d, 字段数=%d, %s", tableName, len(validEntities), len(columns), sqlForRuntimeLog(sql))
 
-	result, err := r.db.execContext(context.Background(), sql, allValues...)
+	statement := &batchUpsertStatement{
+		query:               sql,
+		args:                allValues,
+		tableName:           tableName,
+		uidColumn:           uidColumn,
+		columns:             columns,
+		entities:            validEntities,
+		assignAutoIncrement: isAutoIncrement && !hasPrimaryKey,
+	}
+	result, err := r.executeNonTransactionalBatchStatement(context.Background(), statement)
 	if err != nil {
 		if isConnectionError(err) {
-			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%s", tableName, safeErrorForLog(err))
 			// 批量操作失败时，记录第一个实体的主键
 			firstUidValue := cm.GetPrimaryKeyValue(firstEntity)
-			r.recordFailedOperation("SaveBatch", tableName, sql, allValues, firstUidValue)
-			if r.db.FaultTolerantMgr != nil {
-				r.db.FaultTolerantMgr.CheckAndReconnect()
-			}
-			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+			recoveryErr := r.recordFailedOperation("SaveBatch", tableName, sql, allValues, firstUidValue, databaseGeneration)
+			r.triggerFaultTolerantReconnect()
+			return NewQueryExceptionWithCause(errors.Join(err, recoveryErr), "数据库连接已关闭或不可用，请检查网络连接")
 		}
-		LogError("批量保存失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
+		LogError("批量保存失败: 表=%s, 错误=%s, %s", tableName, safeErrorForLog(err), sqlForRuntimeLog(sql))
 		return NewQueryExceptionWithCause(err, fmt.Sprintf("批量保存到表 %s 失败", tableName))
 	}
 
 	// 处理自增主键（批量插入时，MySQL返回第一条记录的ID，后续ID是连续的）
-	if isAutoIncrement {
-		lastInsertId, err := result.LastInsertId()
-		if err == nil && lastInsertId > 0 {
-			// MySQL批量INSERT时，LastInsertId()返回第一条记录的ID
-			// 后续记录的ID是连续的（ID, ID+1, ID+2, ...）
-			// 为所有实体设置自增主键
-			for i, entity := range validEntities {
-				entityId := lastInsertId + int64(i)
-				r.setPrimaryKeyValue(entity, entityId)
-				LogDebug("批量INSERT自增主键已设置: 表=%s, 记录索引=%d, ID=%d", tableName, i, entityId)
-			}
-			LogDebug("批量INSERT自增主键已设置: 表=%s, 第一条记录ID=%d, 最后一条记录ID=%d, 总记录数=%d",
-				tableName, lastInsertId, lastInsertId+int64(len(validEntities)-1), len(validEntities))
-		}
+	if assignIDs, idErr := r.batchAutoIncrementAction(statement, result); idErr == nil && assignIDs != nil {
+		assignIDs()
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, rowsAffectedErr := result.RowsAffected()
+	if rowsAffectedErr != nil {
+		return NewQueryExceptionWithCause(rowsAffectedErr, fmt.Sprintf("获取表 %s 批量保存影响行数失败", tableName))
+	}
 	LogDebug("批量保存完成: 表=%s, 影响行数=%d, 记录数=%d", tableName, rowsAffected, len(validEntities))
 
 	return nil
@@ -873,6 +1146,34 @@ func (r *BaseCrudRepository) saveBatchInsertOnce(validEntities []IDbEntity) erro
 
 // SaveBatchUpsert 批量 UPSERT（INSERT ... ON DUPLICATE KEY UPDATE）。
 func (r *BaseCrudRepository) SaveBatchUpsert(entities []IDbEntity) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
+	return r.saveBatchUpsertUnderGenerationLease(entities, databaseGeneration)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertUnderGenerationLease(entities []IDbEntity, databaseGeneration string) error {
+	return r.saveBatchUpsertUnderGenerationLeaseMode(entities, databaseGeneration, false)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertUnderGenerationLeaseMode(entities []IDbEntity, databaseGeneration string, entitiesPrepared bool) error {
+	return r.saveBatchUpsertUnderGenerationLeaseModeWithFlushSource(entities, databaseGeneration, entitiesPrepared, "")
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertUnderGenerationLeaseModeWithFlushSource(
+	entities []IDbEntity,
+	databaseGeneration string,
+	entitiesPrepared bool,
+	flushSource FlushWriteSource,
+) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
 	if entities == nil {
 		return NewValidationException("实体列表不能为 nil")
 	}
@@ -882,20 +1183,26 @@ func (r *BaseCrudRepository) SaveBatchUpsert(entities []IDbEntity) error {
 
 	validEntities := make([]IDbEntity, 0, len(entities))
 	for i, entity := range entities {
-		if entity == nil {
+		if isNilStrictValue(entity) {
 			LogWarn("批量 UPSERT 跳过 nil 实体: 索引=%d", i)
 			continue
+		}
+		if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+			return NewValidationExceptionWithCause(identifierErr, fmt.Sprintf("批量 UPSERT 实体标识符非法: 索引=%d", i))
 		}
 		validEntities = append(validEntities, entity)
 	}
 	if len(validEntities) == 0 {
 		return NewValidationException("没有有效的实体可保存")
 	}
+	if shapeErr := validateRepositoryBatchShapes(validEntities, r.getTableName); shapeErr != nil {
+		return shapeErr
+	}
 
 	chunkSize := GetCrudPerformanceSettings().Snapshot().BatchUpsertChunkSize
 	groups := groupEntitiesByTable(validEntities, r.getTableName)
 	for _, group := range groups {
-		if err := r.saveBatchUpsertWithJournal(group, chunkSize); err != nil {
+		if err := r.saveBatchUpsertWithJournalAndFlushSource(group, chunkSize, databaseGeneration, entitiesPrepared, flushSource); err != nil {
 			return err
 		}
 	}
@@ -925,54 +1232,193 @@ func groupEntitiesByTable(entities []IDbEntity, tableNameOf func(IDbEntity) stri
 
 // UpdateBatchUpsert 批量属性同步（游戏服高频写，WAL 保护不丢数据）。
 func (r *BaseCrudRepository) UpdateBatchUpsert(entities []IDbEntity) error {
+	return r.updateBatchUpsertWithFlushSource(entities, FlushWriteSourceManual)
+}
+
+func (r *BaseCrudRepository) updateBatchUpsertWithFlushSource(entities []IDbEntity, flushSource FlushWriteSource) error {
+	if r == nil {
+		return NewValidationException("Repository 不能为 nil")
+	}
 	r.testHookMu.Lock()
 	hook := r.testUpsertHook
 	r.testHookMu.Unlock()
 	if hook != nil {
 		return hook(entities)
 	}
-	return r.SaveBatchUpsert(entities)
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
+	return r.saveBatchUpsertUnderGenerationLeaseModeWithFlushSource(entities, databaseGeneration, false, flushSource)
 }
 
-func (r *BaseCrudRepository) saveBatchUpsertWithJournal(validEntities []IDbEntity, chunkSize int) error {
-	if r.writeJournal != nil {
+func (r *BaseCrudRepository) updateBatchUpsertUnderGenerationLease(entities []IDbEntity, databaseGeneration string) error {
+	if r == nil {
+		return NewValidationException("Repository 不能为 nil")
+	}
+	r.testHookMu.Lock()
+	hook := r.testUpsertHook
+	r.testHookMu.Unlock()
+	if hook != nil {
+		return hook(entities)
+	}
+	return r.saveBatchUpsertUnderGenerationLeaseModeWithFlushSource(
+		entities,
+		databaseGeneration,
+		false,
+		FlushWriteSourceSession,
+	)
+}
+
+// updateBatchUpsertPreparedUnderGenerationLease 刷写已在首次 Flush 前执行过
+// SerializeBeforeSaveDb 的实体。失败重试复用同一快照，不重复执行非幂等 hook。
+func (r *BaseCrudRepository) updateBatchUpsertPreparedUnderGenerationLease(entities []IDbEntity, databaseGeneration string) error {
+	return r.updateBatchUpsertPreparedUnderGenerationLeaseWithFlushSource(
+		entities,
+		databaseGeneration,
+		FlushWriteSourceWriteBuffer,
+	)
+}
+
+func (r *BaseCrudRepository) updateBatchUpsertPreparedUnderGenerationLeaseWithFlushSource(
+	entities []IDbEntity,
+	databaseGeneration string,
+	flushSource FlushWriteSource,
+) error {
+	if r == nil {
+		return NewValidationException("Repository 不能为 nil")
+	}
+	r.testHookMu.Lock()
+	hook := r.testUpsertHook
+	r.testHookMu.Unlock()
+	if hook != nil {
+		return hook(entities)
+	}
+	return r.saveBatchUpsertUnderGenerationLeaseModeWithFlushSource(
+		entities,
+		databaseGeneration,
+		true,
+		flushSource,
+	)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertWithJournal(validEntities []IDbEntity, chunkSize int, databaseGeneration string, entitiesPrepared bool) error {
+	return r.saveBatchUpsertWithJournalAndFlushSource(validEntities, chunkSize, databaseGeneration, entitiesPrepared, "")
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertWithJournalAndFlushSource(
+	validEntities []IDbEntity,
+	chunkSize int,
+	databaseGeneration string,
+	entitiesPrepared bool,
+	flushSource FlushWriteSource,
+) error {
+	if chunkSize <= 0 {
+		chunkSize = DefaultCrudPerformanceSettings().BatchUpsertChunkSize
+	}
+	if chunkSize <= 0 {
+		chunkSize = len(validEntities)
+	}
+	journal := r.GetWriteJournal()
+	if journal != nil {
+		// 整个逻辑批次先一次性 durable merge，随后才允许任何 SQL；避免大批次
+		// 每个 chunk 都全文件 rewrite+fsync。SQL 成功项最后一次性清理。
+		var entries []*JournalEntry
+		var appendErr error
+		if entitiesPrepared {
+			entries, appendErr = journal.appendPreparedEntitiesUnderGenerationLease("SaveBatchUpsert", validEntities, databaseGeneration)
+		} else {
+			entries, appendErr = journal.appendEntitiesUnderGenerationLease("SaveBatchUpsert", validEntities, databaseGeneration)
+		}
+		if appendErr != nil {
+			return appendErr
+		}
+		if len(entries) != len(validEntities) {
+			return NewDb233Exception("WAL durable 条目数量与批量 UPSERT 实体数量不一致")
+		}
+
+		succeededIDs := make([]string, 0, len(entries))
+		writeErrors := make([]error, 0, 8)
+		suppressedErrors := 0
 		for start := 0; start < len(validEntities); start += chunkSize {
 			end := start + chunkSize
 			if end > len(validEntities) {
 				end = len(validEntities)
 			}
 			chunk := validEntities[start:end]
-			entries, err := r.writeJournal.AppendEntities("SaveBatchUpsert", chunk)
-			if err != nil {
-				return err
+			// WAL already owns durable recovery for this logical write. Recording the
+			// same failure in FTM would create duplicate/stale replays and unbounded
+			// queue growth during an outage.
+			if err := r.saveBatchUpsertOnceInternalModeWithFlushSource(
+				chunk,
+				false,
+				false,
+				databaseGeneration,
+				false,
+				flushSource,
+			); err != nil {
+				writeErrors = appendBoundedRecoveryError(writeErrors, err, &suppressedErrors)
+				continue
 			}
-			if err := r.saveBatchUpsertOnce(chunk); err != nil {
-				r.recordFailedBatchUpsert(chunk, err)
-				return err
-			}
-			ids := make([]string, len(entries))
-			for i, e := range entries {
-				ids[i] = e.ID
-			}
-			if err := r.writeJournal.RemoveEntries(ids); err != nil {
-				LogError("WAL 删除已成功条目失败: %v", err)
+			for _, entry := range entries[start:end] {
+				succeededIDs = append(succeededIDs, entry.ID)
 			}
 		}
-		return nil
+		if len(succeededIDs) > 0 {
+			if err := journal.removeEntriesUnderGenerationLease(succeededIDs, databaseGeneration); err != nil {
+				cleanupErr := NewDb233ExceptionWithCause(
+					errors.Join(ErrWriteJournalCleanup, err),
+					"数据库写入成功，但 WAL 清理失败；条目将保留并可安全重放",
+				)
+				LogError("WAL 删除已成功条目失败: %v", cleanupErr)
+				writeErrors = appendBoundedRecoveryError(writeErrors, cleanupErr, &suppressedErrors)
+			}
+		}
+		if suppressedErrors > 0 {
+			writeErrors = append(writeErrors, fmt.Errorf("另有 %d 个批量 UPSERT 分块错误已省略", suppressedErrors))
+		}
+		if len(writeErrors) > 0 {
+			LogWarn("批量 UPSERT WAL 分块未全部完成: 分块错误=%d, 已省略=%d", len(writeErrors), suppressedErrors)
+		}
+		return errors.Join(writeErrors...)
 	}
-	return r.saveBatchUpsertChunked(validEntities, chunkSize)
+	return r.saveBatchUpsertChunkedWithFlushSource(validEntities, chunkSize, databaseGeneration, !entitiesPrepared, flushSource)
 }
 
-func (r *BaseCrudRepository) saveBatchUpsertChunked(validEntities []IDbEntity, chunkSize int) error {
+func (r *BaseCrudRepository) saveBatchUpsertChunked(validEntities []IDbEntity, chunkSize int, databaseGeneration string, runSerializeHooks bool) error {
+	return r.saveBatchUpsertChunkedWithFlushSource(validEntities, chunkSize, databaseGeneration, runSerializeHooks, "")
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertChunkedWithFlushSource(
+	validEntities []IDbEntity,
+	chunkSize int,
+	databaseGeneration string,
+	runSerializeHooks bool,
+	flushSource FlushWriteSource,
+) error {
 	if chunkSize <= 0 {
-		chunkSize = GetCrudPerformanceSettings().Snapshot().BatchUpsertChunkSize
+		chunkSize = DefaultCrudPerformanceSettings().BatchUpsertChunkSize
+	}
+	if chunkSize <= 0 {
+		chunkSize = len(validEntities)
 	}
 	for start := 0; start < len(validEntities); start += chunkSize {
 		end := start + chunkSize
 		if end > len(validEntities) {
 			end = len(validEntities)
 		}
-		if err := r.saveBatchUpsertOnce(validEntities[start:end]); err != nil {
+		if err := r.saveBatchUpsertOnceInternalModeWithFlushSource(
+			validEntities[start:end],
+			runSerializeHooks,
+			true,
+			databaseGeneration,
+			true,
+			flushSource,
+		); err != nil {
 			return err
 		}
 	}
@@ -980,6 +1426,74 @@ func (r *BaseCrudRepository) saveBatchUpsertChunked(validEntities []IDbEntity, c
 }
 
 func (r *BaseCrudRepository) saveBatchUpsertOnce(validEntities []IDbEntity) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
+	return r.saveBatchUpsertOnceUnderGenerationLease(validEntities, databaseGeneration, true)
+}
+
+// saveBatchUpsertOncePrepared 用于 WAL 已完成 SerializeBeforeSaveDb 的路径。
+func (r *BaseCrudRepository) saveBatchUpsertOncePreparedUnderGenerationLease(validEntities []IDbEntity, databaseGeneration string) error {
+	// WAL 已独占 durable recovery；不得重复记录到 FTM。
+	return r.saveBatchUpsertOnceInternalModeWithFlushSource(
+		validEntities,
+		false,
+		false,
+		databaseGeneration,
+		false,
+		FlushWriteSourceWALReplay,
+	)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertOnceUnderGenerationLease(validEntities []IDbEntity, databaseGeneration string, recordRecovery bool) error {
+	return r.saveBatchUpsertOnceInternal(validEntities, true, recordRecovery, databaseGeneration)
+}
+
+func (r *BaseCrudRepository) replayBatchUpsertOnceUnderGenerationLease(validEntities []IDbEntity, databaseGeneration string) error {
+	return r.saveBatchUpsertOnceInternalModeWithFlushSource(
+		validEntities,
+		true,
+		false,
+		databaseGeneration,
+		true,
+		FlushWriteSourceFaultToleranceReplay,
+	)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertOnceInternal(validEntities []IDbEntity, runSerializeHooks bool, recordRecovery bool, databaseGeneration string) error {
+	return r.saveBatchUpsertOnceInternalMode(validEntities, runSerializeHooks, recordRecovery, databaseGeneration, true)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertOnceInternalMode(
+	validEntities []IDbEntity,
+	runSerializeHooks bool,
+	recordRecovery bool,
+	databaseGeneration string,
+	logFailure bool,
+) error {
+	return r.saveBatchUpsertOnceInternalModeWithFlushSource(
+		validEntities,
+		runSerializeHooks,
+		recordRecovery,
+		databaseGeneration,
+		logFailure,
+		"",
+	)
+}
+
+func (r *BaseCrudRepository) saveBatchUpsertOnceInternalModeWithFlushSource(
+	validEntities []IDbEntity,
+	runSerializeHooks bool,
+	recordRecovery bool,
+	databaseGeneration string,
+	logFailure bool,
+	flushSource FlushWriteSource,
+) error {
 	if len(validEntities) == 0 {
 		return nil
 	}
@@ -989,24 +1503,31 @@ func (r *BaseCrudRepository) saveBatchUpsertOnce(validEntities []IDbEntity) erro
 
 	LogDebug("开始批量 UPSERT: 实体数量=%d", len(validEntities))
 
-	statement, err := r.buildBatchUpsertStatement(validEntities)
+	statement, err := r.buildBatchUpsertStatementWithHooks(validEntities, runSerializeHooks)
 	if err != nil {
 		return err
 	}
+	statement.flushWriteSource = flushSource
+	statement.flushEntityCount = len(validEntities)
 	LogDebug("执行批量 UPSERT: 表=%s, 记录数=%d, 字段数=%d", statement.tableName, len(validEntities), len(statement.columns))
 
-	result, err := r.executeBatchUpsertStatement(context.Background(), r.db.execContext, statement)
+	result, err := r.executeNonTransactionalBatchStatement(context.Background(), statement)
 	if err != nil {
 		if isConnectionError(err) {
-			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", statement.tableName, err)
-			firstUidValue := GetCrudManagerInstance().GetPrimaryKeyValue(validEntities[0])
-			r.recordFailedOperation("SaveBatchUpsert", statement.tableName, statement.query, statement.args, firstUidValue)
-			if r.db.FaultTolerantMgr != nil {
-				r.db.FaultTolerantMgr.CheckAndReconnect()
+			if logFailure {
+				LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%s", statement.tableName, safeErrorForLog(err))
 			}
-			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+			var recoveryErr error
+			if recordRecovery {
+				firstUidValue := GetCrudManagerInstance().GetPrimaryKeyValue(validEntities[0])
+				recoveryErr = r.recordFailedOperation("SaveBatchUpsert", statement.tableName, statement.query, statement.args, firstUidValue, databaseGeneration)
+			}
+			r.triggerFaultTolerantReconnect()
+			return NewQueryExceptionWithCause(errors.Join(err, recoveryErr), "数据库连接已关闭或不可用，请检查网络连接")
 		}
-		LogError("批量 UPSERT 失败: 表=%s, 错误=%v, SQL=%s", statement.tableName, err, statement.query)
+		if logFailure {
+			LogError("批量 UPSERT 失败: 表=%s, 错误=%s, %s", statement.tableName, safeErrorForLog(err), sqlForRuntimeLog(statement.query))
+		}
 		return NewQueryExceptionWithCause(err, fmt.Sprintf("批量 UPSERT 到表 %s 失败", statement.tableName))
 	}
 	// legacy 路径保持 LastInsertId 失败不影响已成功写入的既有语义。
@@ -1014,13 +1535,25 @@ func (r *BaseCrudRepository) saveBatchUpsertOnce(validEntities []IDbEntity) erro
 		assignIDs()
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, rowsAffectedErr := result.RowsAffected()
+	if rowsAffectedErr != nil {
+		return NewQueryExceptionWithCause(rowsAffectedErr, fmt.Sprintf("获取表 %s 批量 UPSERT 影响行数失败", statement.tableName))
+	}
 	LogDebug("批量 UPSERT 完成: 表=%s, 影响行数=%d, 记录数=%d", statement.tableName, rowsAffected, len(validEntities))
 	return nil
 }
 
 // SaveBuffered 异步入队保存；缓冲满或未启用时同步 Save。
 func (r *BaseCrudRepository) SaveBuffered(entity IDbEntity) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	if isNilStrictValue(entity) {
+		return NewValidationException("实体不能为 nil")
+	}
+	if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+		return identifierErr
+	}
 	settings := GetCrudPerformanceSettings().Snapshot()
 	if !settings.WriteBufferEnabled {
 		return r.Save(entity)
@@ -1041,6 +1574,9 @@ func (r *BaseCrudRepository) SaveBuffered(entity IDbEntity) error {
 
 // FlushWriteBuffer 同步刷盘写缓冲。
 func (r *BaseCrudRepository) FlushWriteBuffer() error {
+	if r == nil {
+		return NewValidationException("Repository 不能为 nil")
+	}
 	r.wbMu.Lock()
 	wb := r.writeBuffer
 	r.wbMu.Unlock()
@@ -1050,19 +1586,134 @@ func (r *BaseCrudRepository) FlushWriteBuffer() error {
 	return wb.Flush()
 }
 
+// flushWriteBufferUnderGenerationLease 仅供 Db generation transition 使用。
+// 调用方必须持有 Db generation 写锁。
+func (r *BaseCrudRepository) flushWriteBufferUnderGenerationLease(expectedGeneration string) error {
+	if r == nil {
+		return NewValidationException("Repository 不能为 nil")
+	}
+	r.wbMu.Lock()
+	wb := r.writeBuffer
+	r.wbMu.Unlock()
+	if wb == nil {
+		return nil
+	}
+	return wb.flushUnderGenerationLease(expectedGeneration)
+}
+
+func (r *BaseCrudRepository) rotateWriteBufferDatabaseGeneration(generation string) {
+	if r == nil {
+		return
+	}
+	r.wbMu.Lock()
+	wb := r.writeBuffer
+	r.wbMu.Unlock()
+	if wb != nil {
+		wb.rotateDatabaseGeneration(generation)
+	}
+}
+
 func (r *BaseCrudRepository) ensureWriteBuffer(settings CrudPerformanceSettings) (*WriteBuffer, error) {
+	if r == nil {
+		return nil, NewValidationException("Repository 不能为 nil")
+	}
+	r.wbMu.Lock()
+	closed := r.closed
+	r.wbMu.Unlock()
+	if closed {
+		return nil, ErrCrudRepositoryClosed
+	}
+	generation := ""
+	releaseGeneration := func() {}
+	if r != nil && r.db != nil {
+		current, release, err := r.db.lockCurrentDatabaseGeneration()
+		if err != nil {
+			return nil, err
+		}
+		generation = current
+		releaseGeneration = release
+	}
+	defer releaseGeneration()
+	return r.ensureWriteBufferUnderGenerationLease(settings, generation)
+}
+
+// ensureWriteBufferUnderGenerationLease 由已持有 Db generation 租约的调用方
+// 使用，避免 RWMutex 在有等待写者时重入 RLock 自锁。
+func (r *BaseCrudRepository) ensureWriteBufferUnderGenerationLease(
+	settings CrudPerformanceSettings,
+	generation string,
+) (*WriteBuffer, error) {
+	if r == nil {
+		return nil, NewValidationException("Repository 不能为 nil")
+	}
 	r.wbMu.Lock()
 	defer r.wbMu.Unlock()
+	if r.closed {
+		return nil, ErrCrudRepositoryClosed
+	}
 	if r.writeBuffer == nil {
-		r.writeBuffer = newWriteBuffer(r)
+		if r.db != nil && !r.db.registerBufferedRepository(r) {
+			if r.db.isDatabaseGenerationUnavailable() {
+				return nil, ErrDatabaseGenerationBlocked
+			}
+			r.closed = true
+			return nil, ErrCrudRepositoryClosed
+		}
+		r.writeBuffer = newWriteBufferForGeneration(r, generation)
 		r.writeBuffer.Start(settings)
 	}
 	return r.writeBuffer, nil
 }
 
+// tryEnqueueOwnedSnapshotUnderGenerationLease 只尝试转移到 WriteBuffer。
+// queued=true 才表示 Repository 接管所有权；false/error 时快照
+// 仍归调用方，且未执行序列化 hook。
+func (r *BaseCrudRepository) tryEnqueueOwnedSnapshotUnderGenerationLease(
+	entity IDbEntity,
+	databaseGeneration string,
+) (bool, error) {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return false, readyErr
+	}
+	if isNilStrictValue(entity) {
+		return false, NewValidationException("实体快照不能为 nil")
+	}
+	if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+		return false, identifierErr
+	}
+	settings := GetCrudPerformanceSettings().Snapshot()
+	if !settings.WriteBufferEnabled {
+		return false, nil
+	}
+	wb, err := r.ensureWriteBufferUnderGenerationLease(settings, databaseGeneration)
+	if err != nil {
+		return false, err
+	}
+	return wb.enqueueOwnedSnapshotUnderGenerationLease(entity, databaseGeneration)
+}
+
+func (r *BaseCrudRepository) saveSnapshotSynchronouslyUnderGenerationLease(
+	entity IDbEntity,
+	databaseGeneration string,
+) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	if isNilStrictValue(entity) {
+		return NewValidationException("实体快照不能为 nil")
+	}
+	if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+		return identifierErr
+	}
+	return r.updateBatchUpsertUnderGenerationLease([]IDbEntity{entity}, databaseGeneration)
+}
+
 func (r *BaseCrudRepository) DeleteById(id any, entityType IDbEntity) error {
 	// 参数验证
-	if entityType == nil {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	if isNilStrictValue(entityType) {
 		return NewValidationException("实体类型不能为 nil")
 	}
 	if id == nil {
@@ -1080,156 +1731,50 @@ func (r *BaseCrudRepository) DeleteById(id any, entityType IDbEntity) error {
 	if uidColumn == "" {
 		uidColumn = "id"
 	}
+	if identifierErr := validateRepositorySQLIdentifiers(tableName, uidColumn, nil); identifierErr != nil {
+		return identifierErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
 
 	sql := "DELETE FROM " + tableName + " WHERE " + uidColumn + " = ?"
-	LogDebug("执行 DELETE: 表=%s, 主键列=%s, ID=%v, SQL=%s", tableName, uidColumn, id, sql)
+	LogDebug("执行 DELETE: 表=%s, 主键列=%s, %s", tableName, uidColumn, sqlForRuntimeLog(sql))
 
 	result, err := r.db.execContext(context.Background(), sql, id)
 	if err != nil {
 		if isConnectionError(err) {
-			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
-			r.recordFailedOperation("Delete", tableName, sql, []any{id}, id)
-			if r.db.FaultTolerantMgr != nil {
-				r.db.FaultTolerantMgr.CheckAndReconnect()
-			}
-			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%s", tableName, safeErrorForLog(err))
+			recoveryErr := r.recordFailedOperation("Delete", tableName, sql, []any{id}, id, databaseGeneration)
+			r.triggerFaultTolerantReconnect()
+			return NewQueryExceptionWithCause(errors.Join(err, recoveryErr), "数据库连接已关闭或不可用，请检查网络连接")
 		}
-		LogError("删除实体失败: 表=%s, ID=%v, 错误=%v, SQL=%s", tableName, id, err, sql)
-		return NewQueryExceptionWithCause(err, fmt.Sprintf("删除表 %s 中 ID=%v 的记录失败", tableName, id))
+		LogError("删除实体失败: 表=%s, 错误=%s, %s", tableName, safeErrorForLog(err), sqlForRuntimeLog(sql))
+		return NewQueryExceptionWithCause(err, fmt.Sprintf("删除表 %s 中的记录失败", tableName))
 	}
 
-	affectedRows, _ := result.RowsAffected()
+	affectedRows, affectedErr := result.RowsAffected()
+	if affectedErr != nil {
+		return NewQueryExceptionWithCause(affectedErr, fmt.Sprintf("获取表 %s 删除影响行数失败", tableName))
+	}
 	if affectedRows == 0 {
-		LogWarn("删除无影响: 表=%s, ID=%v, 可能记录不存在", tableName, id)
+		LogWarn("删除无影响: 表=%s, 可能记录不存在", tableName)
 	} else {
-		LogDebug("删除成功: 表=%s, ID=%v, 影响行数=%d", tableName, id, affectedRows)
+		LogDebug("删除成功: 表=%s, 影响行数=%d", tableName, affectedRows)
 	}
 
 	return nil
 }
 
 func (r *BaseCrudRepository) FindById(id any, entityType IDbEntity) (IDbEntity, error) {
-	// 参数验证
-	if entityType == nil {
-		return nil, NewValidationException("实体类型不能为 nil")
-	}
-	if id == nil {
-		return nil, NewValidationException("查询ID不能为 nil")
-	}
-
-	tableName := r.getTableName(entityType)
-	if tableName == "" {
-		return nil, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
-	}
-
-	// 使用自动扫描获取唯一ID列名
-	cm := GetCrudManagerInstance()
-	uidColumn := cm.GetPrimaryKeyColumnName(entityType)
-	if uidColumn == "" {
-		uidColumn = "id"
-	}
-
-	var sql string
-	settings := GetCrudPerformanceSettings().Snapshot()
-	if settings.EnableSqlTemplateCache {
-		sql = GetSqlTemplateCache().GetFindByIdSQL(entityType, tableName, uidColumn)
-	} else {
-		sql = "SELECT * FROM " + tableName + " WHERE " + uidColumn + " = ?"
-	}
-	LogDebug("执行查询: 表=%s, 主键列=%s, ID=%v, SQL=%s", tableName, uidColumn, id, sql)
-
-	results := r.db.ExecuteQuery(sql, [][]any{{id}}, entityType)
-	if len(results) > 0 {
-		// 返回指针类型
-		result := results[0]
-		v := reflect.ValueOf(result)
-		if v.Kind() != reflect.Ptr {
-			// 如果不是指针，创建一个指针
-			ptr := reflect.New(v.Type())
-			ptr.Elem().Set(v)
-			result = ptr.Interface()
-		}
-		// 类型断言为 IDbEntity
-		if dbEntity, ok := result.(IDbEntity); ok {
-			// 调用加载后的反序列化钩子
-			dbEntity.DeserializeAfterLoadDb()
-			LogDebug("查询成功: 表=%s, ID=%v, 找到记录", tableName, id)
-			return dbEntity, nil
-		}
-		LogError("查询结果类型错误: 表=%s, ID=%v, 结果类型=%T, 未实现 IDbEntity 接口", tableName, id, result)
-		return nil, NewDb233Exception(fmt.Sprintf("查询结果未实现 IDbEntity 接口，实际类型: %T", result))
-	}
-
-	LogDebug("查询无结果: 表=%s, ID=%v, 未找到记录", tableName, id)
-	return nil, nil
+	return r.findByIdCompatibleContext(context.Background(), id, entityType)
 }
 
 // FindByIds 根据主键列表批量查找（单表 IN 查询）。
 func (r *BaseCrudRepository) FindByIds(ids []any, entityType IDbEntity) ([]IDbEntity, error) {
-	if entityType == nil {
-		return nil, NewValidationException("实体类型不能为 nil")
-	}
-	if len(ids) == 0 {
-		return []IDbEntity{}, nil
-	}
-
-	validIds := make([]any, 0, len(ids))
-	for i, id := range ids {
-		if id == nil {
-			LogWarn("FindByIds 跳过 nil ID: 索引=%d", i)
-			continue
-		}
-		validIds = append(validIds, id)
-	}
-	if len(validIds) == 0 {
-		return []IDbEntity{}, nil
-	}
-
-	tableName := r.getTableName(entityType)
-	if tableName == "" {
-		return nil, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
-	}
-
-	cm := GetCrudManagerInstance()
-	uidColumn := cm.GetPrimaryKeyColumnName(entityType)
-	if uidColumn == "" {
-		uidColumn = "id"
-	}
-
-	allEntities := make([]IDbEntity, 0, len(validIds))
-	chunkSize := GetCrudPerformanceSettings().Snapshot().FindByIdsChunkSize
-	for start := 0; start < len(validIds); start += chunkSize {
-		end := start + chunkSize
-		if end > len(validIds) {
-			end = len(validIds)
-		}
-		chunk := validIds[start:end]
-
-		var sql string
-		if EnableAllocPoolEnabled() {
-			sql = appendFindByIdsSQL(tableName, uidColumn, len(chunk))
-		} else {
-			placeholders := make([]string, len(chunk))
-			for i := range placeholders {
-				placeholders[i] = "?"
-			}
-			sql = "SELECT * FROM " + tableName + " WHERE " + uidColumn + " IN (" + StringUtilsInstance.Join(placeholders, ",") + ")"
-		}
-		LogDebug("执行 FindByIds: 表=%s, 主键列=%s, ID数=%d, SQL=%s", tableName, uidColumn, len(chunk), sql)
-
-		results := r.db.ExecuteQuery(sql, [][]any{chunk}, entityType)
-		for i, result := range results {
-			if dbEntity, ok := result.(IDbEntity); ok {
-				dbEntity.DeserializeAfterLoadDb()
-				allEntities = append(allEntities, dbEntity)
-			} else {
-				LogWarn("FindByIds 结果类型错误: 表=%s, 索引=%d, 结果类型=%T", tableName, i, result)
-			}
-		}
-	}
-
-	LogDebug("FindByIds 完成: 表=%s, 请求ID数=%d, 找到记录数=%d", tableName, len(validIds), len(allEntities))
-	return allEntities, nil
+	return r.findByIdsCompatibleContext(context.Background(), ids, entityType)
 }
 
 // FindByIdsMap 根据主键列表批量查找，返回 map[primaryKey]IDbEntity。
@@ -1241,7 +1786,7 @@ func (r *BaseCrudRepository) FindByIdsMap(ids []any, entityType IDbEntity) (map[
 	cm := GetCrudManagerInstance()
 	result := make(map[any]IDbEntity, len(list))
 	for _, entity := range list {
-		if entity == nil {
+		if isNilStrictValue(entity) {
 			continue
 		}
 		pk := cm.GetPrimaryKeyValue(entity)
@@ -1251,80 +1796,34 @@ func (r *BaseCrudRepository) FindByIdsMap(ids []any, entityType IDbEntity) (map[
 }
 
 func (r *BaseCrudRepository) FindAll(entityType IDbEntity) ([]IDbEntity, error) {
-	// 参数验证
-	if entityType == nil {
-		return nil, NewValidationException("实体类型不能为 nil")
-	}
-
-	tableName := r.getTableName(entityType)
-	if tableName == "" {
-		return nil, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
-	}
-
-	sql := "SELECT * FROM " + tableName
-	LogDebug("执行查询所有: 表=%s, SQL=%s", tableName, sql)
-
-	results := r.db.ExecuteQuery(sql, [][]any{}, entityType)
-
-	// 转换为 IDbEntity 切片并调用反序列化钩子
-	entities := make([]IDbEntity, 0, len(results))
-	for i, result := range results {
-		if dbEntity, ok := result.(IDbEntity); ok {
-			// 调用加载后的反序列化钩子
-			dbEntity.DeserializeAfterLoadDb()
-			entities = append(entities, dbEntity)
-		} else {
-			LogWarn("查询结果类型错误: 表=%s, 索引=%d, 结果类型=%T, 未实现 IDbEntity 接口", tableName, i, result)
-		}
-	}
-
-	LogDebug("查询所有完成: 表=%s, 找到记录数=%d", tableName, len(entities))
-	return entities, nil
+	return r.findAllCompatibleContext(context.Background(), entityType)
 }
 
 func (r *BaseCrudRepository) FindByCondition(condition string, params []any, entityType IDbEntity) ([]IDbEntity, error) {
-	// 参数验证
-	if entityType == nil {
-		return nil, NewValidationException("实体类型不能为 nil")
-	}
-	if condition == "" {
-		return nil, NewValidationException("查询条件不能为空")
-	}
-
-	tableName := r.getTableName(entityType)
-	if tableName == "" {
-		return nil, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
-	}
-
-	sql := "SELECT * FROM " + tableName + " WHERE " + condition
-	LogDebug("执行条件查询: 表=%s, 条件=%s, 参数数=%d, SQL=%s", tableName, condition, len(params), sql)
-
-	results := r.db.ExecuteQuery(sql, [][]any{params}, entityType)
-
-	// 转换为 IDbEntity 切片并调用反序列化钩子
-	entities := make([]IDbEntity, 0, len(results))
-	for i, result := range results {
-		if dbEntity, ok := result.(IDbEntity); ok {
-			// 调用加载后的反序列化钩子
-			dbEntity.DeserializeAfterLoadDb()
-			entities = append(entities, dbEntity)
-		} else {
-			LogWarn("查询结果类型错误: 表=%s, 索引=%d, 结果类型=%T, 未实现 IDbEntity 接口", tableName, i, result)
-		}
-	}
-
-	LogDebug("条件查询完成: 表=%s, 找到记录数=%d", tableName, len(entities))
-	return entities, nil
+	return r.findByConditionCompatibleContext(context.Background(), condition, params, entityType)
 }
 
 func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	// 参数验证
-	if entity == nil {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
+	if isNilStrictValue(entity) {
 		return NewValidationException("实体不能为 nil")
 	}
+	if identifierErr := validateRepositoryEntityIdentifiers(entity); identifierErr != nil {
+		return identifierErr
+	}
+	databaseGeneration, releaseGeneration, generationErr := r.lockCurrentWriteGeneration()
+	if generationErr != nil {
+		return generationErr
+	}
+	defer releaseGeneration()
 
 	// 调用保存前的序列化钩子
-	entity.SerializeBeforeSaveDb()
+	if err := runEntitySerializeHook(entity); err != nil {
+		return err
+	}
 
 	// 获取表名
 	tableName := r.getTableName(entity)
@@ -1333,7 +1832,10 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	}
 
 	// 获取字段
-	fields := r.getFields(entity)
+	fields, fieldsErr := r.getFields(entity)
+	if fieldsErr != nil {
+		return fieldsErr
+	}
 	if len(fields) == 0 {
 		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段", entity))
 	}
@@ -1343,6 +1845,14 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	uidColumn := cm.GetPrimaryKeyColumnName(entity)
 	if uidColumn == "" {
 		uidColumn = "id"
+	}
+	fieldNames := make([]string, 0, len(fields))
+	for name := range fields {
+		fieldNames = append(fieldNames, name)
+	}
+	sort.Strings(fieldNames)
+	if identifierErr := validateRepositorySQLIdentifiers(tableName, uidColumn, fieldNames); identifierErr != nil {
+		return identifierErr
 	}
 
 	// 获取唯一ID值
@@ -1359,7 +1869,8 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	setParts := make([]string, 0)
 	values := make([]any, 0)
 
-	for name, value := range fields {
+	for _, name := range fieldNames {
+		value := fields[name]
 		if name != uidColumn {
 			setParts = append(setParts, name+" = ?")
 			values = append(values, value)
@@ -1373,33 +1884,37 @@ func (r *BaseCrudRepository) Update(entity IDbEntity) error {
 	values = append(values, id)
 
 	sql := "UPDATE " + tableName + " SET " + StringUtilsInstance.Join(setParts, ", ") + " WHERE " + uidColumn + " = ?"
-	LogDebug("执行 UPDATE: 表=%s, 主键列=%s, ID=%v, 更新字段数=%d, SQL=%s", tableName, uidColumn, id, len(setParts), sql)
+	LogDebug("执行 UPDATE: 表=%s, 主键列=%s, 更新字段数=%d, %s", tableName, uidColumn, len(setParts), sqlForRuntimeLog(sql))
 
 	result, err := r.db.execContext(context.Background(), sql, values...)
 	if err != nil {
 		if isConnectionError(err) {
-			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
-			r.recordFailedOperation("Update", tableName, sql, values, id)
-			if r.db.FaultTolerantMgr != nil {
-				r.db.FaultTolerantMgr.CheckAndReconnect()
-			}
-			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%s", tableName, safeErrorForLog(err))
+			recoveryErr := r.recordFailedOperation("Update", tableName, sql, values, id, databaseGeneration)
+			r.triggerFaultTolerantReconnect()
+			return NewQueryExceptionWithCause(errors.Join(err, recoveryErr), "数据库连接已关闭或不可用，请检查网络连接")
 		}
-		LogError("更新实体失败: 表=%s, ID=%v, 错误=%v, SQL=%s", tableName, id, err, sql)
-		return NewQueryExceptionWithCause(err, fmt.Sprintf("更新表 %s 中 ID=%v 的记录失败", tableName, id))
+		LogError("更新实体失败: 表=%s, 错误=%s, %s", tableName, safeErrorForLog(err), sqlForRuntimeLog(sql))
+		return NewQueryExceptionWithCause(err, fmt.Sprintf("更新表 %s 中的记录失败", tableName))
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, rowsAffectedErr := result.RowsAffected()
+	if rowsAffectedErr != nil {
+		return NewQueryExceptionWithCause(rowsAffectedErr, fmt.Sprintf("获取表 %s 更新影响行数失败", tableName))
+	}
 	if rowsAffected == 0 {
-		LogWarn("更新无影响: 表=%s, ID=%v, 可能记录不存在", tableName, id)
+		LogWarn("更新无影响: 表=%s, 可能记录不存在", tableName)
 	} else {
-		LogDebug("更新成功: 表=%s, ID=%v, 影响行数=%d", tableName, id, rowsAffected)
+		LogDebug("更新成功: 表=%s, 影响行数=%d", tableName, rowsAffected)
 	}
 
 	return nil
 }
 
 func (r *BaseCrudRepository) UpdateBatch(entities []IDbEntity) error {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return readyErr
+	}
 	if entities == nil {
 		return NewValidationException("实体列表不能为 nil")
 	}
@@ -1412,7 +1927,10 @@ func (r *BaseCrudRepository) UpdateBatch(entities []IDbEntity) error {
 
 func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 	// 参数验证
-	if entityType == nil {
+	if readyErr := r.validateSQLReady(); readyErr != nil {
+		return 0, readyErr
+	}
+	if isNilStrictValue(entityType) {
 		return 0, NewValidationException("实体类型不能为 nil")
 	}
 
@@ -1420,14 +1938,17 @@ func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 	if tableName == "" {
 		return 0, NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
 	}
+	if identifierErr := validateRepositoryTableIdentifier(tableName); identifierErr != nil {
+		return 0, identifierErr
+	}
 
 	sql := "SELECT COUNT(*) FROM " + tableName
-	LogDebug("执行计数查询: 表=%s, SQL=%s", tableName, sql)
+	LogDebug("执行计数查询: 表=%s, %s", tableName, sqlForRuntimeLog(sql))
 
 	var count int64
 	err := r.db.DataSource.QueryRow(sql).Scan(&count)
 	if err != nil {
-		LogError("计数查询失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
+		LogError("计数查询失败: 表=%s, 错误=%s, %s", tableName, safeErrorForLog(err), sqlForRuntimeLog(sql))
 		return 0, NewQueryExceptionWithCause(err, fmt.Sprintf("统计表 %s 的记录数失败", tableName))
 	}
 
@@ -1436,13 +1957,17 @@ func (r *BaseCrudRepository) Count(entityType IDbEntity) (int64, error) {
 }
 
 // 记录失败操作（连接异常时）
-func (r *BaseCrudRepository) recordFailedOperation(operation string, tableName string, sql string, params []any, primaryKey any) {
-	r.recordFailedOperationWithEntity(operation, tableName, sql, params, primaryKey, nil)
+func (r *BaseCrudRepository) recordFailedOperation(operation string, tableName string, sql string, params []any, primaryKey any, databaseGeneration string) error {
+	return r.recordFailedOperationWithEntity(operation, tableName, sql, params, primaryKey, nil, databaseGeneration)
 }
 
-func (r *BaseCrudRepository) recordFailedOperationWithEntity(operation string, tableName string, sql string, params []any, primaryKey any, entity IDbEntity) {
-	if r == nil || r.db == nil || r.db.FaultTolerantMgr == nil {
-		return
+func (r *BaseCrudRepository) recordFailedOperationWithEntity(operation string, tableName string, sql string, params []any, primaryKey any, entity IDbEntity, databaseGeneration string) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	manager := r.db.faultTolerantManagerSnapshot()
+	if manager == nil {
+		return nil
 	}
 	op := &FailedOperation{
 		Operation:  operation,
@@ -1453,23 +1978,38 @@ func (r *BaseCrudRepository) recordFailedOperationWithEntity(operation string, t
 	}
 	if entity != nil {
 		op.EntityTypeName = EntityTypeName(entity)
-		if data, err := SerializeEntity(entity); err == nil {
+		// SQL 参数构造前已经执行过 SerializeBeforeSaveDb；这里只做快照，
+		// 否则失败记录会让同一逻辑写入重复执行用户 hook。
+		if data, err := json.Marshal(entity); err == nil {
 			op.EntityJSON = data
+		} else {
+			LogWarn("失败操作实体快照序列化失败，将回退到 SQL 参数重放: operation=%s, table=%s, err=%s", safeValueForLog(operation), safeValueForLog(tableName), safeErrorForLog(err))
 		}
 	}
-	r.db.FaultTolerantMgr.RecordFailedOperation(op)
+	if err := manager.recordFailedOperationUnderGenerationLease(op, databaseGeneration); err != nil {
+		LogError("失败操作未能持久化: operation=%s, table=%s, err=%s", safeValueForLog(operation), safeValueForLog(tableName), safeErrorForLog(err))
+		return fmt.Errorf("持久化失败操作到恢复队列失败: %w", err)
+	}
+	return nil
 }
 
-func (r *BaseCrudRepository) recordFailedBatchUpsert(entities []IDbEntity, cause error) {
-	for _, entity := range entities {
-		if entity == nil {
-			continue
-		}
-		tableName := r.getTableName(entity)
-		pk := GetCrudManagerInstance().GetPrimaryKeyValue(entity)
-		r.recordFailedOperationWithEntity("SaveBatchUpsert", tableName, "", nil, pk, entity)
+func (r *BaseCrudRepository) triggerFaultTolerantReconnect() {
+	if r == nil || r.db == nil {
+		return
 	}
-	if cause != nil {
-		LogWarn("批量 UPSERT 失败已记录到容错队列: count=%d, err=%v", len(entities), cause)
+	manager := r.db.faultTolerantManagerSnapshot()
+	if manager == nil || manager.dbConfig == nil {
+		return
 	}
+	manager.CheckAndReconnect()
+}
+
+func (r *BaseCrudRepository) validateSQLReady() error {
+	if r == nil {
+		return NewValidationException("Repository 不能为 nil")
+	}
+	if r.db == nil || r.db.DataSource == nil {
+		return NewQueryException("数据库连接未初始化")
+	}
+	return nil
 }

@@ -21,18 +21,20 @@ var (
 )
 
 type scriptedStep struct {
-	kind          string
-	queryContains string
-	columns       []string
-	rows          [][]driver.Value
-	driverEntered chan<- struct{}
-	driverRelease <-chan struct{}
-	queryErr      error
-	rowErrAt      int
-	rowErr        error
-	closeErr      error
-	result        driver.Result
-	execErr       error
+	kind           string
+	queryContains  string
+	columns        []string
+	rows           [][]driver.Value
+	driverEntered  chan<- struct{}
+	driverRelease  <-chan struct{}
+	respectContext bool
+	queryErr       error
+	rowErrAt       int
+	rowErr         error
+	closeErr       error
+	closeNotify    chan<- struct{}
+	result         driver.Result
+	execErr        error
 }
 
 type scriptedCall struct {
@@ -56,6 +58,19 @@ type scriptedDBState struct {
 	commitErr   error
 	rollbackErr error
 	nextTxID    int
+
+	prepareEntered        chan<- struct{}
+	prepareRelease        <-chan struct{}
+	prepareErr            error
+	prepareRespectContext bool
+	stmtCloseErr          error
+	stmtCloseCalls        int
+
+	pingEntered        chan<- struct{}
+	pingRelease        <-chan struct{}
+	pingErr            error
+	pingRespectContext bool
+	pingCalls          int
 }
 
 func newScriptedDBState(steps ...scriptedStep) *scriptedDBState {
@@ -128,12 +143,66 @@ func (s *scriptedDBState) snapshotBeginContext() context.Context {
 	return s.beginCtx
 }
 
-func (s *scriptedDBState) recordPrepare(query string, txID int) {
+func (s *scriptedDBState) recordPrepare(ctx context.Context, query string, txID int) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.suppressCalls {
 		s.calls = append(s.calls, scriptedCall{kind: "prepare", query: query, txID: txID})
 	}
+	entered := s.prepareEntered
+	release := s.prepareRelease
+	prepareErr := s.prepareErr
+	respectContext := s.prepareRespectContext
+	s.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if release != nil {
+		if respectContext {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			<-release
+		}
+	}
+	return prepareErr
+}
+
+func (s *scriptedDBState) recordPing(ctx context.Context) error {
+	s.mu.Lock()
+	s.pingCalls++
+	if !s.suppressCalls {
+		s.calls = append(s.calls, scriptedCall{kind: "ping"})
+	}
+	entered := s.pingEntered
+	release := s.pingRelease
+	pingErr := s.pingErr
+	respectContext := s.pingRespectContext
+	s.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if release != nil {
+		if respectContext {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			}
+		} else {
+			<-release
+		}
+	}
+	return pingErr
+}
+
+func (s *scriptedDBState) recordStmtClose() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stmtCloseCalls++
+	return s.stmtCloseErr
 }
 
 func (s *scriptedDBState) snapshotCalls() []scriptedCall {
@@ -175,16 +244,27 @@ type scriptedConn struct {
 }
 
 func (c *scriptedConn) Prepare(query string) (driver.Stmt, error) {
-	c.state.recordPrepare(query, c.txID)
-	return nil, driver.ErrSkip
+	if err := c.state.recordPrepare(context.Background(), query, c.txID); err != nil {
+		return nil, err
+	}
+	return &scriptedStmt{conn: c, query: query}, nil
 }
 
-func (c *scriptedConn) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
-	c.state.recordPrepare(query, c.txID)
-	return nil, driver.ErrSkip
+func (c *scriptedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	if err := c.state.recordPrepare(ctx, query, c.txID); err != nil {
+		return nil, err
+	}
+	return &scriptedStmt{conn: c, query: query}, nil
 }
 
 func (c *scriptedConn) Close() error { return nil }
+
+func (c *scriptedConn) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.state.recordPing(ctx)
+}
 
 func (c *scriptedConn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
@@ -210,16 +290,19 @@ func (c *scriptedConn) QueryContext(ctx context.Context, query string, args []dr
 	if err != nil {
 		return nil, err
 	}
-	waitForScriptedDriverStep(step)
+	if err := waitForScriptedDriverStep(ctx, step); err != nil {
+		return nil, err
+	}
 	if step.queryErr != nil {
 		return nil, step.queryErr
 	}
 	return &scriptedRows{
-		columns:  append([]string(nil), step.columns...),
-		rows:     step.rows,
-		rowErrAt: step.rowErrAt,
-		rowErr:   step.rowErr,
-		closeErr: step.closeErr,
+		columns:     append([]string(nil), step.columns...),
+		rows:        step.rows,
+		rowErrAt:    step.rowErrAt,
+		rowErr:      step.rowErr,
+		closeErr:    step.closeErr,
+		closeNotify: step.closeNotify,
 	}, nil
 }
 
@@ -231,7 +314,9 @@ func (c *scriptedConn) ExecContext(ctx context.Context, query string, args []dri
 	if err != nil {
 		return nil, err
 	}
-	waitForScriptedDriverStep(step)
+	if err := waitForScriptedDriverStep(ctx, step); err != nil {
+		return nil, err
+	}
 	if step.execErr != nil {
 		return nil, step.execErr
 	}
@@ -241,13 +326,55 @@ func (c *scriptedConn) ExecContext(ctx context.Context, query string, args []dri
 	return step.result, nil
 }
 
-func waitForScriptedDriverStep(step scriptedStep) {
+type scriptedStmt struct {
+	conn  *scriptedConn
+	query string
+}
+
+func (s *scriptedStmt) Close() error { return s.conn.state.recordStmtClose() }
+
+func (s *scriptedStmt) NumInput() int { return -1 }
+
+func (s *scriptedStmt) Exec(args []driver.Value) (driver.Result, error) {
+	return s.ExecContext(context.Background(), valuesToNamedValues(args))
+}
+
+func (s *scriptedStmt) Query(args []driver.Value) (driver.Rows, error) {
+	return s.QueryContext(context.Background(), valuesToNamedValues(args))
+}
+
+func (s *scriptedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	return s.conn.ExecContext(ctx, s.query, args)
+}
+
+func (s *scriptedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	return s.conn.QueryContext(ctx, s.query, args)
+}
+
+func valuesToNamedValues(values []driver.Value) []driver.NamedValue {
+	result := make([]driver.NamedValue, len(values))
+	for index, value := range values {
+		result[index] = driver.NamedValue{Ordinal: index + 1, Value: value}
+	}
+	return result
+}
+
+func waitForScriptedDriverStep(ctx context.Context, step scriptedStep) error {
 	if step.driverEntered != nil {
 		step.driverEntered <- struct{}{}
 	}
 	if step.driverRelease != nil {
-		<-step.driverRelease
+		if step.respectContext {
+			select {
+			case <-step.driverRelease:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			<-step.driverRelease
+		}
 	}
+	return nil
 }
 
 type scriptedTx struct {
@@ -270,10 +397,11 @@ type scriptedRows struct {
 	rows    [][]driver.Value
 	index   int
 
-	rowErrAt int
-	rowErr   error
-	closeErr error
-	closed   bool
+	rowErrAt    int
+	rowErr      error
+	closeErr    error
+	closeNotify chan<- struct{}
+	closed      bool
 }
 
 func (r *scriptedRows) Columns() []string {
@@ -285,6 +413,12 @@ func (r *scriptedRows) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.closeNotify != nil {
+		select {
+		case r.closeNotify <- struct{}{}:
+		default:
+		}
+	}
 	return r.closeErr
 }
 

@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOFLAGS: -mod=readonly
+  # 每次运行派生的临时凭据；不在源码中保存固定数据库密码。
+  DB233_TEST_DSN: "root:db233-${{ github.run_id }}@tcp(127.0.0.1:3306)/db233_go?charset=utf8mb4&parseTime=true&loc=Local"
+
+jobs:
+  quality:
+    name: Quality and integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4.10@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
+        env:
+          MYSQL_ROOT_PASSWORD: db233-${{ github.run_id }}
+          MYSQL_DATABASE: db233_go
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pdb233-${{ github.run_id }}"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Secret gate
+        run: bash ./scripts/check-secrets.sh
+
+      - name: Formatting gate
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unchecked errors
+        # 测试清理路径会有意忽略 Close/清表错误；生产代码必须零未处理错误。
+        run: go run github.com/kisielk/errcheck@v1.20.0 -ignoretests ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 '-checks=SA*,S*,-ST*' ./...
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+      - name: Repeatable shuffled tests
+        run: go test ./... -shuffle=on -count=3 -timeout=10m
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.4.10@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
+        env:
+          MYSQL_ROOT_PASSWORD: db233-${{ github.run_id }}
+          MYSQL_DATABASE: db233_go
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pdb233-${{ github.run_id }}"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Race tests
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./... -count=1 -timeout=15m
+
+  benchmark-gate:
+    name: Release benchmark gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.4.10@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
+        env:
+          MYSQL_ROOT_PASSWORD: db233-${{ github.run_id }}
+          MYSQL_DATABASE: db233_go
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pdb233-${{ github.run_id }}"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: benchmarks/go.mod
+          cache-dependency-path: |
+            go.sum
+            benchmarks/go.sum
+
+      - name: Release gate
+        working-directory: benchmarks
+        run: go test -run '^TestReleaseGate$' -count=1 -timeout=12m
+
+  windows:
+    name: Windows build and unit tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests
+        run: go test ./pkg/db233 -count=3 -timeout=10m

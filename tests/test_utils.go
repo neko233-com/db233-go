@@ -3,11 +3,13 @@ package tests
 import (
 	"database/sql"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/neko233-com/db233-go/pkg/db233"
 )
 
@@ -29,36 +31,35 @@ func LoadLocalDbConfig() (*db233.LocalDbConfigFile, string) {
 	return nil, ""
 }
 
-// CreateTestDb 创建测试数据库连接。
-// 普通集成测试固定使用本地 MySQL，避免误连远程数据库。
+// CreateTestDb 创建测试数据库连接。连接只能来自 DB233_TEST_DSN 或未纳入
+// Git 的 config.local.json，且必须指向 loopback/本机 Unix socket。
 func CreateTestDb(t *testing.T) *db233.Db {
-	// 创建 SQL 数据库连接 (不指定数据库，使用默认)
-	dataSource, err := sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/")
-	if err != nil {
-		t.Skipf("无法打开数据库连接: %v", err)
+	t.Helper()
+
+	var dataSource *sql.DB
+	var err error
+	if dsn := os.Getenv("DB233_TEST_DSN"); dsn != "" {
+		requireLocalTestDSN(t, dsn)
+		dataSource, err = sql.Open("mysql", dsn)
+	} else if cfg, _ := LoadLocalDbConfig(); cfg != nil {
+		dbCfg := cfg.ToDbConnectionConfig()
+		requireLoopbackHost(t, dbCfg.Host)
+		if err = ensureDatabaseExists(dbCfg); err == nil {
+			dataSource, err = dbCfg.CreateDataSource()
+		}
+	} else {
+		t.Skip("未配置 DB233_TEST_DSN 或忽略提交的 config.local.json")
 		return nil
 	}
-
-	// 创建测试数据库
-	_, err = dataSource.Exec("CREATE DATABASE IF NOT EXISTS db233_go CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 	if err != nil {
-		t.Skipf("无法创建测试数据库: %v", err)
-		dataSource.Close()
-		return nil
-	}
-
-	// 重新连接到指定数据库
-	dataSource.Close()
-	dataSource, err = sql.Open("mysql", "root:root@tcp(127.0.0.1:3306)/db233_go?parseTime=true&loc=Local&charset=utf8mb4")
-	if err != nil {
-		t.Skipf("无法连接到测试数据库: %v", err)
+		t.Skipf("无法连接测试数据库: %v", err)
 		return nil
 	}
 
 	// 测试连接
 	if err := dataSource.Ping(); err != nil {
 		t.Skipf("数据库连接测试失败: %v", err)
-		dataSource.Close()
+		_ = dataSource.Close()
 		return nil
 	}
 
@@ -67,6 +68,38 @@ func CreateTestDb(t *testing.T) *db233.Db {
 	db233.RegisterDbForConnectionPool(db)
 	_ = db233.WarmConnectionPool(db.DataSource, 2)
 	return db
+}
+
+func requireLocalTestDSN(t *testing.T, dsn string) {
+	t.Helper()
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("DB233_TEST_DSN 非法: %v", err)
+	}
+	if cfg.Net == "unix" {
+		return
+	}
+	host, _, err := net.SplitHostPort(cfg.Addr)
+	if err != nil {
+		t.Fatalf("DB233_TEST_DSN 地址非法: %v", err)
+	}
+	requireLoopbackHost(t, host)
+}
+
+func requireLoopbackHost(t *testing.T, host string) {
+	t.Helper()
+	if !isLoopbackTestHost(host) {
+		t.Fatalf("集成测试拒绝连接非本机数据库 host=%q", host)
+	}
+}
+
+func isLoopbackTestHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ensureDatabaseExists 连接实例并在目标库不存在时自动创建（显式本地配置测试用）。
@@ -80,7 +113,10 @@ func ensureDatabaseExists(cfg *db233.DbConnectionConfig) error {
 	if err != nil {
 		return err
 	}
-	defer ds.Close()
+	defer func() {
+		// Bootstrap connection cleanup cannot change the CREATE DATABASE result.
+		_ = ds.Close()
+	}()
 	_, err = ds.Exec(fmt.Sprintf(
 		"CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
 		cfg.Database,

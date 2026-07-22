@@ -1,10 +1,23 @@
 package db233
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
+
+// DefaultConnectionTimeout bounds compatibility constructors without a
+// caller-provided context.
+const DefaultConnectionTimeout = 30 * time.Second
 
 // DbConnectionConfig - 数据库连接配置
 // 支持 MySQL 和 PostgreSQL 的完整配置
@@ -93,41 +106,65 @@ func NewDefaultPostgreSQLConfig(host string, port int, username, password, datab
 
 // BuildDSN 构建数据源连接字符串
 func (c *DbConnectionConfig) BuildDSN() string {
+	dsn, err := c.BuildDSNStrict()
+	if err != nil {
+		LogError("构建数据库 DSN 失败: %s", safeErrorForLog(err))
+		return ""
+	}
+	return dsn
+}
+
+// BuildDSNStrict 构建 DSN 并传播配置错误。返回值包含凭据，禁止记录。
+func (c *DbConnectionConfig) BuildDSNStrict() (string, error) {
+	if c == nil {
+		return "", NewConfigurationException("数据库连接配置不能为空")
+	}
 	switch c.DatabaseType {
-	case EnumDatabaseTypeMySQL:
-		return c.buildMySQLDSN()
+	case EnumDatabaseTypeMySQL, "":
+		driverConfig, err := c.mysqlDriverConfig()
+		if err != nil {
+			return "", err
+		}
+		return driverConfig.FormatDSN(), nil
 	case EnumDatabaseTypePostgreSQL:
-		return c.buildPostgreSQLDSN()
+		return c.postgreSQLDSN()
 	default:
-		return c.buildMySQLDSN()
+		return "", NewConfigurationException(fmt.Sprintf("不支持的数据库类型: %q", c.DatabaseType))
 	}
 }
 
 // buildMySQLDSN 构建 MySQL DSN
 // 格式: username:password@tcp(host:port)/database?charset=utf8mb4&parseTime=True&loc=Local
 func (c *DbConnectionConfig) buildMySQLDSN() string {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
-		c.Username, c.Password, c.Host, c.Port, c.Database)
+	driverConfig, err := c.mysqlDriverConfig()
+	if err != nil {
+		return ""
+	}
+	return driverConfig.FormatDSN()
+}
 
-	params := make(map[string]string)
-
-	// 字符集
+// mysqlDriverConfig 先让官方驱动解析连接参数，再单独设置凭据。
+// CreateDataSource 直接使用 Connector，不会把含分隔符的凭据重新拼接、解析。
+func (c *DbConnectionConfig) mysqlDriverConfig() (*mysql.Config, error) {
+	if c == nil {
+		return nil, NewConfigurationException("数据库连接配置不能为空")
+	}
+	if c.Port <= 0 || c.Port > 65535 {
+		return nil, NewConfigurationException(fmt.Sprintf("MySQL 端口非法: %d", c.Port))
+	}
+	params := make(map[string]string, len(c.ExtraParams)+8)
 	if c.Charset != "" {
 		params["charset"] = c.Charset
 	}
 	if c.Collation != "" {
 		params["collation"] = c.Collation
 	}
-
-	// 时间解析
 	if c.ParseTime {
-		params["parseTime"] = "True"
+		params["parseTime"] = "true"
 	}
 	if c.Loc != "" {
 		params["loc"] = c.Loc
 	}
-
-	// 超时配置
 	if c.ConnectTimeout > 0 {
 		params["timeout"] = c.ConnectTimeout.String()
 	}
@@ -137,31 +174,49 @@ func (c *DbConnectionConfig) buildMySQLDSN() string {
 	if c.WriteTimeout > 0 {
 		params["writeTimeout"] = c.WriteTimeout.String()
 	}
-
-	// 额外参数
-	for k, v := range c.ExtraParams {
-		params[k] = v
-	}
-
-	// 构建查询字符串
-	if len(params) > 0 {
-		dsn += "?"
-		first := true
-		for k, v := range params {
-			if !first {
-				dsn += "&"
-			}
-			dsn += fmt.Sprintf("%s=%s", k, v)
-			first = false
+	for key, value := range c.ExtraParams {
+		if err := validateConnectionParameterKey(key); err != nil {
+			return nil, err
 		}
+		params[key] = value
 	}
 
-	return dsn
+	values := make(url.Values, len(params))
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	address := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
+	dsn := "tcp(" + address + ")/" + url.PathEscape(c.Database)
+	if encoded := values.Encode(); encoded != "" {
+		dsn += "?" + encoded
+	}
+	driverConfig, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return nil, NewConfigurationExceptionWithCause(err, "MySQL 连接参数非法")
+	}
+	driverConfig.User = c.Username
+	driverConfig.Passwd = c.Password
+	return driverConfig, nil
 }
 
 // buildPostgreSQLDSN 构建 PostgreSQL DSN
 // 格式: host=localhost port=5432 user=postgres password=postgres dbname=mydb sslmode=disable
 func (c *DbConnectionConfig) buildPostgreSQLDSN() string {
+	dsn, err := c.postgreSQLDSN()
+	if err != nil {
+		LogError("构建 PostgreSQL DSN 失败: %s", safeErrorForLog(err))
+		return ""
+	}
+	return dsn
+}
+
+func (c *DbConnectionConfig) postgreSQLDSN() (string, error) {
+	if c == nil {
+		return "", NewConfigurationException("数据库连接配置不能为空")
+	}
+	if c.Port <= 0 || c.Port > 65535 {
+		return "", NewConfigurationException(fmt.Sprintf("PostgreSQL 端口非法: %d", c.Port))
+	}
 	params := make(map[string]string)
 
 	params["host"] = c.Host
@@ -186,7 +241,11 @@ func (c *DbConnectionConfig) buildPostgreSQLDSN() string {
 
 	// 超时配置
 	if c.ConnectTimeout > 0 {
-		params["connect_timeout"] = fmt.Sprintf("%d", int(c.ConnectTimeout.Seconds()))
+		seconds := c.ConnectTimeout / time.Second
+		if c.ConnectTimeout%time.Second != 0 {
+			seconds++
+		}
+		params["connect_timeout"] = strconv.FormatInt(int64(seconds), 10)
 	}
 
 	// 应用名称
@@ -196,40 +255,90 @@ func (c *DbConnectionConfig) buildPostgreSQLDSN() string {
 
 	// 额外参数
 	for k, v := range c.ExtraParams {
+		if err := validateConnectionParameterKey(k); err != nil {
+			return "", err
+		}
 		params[k] = v
 	}
 
-	// 构建连接字符串
-	dsn := ""
-	first := true
-	for k, v := range params {
-		if !first {
-			dsn += " "
-		}
-		dsn += fmt.Sprintf("%s=%s", k, v)
-		first = false
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
 	}
+	sort.Strings(keys)
+	var builder strings.Builder
+	for index, key := range keys {
+		if index > 0 {
+			builder.WriteByte(' ')
+		}
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.WriteString(quotePostgreSQLDSNValue(params[key]))
+	}
+	return builder.String(), nil
+}
 
-	return dsn
+func validateConnectionParameterKey(key string) error {
+	if key == "" {
+		return NewConfigurationException("数据库连接扩展参数名不能为空")
+	}
+	for index := 0; index < len(key); index++ {
+		current := key[index]
+		if current == '_' || current >= 'a' && current <= 'z' || current >= 'A' && current <= 'Z' || index > 0 && current >= '0' && current <= '9' {
+			continue
+		}
+		return NewConfigurationException(fmt.Sprintf("数据库连接扩展参数名非法: %q", key))
+	}
+	return nil
+}
+
+func quotePostgreSQLDSNValue(value string) string {
+	escaped := strings.ReplaceAll(value, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+	return `'` + escaped + `'`
 }
 
 // CreateDataSource 创建数据源
 func (c *DbConnectionConfig) CreateDataSource() (*sql.DB, error) {
-	dsn := c.BuildDSN()
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultConnectionTimeout)
+	defer cancel()
+	return c.CreateDataSourceContext(ctx)
+}
 
-	var driverName string
-	switch c.DatabaseType {
-	case EnumDatabaseTypeMySQL:
-		driverName = "mysql"
-	case EnumDatabaseTypePostgreSQL:
-		driverName = "postgres"
-	default:
-		driverName = "mysql"
+// CreateDataSourceContext 创建数据源，并用 context 限制首次连接验证。
+func (c *DbConnectionConfig) CreateDataSourceContext(ctx context.Context) (*sql.DB, error) {
+	if ctx == nil {
+		return nil, NewValidationException("创建数据源 context 不能为 nil")
 	}
-
-	dataSource, err := sql.Open(driverName, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("打开数据库连接失败: %w", err)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, NewConfigurationException("数据库连接配置不能为空")
+	}
+	var dataSource *sql.DB
+	switch c.DatabaseType {
+	case EnumDatabaseTypeMySQL, "":
+		driverConfig, err := c.mysqlDriverConfig()
+		if err != nil {
+			return nil, err
+		}
+		connector, err := mysql.NewConnector(driverConfig)
+		if err != nil {
+			return nil, NewConfigurationExceptionWithCause(err, "创建 MySQL Connector 失败")
+		}
+		dataSource = sql.OpenDB(connector)
+	case EnumDatabaseTypePostgreSQL:
+		dsn, err := c.postgreSQLDSN()
+		if err != nil {
+			return nil, err
+		}
+		dataSource, err = sql.Open("postgres", dsn)
+		if err != nil {
+			return nil, NewConnectionExceptionWithCause(err, "打开数据库连接失败")
+		}
+	default:
+		return nil, NewConfigurationException(fmt.Sprintf("不支持的数据库类型: %q", c.DatabaseType))
 	}
 
 	// 配置连接池
@@ -247,29 +356,58 @@ func (c *DbConnectionConfig) CreateDataSource() (*sql.DB, error) {
 	}
 
 	// 测试连接
-	if pingErr := dataSource.Ping(); pingErr != nil {
-		_ = dataSource.Close()
-		return nil, fmt.Errorf("数据库连接测试失败: %w", pingErr)
+	if pingErr := dataSource.PingContext(ctx); pingErr != nil {
+		closeErr := dataSource.Close()
+		if closeErr != nil {
+			closeErr = NewConnectionExceptionWithCause(closeErr, "连接测试失败后关闭数据源失败")
+		}
+		return nil, errors.Join(NewConnectionExceptionWithCause(pingErr, "数据库连接测试失败"), closeErr)
 	}
 
-	LogInfo("数据库连接成功: 类型=%s, 主机=%s:%d, 数据库=%s", c.DatabaseType, c.Host, c.Port, c.Database)
+	LogInfo(
+		"数据库连接成功: 类型=%s, 主机=%s:%d, 数据库=%s",
+		c.DatabaseType,
+		safeValueForLog(c.Host),
+		c.Port,
+		safeValueForLog(c.Database),
+	)
 	return dataSource, nil
 }
 
 // CreateDb 创建 Db 实例
 func (c *DbConnectionConfig) CreateDb(dbId int, dbGroup *DbGroup) (*Db, error) {
-	dataSource, err := c.CreateDataSource()
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultConnectionTimeout)
+	defer cancel()
+	return c.CreateDbContext(ctx, dbId, dbGroup)
+}
+
+// CreateDbContext 创建 Db，并用 context 限制连接建立与 Ping。
+func (c *DbConnectionConfig) CreateDbContext(ctx context.Context, dbId int, dbGroup *DbGroup) (*Db, error) {
+	dataSource, err := c.CreateDataSourceContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	db := NewDbWithType(dataSource, dbId, dbGroup, c.DatabaseType)
-	db.EnableFaultTolerance(c)
+	if err := db.EnableFaultToleranceStrict(c); err != nil {
+		closeErr := dataSource.Close()
+		if closeErr != nil {
+			closeErr = NewConnectionExceptionWithCause(closeErr, "容错管理器启动失败后关闭数据库连接失败")
+		}
+		return nil, errors.Join(err, closeErr)
+	}
 	return db, nil
 }
 
 // CreateDbWithoutFaultTolerance 创建 Db 实例（不启用容错）
 func (c *DbConnectionConfig) CreateDbWithoutFaultTolerance(dbId int, dbGroup *DbGroup) (*Db, error) {
-	dataSource, err := c.CreateDataSource()
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultConnectionTimeout)
+	defer cancel()
+	return c.CreateDbWithoutFaultToleranceContext(ctx, dbId, dbGroup)
+}
+
+// CreateDbWithoutFaultToleranceContext 创建不启用容错的 Db，并限制连接验证。
+func (c *DbConnectionConfig) CreateDbWithoutFaultToleranceContext(ctx context.Context, dbId int, dbGroup *DbGroup) (*Db, error) {
+	dataSource, err := c.CreateDataSourceContext(ctx)
 	if err != nil {
 		return nil, err
 	}

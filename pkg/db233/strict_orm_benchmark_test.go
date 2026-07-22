@@ -20,6 +20,10 @@ func BenchmarkOrmMappingTarget_Strict(b *testing.B) {
 	benchmarkOrmMappingTarget(b, true, true)
 }
 
+func BenchmarkOrmMappingTarget_StrictLegacy(b *testing.B) {
+	benchmarkOrmMappingTarget(b, false, true)
+}
+
 func benchmarkOrmMappingTarget(b *testing.B, fast, strict bool) {
 	b.Helper()
 	applyStrictTestSettings(b, fast, false, 0)

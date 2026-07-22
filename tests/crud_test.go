@@ -317,7 +317,7 @@ func TestCrudManager_AutoInitEntity(t *testing.T) {
 }
 
 func TestCrudManager_IsContainsEntity(t *testing.T) {
-	cm := db233.GetCrudManagerInstance()
+	cm := db233.NewCrudManager()
 
 	type TestEntity struct {
 		ID int `db:"id,primary_key"`
@@ -334,6 +334,22 @@ func TestCrudManager_IsContainsEntity(t *testing.T) {
 	cm.AutoInitEntity(entity)
 	if !cm.IsContainsEntity(entity) {
 		t.Error("Entity should be contained after initialization")
+	}
+}
+
+func TestCrudManager_AutoLazyInitRegistersEntity(t *testing.T) {
+	cm := db233.NewCrudManager()
+
+	type LazyEntity struct {
+		ID int `db:"id" primary_key:"true"`
+	}
+
+	entity := &LazyEntity{}
+	if err := cm.AutoLazyInitOrThrowError(entity); err != nil {
+		t.Fatalf("lazy init failed: %v", err)
+	}
+	if !cm.IsContainsEntity(entity) {
+		t.Fatal("lazy init did not register entity metadata")
 	}
 }
 

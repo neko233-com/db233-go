@@ -3,6 +3,7 @@ package db233
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,7 @@ type ConnectionPoolMonitor struct {
 
 	// 性能指标
 	connectionWaitTime time.Duration
+	connectionAcquires int64
 	queryExecutionTime time.Duration
 	totalQueries       int64
 	failedQueries      int64
@@ -34,37 +36,38 @@ type ConnectionPoolMonitor struct {
 	mu sync.RWMutex
 
 	// 监控开关
-	enabled bool
+	enabled atomic.Bool
 }
 
 // 创建连接池监控器
 func NewConnectionPoolMonitor(dbGroupName string, db *Db) *ConnectionPoolMonitor {
-	return &ConnectionPoolMonitor{
+	monitor := &ConnectionPoolMonitor{
 		dbGroupName:        dbGroupName,
 		db:                 db,
 		slowQueryThreshold: 100 * time.Millisecond, // 默认100ms
-		enabled:            true,
 	}
+	monitor.enabled.Store(true)
+	return monitor
 }
 
 // 启用监控
 func (cpm *ConnectionPoolMonitor) Enable() {
-	cpm.mu.Lock()
-	defer cpm.mu.Unlock()
-	cpm.enabled = true
+	cpm.enabled.Store(true)
 	LogInfo("连接池监控已启用: %s", cpm.dbGroupName)
 }
 
 // 禁用监控
 func (cpm *ConnectionPoolMonitor) Disable() {
-	cpm.mu.Lock()
-	defer cpm.mu.Unlock()
-	cpm.enabled = false
+	cpm.enabled.Store(false)
 	LogInfo("连接池监控已禁用: %s", cpm.dbGroupName)
 }
 
 // 设置慢查询阈值
 func (cpm *ConnectionPoolMonitor) SetSlowQueryThreshold(threshold time.Duration) {
+	if threshold <= 0 {
+		LogWarn("慢查询阈值必须大于 0: %v", threshold)
+		return
+	}
 	cpm.mu.Lock()
 	defer cpm.mu.Unlock()
 	cpm.slowQueryThreshold = threshold
@@ -72,7 +75,7 @@ func (cpm *ConnectionPoolMonitor) SetSlowQueryThreshold(threshold time.Duration)
 
 // 记录连接获取
 func (cpm *ConnectionPoolMonitor) RecordConnectionAcquired(waitTime time.Duration) {
-	if !cpm.enabled {
+	if !cpm.enabled.Load() {
 		return
 	}
 
@@ -80,6 +83,10 @@ func (cpm *ConnectionPoolMonitor) RecordConnectionAcquired(waitTime time.Duratio
 	defer cpm.mu.Unlock()
 
 	cpm.activeConnections++
+	if cpm.idleConnections > 0 {
+		cpm.idleConnections--
+	}
+	cpm.connectionAcquires++
 	cpm.connectionWaitTime += waitTime
 
 	if waitTime > cpm.slowQueryThreshold {
@@ -89,20 +96,22 @@ func (cpm *ConnectionPoolMonitor) RecordConnectionAcquired(waitTime time.Duratio
 
 // 记录连接释放
 func (cpm *ConnectionPoolMonitor) RecordConnectionReleased() {
-	if !cpm.enabled {
+	if !cpm.enabled.Load() {
 		return
 	}
 
 	cpm.mu.Lock()
 	defer cpm.mu.Unlock()
 
-	cpm.activeConnections--
-	cpm.idleConnections++
+	if cpm.activeConnections > 0 {
+		cpm.activeConnections--
+		cpm.idleConnections++
+	}
 }
 
 // 记录查询执行
 func (cpm *ConnectionPoolMonitor) RecordQueryExecution(executionTime time.Duration, success bool) {
-	if !cpm.enabled {
+	if !cpm.enabled.Load() {
 		return
 	}
 
@@ -124,7 +133,7 @@ func (cpm *ConnectionPoolMonitor) RecordQueryExecution(executionTime time.Durati
 
 // 更新连接池统计信息
 func (cpm *ConnectionPoolMonitor) UpdatePoolStats(total, active, idle, waiting, max, min int64) {
-	if !cpm.enabled {
+	if !cpm.enabled.Load() {
 		return
 	}
 
@@ -166,11 +175,11 @@ func (cpm *ConnectionPoolMonitor) GetReport() map[string]any {
 		report["failure_rate"] = float64(cpm.failedQueries) / float64(cpm.totalQueries)
 	}
 
-	if cpm.activeConnections > 0 {
-		report["avg_connection_wait_time"] = (cpm.connectionWaitTime / time.Duration(cpm.activeConnections)).String()
+	if cpm.connectionAcquires > 0 {
+		report["avg_connection_wait_time"] = (cpm.connectionWaitTime / time.Duration(cpm.connectionAcquires)).String()
 	}
 
-	report["enabled"] = cpm.enabled
+	report["enabled"] = cpm.enabled.Load()
 
 	return report
 }
@@ -181,6 +190,7 @@ func (cpm *ConnectionPoolMonitor) Reset() {
 	defer cpm.mu.Unlock()
 
 	cpm.connectionWaitTime = 0
+	cpm.connectionAcquires = 0
 	cpm.queryExecutionTime = 0
 	cpm.totalQueries = 0
 	cpm.failedQueries = 0

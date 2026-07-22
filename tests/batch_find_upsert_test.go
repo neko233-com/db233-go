@@ -15,9 +15,9 @@ type TestBatchFindEntity struct {
 	Level    int    `json:"level" db:"level"`
 }
 
-func (e *TestBatchFindEntity) TableName() string { return "test_batch_find" }
-func (e *TestBatchFindEntity) SerializeBeforeSaveDb() {}
-func (e *TestBatchFindEntity) DeserializeAfterLoadDb() {}
+func (e *TestBatchFindEntity) TableName() string                      { return "test_batch_find" }
+func (e *TestBatchFindEntity) SerializeBeforeSaveDb()                 {}
+func (e *TestBatchFindEntity) DeserializeAfterLoadDb()                {}
 func (e *TestBatchFindEntity) GetTableMetaData() *db233.TableMetaData { return nil }
 
 type TestPlayerBagEntity struct {
@@ -25,19 +25,19 @@ type TestPlayerBagEntity struct {
 	Gold     int    `db:"gold"`
 }
 
-func (e *TestPlayerBagEntity) TableName() string { return "test_player_bag" }
-func (e *TestPlayerBagEntity) SerializeBeforeSaveDb() {}
-func (e *TestPlayerBagEntity) DeserializeAfterLoadDb() {}
+func (e *TestPlayerBagEntity) TableName() string                      { return "test_player_bag" }
+func (e *TestPlayerBagEntity) SerializeBeforeSaveDb()                 {}
+func (e *TestPlayerBagEntity) DeserializeAfterLoadDb()                {}
 func (e *TestPlayerBagEntity) GetTableMetaData() *db233.TableMetaData { return nil }
 
 type TestPlayerQuestEntity struct {
-	PlayerID string `db:"playerId" primary_key:"true"`
+	PlayerID  string `db:"playerId" primary_key:"true"`
 	QuestData string `db:"questData"`
 }
 
-func (e *TestPlayerQuestEntity) TableName() string { return "test_player_quest" }
-func (e *TestPlayerQuestEntity) SerializeBeforeSaveDb() {}
-func (e *TestPlayerQuestEntity) DeserializeAfterLoadDb() {}
+func (e *TestPlayerQuestEntity) TableName() string                      { return "test_player_quest" }
+func (e *TestPlayerQuestEntity) SerializeBeforeSaveDb()                 {}
+func (e *TestPlayerQuestEntity) DeserializeAfterLoadDb()                {}
 func (e *TestPlayerQuestEntity) GetTableMetaData() *db233.TableMetaData { return nil }
 
 func setupBatchFindTable(db *db233.Db) error {

@@ -2,6 +2,9 @@ package db233
 
 import (
 	"fmt"
+	"math"
+	"math/big"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -31,8 +34,9 @@ type AlertManager struct {
 	mu sync.RWMutex
 
 	// 控制
-	enabled  bool
-	stopChan chan bool
+	enabled    bool
+	stopped    bool
+	notifierWG sync.WaitGroup
 }
 
 // AlertRule - 告警规则
@@ -112,21 +116,21 @@ func NewAlertManager(name string) *AlertManager {
 		maxHistorySize: 1000,
 		cooldownPeriod: 5 * time.Minute,
 		enabled:        true,
-		stopChan:       make(chan bool),
 	}
 }
 
 // 添加告警规则
 func (am *AlertManager) AddAlertRule(rule AlertRule) {
+	rule.Threshold = cloneDashboardComponent(rule.Threshold)
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
-	// 检查规则ID是否已存在
-	for _, existing := range am.alertRules {
+	// 锁内直接替换，避免调用 RemoveAlertRule 造成非重入锁死锁。
+	for index, existing := range am.alertRules {
 		if existing.ID == rule.ID {
-			LogWarn("告警规则ID已存在，将被替换: %s", rule.ID)
-			am.RemoveAlertRule(rule.ID)
-			break
+			am.alertRules[index] = rule
+			LogWarn("告警规则ID已存在，已替换: %s", rule.ID)
+			return
 		}
 	}
 
@@ -150,21 +154,41 @@ func (am *AlertManager) RemoveAlertRule(ruleID string) {
 
 // 添加通知器
 func (am *AlertManager) AddNotifier(notifier AlertNotifier) {
+	if notifier == nil {
+		return
+	}
+	name := safeAlertNotifierName(notifier)
 	am.mu.Lock()
 	defer am.mu.Unlock()
+	if am.stopped {
+		return
+	}
 	am.notifiers = append(am.notifiers, notifier)
-	LogInfo("告警通知器已添加: %s -> %s", am.name, notifier.GetName())
+	LogInfo("告警通知器已添加: %s -> %s", am.name, name)
 }
 
 // 设置最大历史记录大小
 func (am *AlertManager) SetMaxHistorySize(size int) {
+	if size <= 0 {
+		LogWarn("告警历史上限必须大于 0: %d", size)
+		return
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.maxHistorySize = size
+	if len(am.alertHistory) > size {
+		trimmed := make([]*Alert, size)
+		copy(trimmed, am.alertHistory[len(am.alertHistory)-size:])
+		am.alertHistory = trimmed
+	}
 }
 
 // 设置冷却周期
 func (am *AlertManager) SetCooldownPeriod(period time.Duration) {
+	if period < 0 {
+		LogWarn("告警冷却周期不能为负数: %v", period)
+		return
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.cooldownPeriod = period
@@ -174,6 +198,9 @@ func (am *AlertManager) SetCooldownPeriod(period time.Duration) {
 func (am *AlertManager) Enable() {
 	am.mu.Lock()
 	defer am.mu.Unlock()
+	if am.stopped {
+		return
+	}
 	am.enabled = true
 	LogInfo("告警管理器已启用: %s", am.name)
 }
@@ -188,12 +215,11 @@ func (am *AlertManager) Disable() {
 
 // 检查指标并触发告警
 func (am *AlertManager) CheckMetric(metricName string, value any) {
-	if !am.enabled {
-		return
-	}
-
 	am.mu.Lock()
 	defer am.mu.Unlock()
+	if !am.enabled || am.stopped {
+		return
+	}
 
 	now := time.Now()
 
@@ -206,88 +232,133 @@ func (am *AlertManager) CheckMetric(metricName string, value any) {
 			continue
 		}
 
-		// 检查是否在冷却期内
 		alertID := fmt.Sprintf("%s_%s", rule.ID, metricName)
-		if lastAlert, exists := am.activeAlerts[alertID]; exists {
-			if now.Sub(lastAlert.Timestamp) < rule.Cooldown {
-				continue // 在冷却期内，跳过
-			}
-		}
-
-		// 评估条件
-		if am.evaluateCondition(value, rule.Condition, rule.Threshold) {
-			am.triggerAlert(&rule, metricName, value, now)
-		} else {
-			// 检查是否需要解决现有告警
-			if activeAlert, exists := am.activeAlerts[alertID]; exists {
+		activeAlert, active := am.activeAlerts[alertID]
+		conditionMatched := am.evaluateCondition(value, rule.Condition, rule.Threshold)
+		if !conditionMatched {
+			// 解决告警不受通知冷却期影响。
+			if active {
 				am.resolveAlert(activeAlert, now)
 			}
+			continue
 		}
+		if active {
+			cooldown := rule.Cooldown
+			if cooldown <= 0 {
+				cooldown = am.cooldownPeriod
+			}
+			if now.Sub(activeAlert.Timestamp) < cooldown {
+				continue // 在冷却期内，跳过
+			}
+			// 冷却结束后重复触发前先结束旧实例，避免历史中遗留永久 Active。
+			am.resolveAlert(activeAlert, now)
+		}
+		am.triggerAlert(&rule, metricName, value, now)
 	}
 }
 
 // 评估告警条件
 func (am *AlertManager) evaluateCondition(value any, condition AlertCondition, threshold any) bool {
-	// 类型转换和比较
+	comparison, comparable := am.compareValues(value, threshold)
+	if !comparable {
+		return condition == NotEqual
+	}
 	switch condition {
 	case GreaterThan:
-		return am.compareValues(value, threshold) > 0
+		return comparison > 0
 	case LessThan:
-		return am.compareValues(value, threshold) < 0
+		return comparison < 0
 	case Equal:
-		return am.compareValues(value, threshold) == 0
+		return comparison == 0
 	case NotEqual:
-		return am.compareValues(value, threshold) != 0
+		return comparison != 0
 	case GreaterThanOrEqual:
-		return am.compareValues(value, threshold) >= 0
+		return comparison >= 0
 	case LessThanOrEqual:
-		return am.compareValues(value, threshold) <= 0
+		return comparison <= 0
 	default:
 		return false
 	}
 }
 
 // 比较两个值
-func (am *AlertManager) compareValues(a, b any) int {
-	switch va := a.(type) {
-	case int:
-		if vb, ok := b.(int); ok {
-			if va > vb {
-				return 1
-			} else if va < vb {
-				return -1
+func (am *AlertManager) compareValues(a, b any) (int, bool) {
+	if left, leftInfinity, leftOK := alertNumericValue(a); leftOK {
+		if right, rightInfinity, rightOK := alertNumericValue(b); rightOK {
+			if leftInfinity != 0 || rightInfinity != 0 {
+				switch {
+				case leftInfinity < rightInfinity:
+					return -1, true
+				case leftInfinity > rightInfinity:
+					return 1, true
+				default:
+					return 0, true
+				}
 			}
-			return 0
-		}
-	case int64:
-		if vb, ok := b.(int64); ok {
-			if va > vb {
-				return 1
-			} else if va < vb {
-				return -1
-			}
-			return 0
-		}
-	case float64:
-		if vb, ok := b.(float64); ok {
-			if va > vb {
-				return 1
-			} else if va < vb {
-				return -1
-			}
-			return 0
-		}
-	case time.Duration:
-		if vb, ok := b.(time.Duration); ok {
-			if va > vb {
-				return 1
-			} else if va < vb {
-				return -1
-			}
-			return 0
+			return left.Cmp(right), true
 		}
 	}
-	return 0
+	leftValue := reflect.ValueOf(a)
+	rightValue := reflect.ValueOf(b)
+	if !leftValue.IsValid() || !rightValue.IsValid() {
+		return 0, false
+	}
+	switch leftValue.Kind() {
+	case reflect.String:
+		if rightValue.Kind() != reflect.String {
+			return 0, false
+		}
+		left, right := leftValue.String(), rightValue.String()
+		if left < right {
+			return -1, true
+		}
+		if left > right {
+			return 1, true
+		}
+		return 0, true
+	case reflect.Bool:
+		if rightValue.Kind() != reflect.Bool {
+			return 0, false
+		}
+		left, right := leftValue.Bool(), rightValue.Bool()
+		if left == right {
+			return 0, true
+		}
+		if !left {
+			return -1, true
+		}
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func alertNumericValue(value any) (*big.Rat, int, bool) {
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return nil, 0, false
+	}
+	switch reflected.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return new(big.Rat).SetInt64(reflected.Int()), 0, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		integer := new(big.Int).SetUint64(reflected.Uint())
+		return new(big.Rat).SetInt(integer), 0, true
+	case reflect.Float32, reflect.Float64:
+		floating := reflected.Float()
+		if math.IsNaN(floating) {
+			return nil, 0, false
+		}
+		if math.IsInf(floating, -1) {
+			return nil, -1, true
+		}
+		if math.IsInf(floating, 1) {
+			return nil, 1, true
+		}
+		return new(big.Rat).SetFloat64(floating), 0, true
+	default:
+		return nil, 0, false
+	}
 }
 
 // 触发告警
@@ -301,8 +372,8 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, metricName string, value a
 		Description: rule.Description,
 		Severity:    rule.Severity,
 		Metric:      metricName,
-		Value:       value,
-		Threshold:   rule.Threshold,
+		Value:       cloneDashboardComponent(value),
+		Threshold:   cloneDashboardComponent(rule.Threshold),
 		Condition:   am.conditionToString(rule.Condition),
 		Timestamp:   timestamp,
 		Status:      Active,
@@ -313,14 +384,23 @@ func (am *AlertManager) triggerAlert(rule *AlertRule, metricName string, value a
 
 	// 发送通知
 	for _, notifier := range am.notifiers {
-		go func(notifier AlertNotifier, alert *Alert) {
+		am.notifierWG.Add(1)
+		notification := cloneAlert(alert)
+		notifierName := safeAlertNotifierName(notifier)
+		go func(notifier AlertNotifier, notifierName string, alert *Alert) {
+			defer am.notifierWG.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					LogError("告警通知发生 panic [%s]: %s", notifierName, safeValueForLog(recovered))
+				}
+			}()
 			if err := notifier.Notify(alert); err != nil {
-				LogError("告警通知失败 [%s]: %v", notifier.GetName(), err)
+				LogError("告警通知失败 [%s]: %s", safeValueForLog(notifierName), safeErrorForLog(err))
 			}
-		}(notifier, alert)
+		}(notifier, notifierName, notification)
 	}
 
-	LogWarn("告警触发: %s - %s (值: %v, 阈值: %v)", alert.Name, alert.Metric, alert.Value, alert.Threshold)
+	LogWarn("告警触发: %s - %s (值=%s, 阈值=%s)", alert.Name, alert.Metric, safeValueForLog(alert.Value), safeValueForLog(alert.Threshold))
 }
 
 // 解决告警
@@ -342,7 +422,9 @@ func (am *AlertManager) addToHistory(alert *Alert) {
 
 	// 限制历史记录大小
 	if len(am.alertHistory) > am.maxHistorySize {
-		am.alertHistory = am.alertHistory[len(am.alertHistory)-am.maxHistorySize:]
+		trimmed := make([]*Alert, am.maxHistorySize)
+		copy(trimmed, am.alertHistory[len(am.alertHistory)-am.maxHistorySize:])
+		am.alertHistory = trimmed
 	}
 }
 
@@ -373,7 +455,7 @@ func (am *AlertManager) GetActiveAlerts() []*Alert {
 
 	alerts := make([]*Alert, 0, len(am.activeAlerts))
 	for _, alert := range am.activeAlerts {
-		alerts = append(alerts, alert)
+		alerts = append(alerts, cloneAlert(alert))
 	}
 
 	return alerts
@@ -389,7 +471,9 @@ func (am *AlertManager) GetAlertHistory(limit int) []*Alert {
 	}
 
 	history := make([]*Alert, limit)
-	copy(history, am.alertHistory[len(am.alertHistory)-limit:])
+	for index, alert := range am.alertHistory[len(am.alertHistory)-limit:] {
+		history[index] = cloneAlert(alert)
+	}
 
 	return history
 }
@@ -440,13 +524,38 @@ func (am *AlertManager) GetAlertRules() []AlertRule {
 
 	rules := make([]AlertRule, len(am.alertRules))
 	copy(rules, am.alertRules)
+	for index := range rules {
+		rules[index].Threshold = cloneDashboardComponent(rules[index].Threshold)
+	}
 
 	return rules
 }
 
-// 停止告警管理器
+func cloneAlert(alert *Alert) *Alert {
+	if alert == nil {
+		return nil
+	}
+	clone := *alert
+	clone.Value = cloneDashboardComponent(alert.Value)
+	clone.Threshold = cloneDashboardComponent(alert.Threshold)
+	if alert.ResolvedAt != nil {
+		resolvedAt := *alert.ResolvedAt
+		clone.ResolvedAt = &resolvedAt
+	}
+	if alert.Duration != nil {
+		duration := *alert.Duration
+		clone.Duration = &duration
+	}
+	return &clone
+}
+
+// Stop 禁止新告警并等待已启动通知完成。可并发、重复调用。
 func (am *AlertManager) Stop() {
-	am.stopChan <- true
+	am.mu.Lock()
+	am.stopped = true
+	am.enabled = false
+	am.mu.Unlock()
+	am.notifierWG.Wait()
 }
 
 // 获取管理器状态
@@ -457,6 +566,7 @@ func (am *AlertManager) GetStatus() map[string]any {
 	return map[string]any{
 		"name":            am.name,
 		"enabled":         am.enabled,
+		"stopped":         am.stopped,
 		"rules_count":     len(am.alertRules),
 		"active_alerts":   len(am.activeAlerts),
 		"history_size":    len(am.alertHistory),
@@ -514,6 +624,9 @@ func NewLogAlertNotifier(name string) *LogAlertNotifier {
 
 // 发送通知
 func (n *LogAlertNotifier) Notify(alert *Alert) error {
+	if alert == nil {
+		return NewValidationException("告警不能为空")
+	}
 	severity := ""
 	switch alert.Severity {
 	case Info:
@@ -526,8 +639,8 @@ func (n *LogAlertNotifier) Notify(alert *Alert) error {
 		severity = "CRITICAL"
 	}
 
-	LogWarn("[%s] 告警通知 [%s]: %s - %s (值: %v)",
-		n.name, severity, alert.Name, alert.Description, alert.Value)
+	LogWarn("[%s] 告警通知 [%s]: %s (值=%s)",
+		n.name, severity, alert.Name, safeValueForLog(alert.Value))
 
 	return nil
 }
@@ -535,4 +648,17 @@ func (n *LogAlertNotifier) Notify(alert *Alert) error {
 // 获取通知器名称
 func (n *LogAlertNotifier) GetName() string {
 	return n.name
+}
+
+func safeAlertNotifierName(notifier AlertNotifier) (name string) {
+	name = fmt.Sprintf("%T", notifier)
+	defer func() {
+		if recover() != nil {
+			name = fmt.Sprintf("%T", notifier)
+		}
+	}()
+	if configured := notifier.GetName(); configured != "" {
+		name = configured
+	}
+	return name
 }

@@ -953,7 +953,7 @@ func TestTransactionCrudRepositoryContract(t *testing.T) {
 			},
 			{
 				name: "Savepoint",
-				step: scriptedStep{kind: "exec", queryContains: "SAVEPOINT serial_guard"},
+				step: scriptedStep{kind: "exec", queryContains: "SAVEPOINT db233_sp_serial_guard"},
 				execute: func(tm *TransactionManager) error {
 					return tm.Savepoint("serial_guard")
 				},
@@ -1098,12 +1098,12 @@ func TestTransactionCrudRepositoryContract(t *testing.T) {
 	t.Run("rollback to savepoint discards later auto ID actions", func(t *testing.T) {
 		state := newScriptedDBState(
 			scriptedStep{kind: "exec", queryContains: "INSERT", result: scriptedResult{lastInsertID: 100, rowsAffected: 1}},
-			scriptedStep{kind: "exec", queryContains: "SAVEPOINT keep"},
+			scriptedStep{kind: "exec", queryContains: "SAVEPOINT db233_sp_keep"},
 			scriptedStep{kind: "exec", queryContains: "INSERT", result: scriptedResult{lastInsertID: 200, rowsAffected: 1}},
-			scriptedStep{kind: "exec", queryContains: "SAVEPOINT discard"},
+			scriptedStep{kind: "exec", queryContains: "SAVEPOINT db233_sp_discard"},
 			scriptedStep{kind: "exec", queryContains: "INSERT", result: scriptedResult{lastInsertID: 300, rowsAffected: 1}},
-			scriptedStep{kind: "exec", queryContains: "ROLLBACK TO SAVEPOINT keep"},
-			scriptedStep{kind: "exec", queryContains: "RELEASE SAVEPOINT keep"},
+			scriptedStep{kind: "exec", queryContains: "ROLLBACK TO SAVEPOINT db233_sp_keep"},
+			scriptedStep{kind: "exec", queryContains: "RELEASE SAVEPOINT db233_sp_keep"},
 		)
 		tm := NewTransactionManager(newStrictTestDb(t, state))
 		if err := tm.BeginContext(context.Background()); err != nil {
