@@ -6,7 +6,7 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.1.0 · Go 1.25+ |
+| **版本** | v1.1.0 · Go 1.25.12+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
@@ -1055,7 +1055,7 @@ sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
 
 ### Go 框架性能对比（实测）
 
-环境：本地 MySQL `127.0.0.1:3306/db233_go`，Go 1.25。
+环境：本地 MySQL `127.0.0.1:3306/db233_go`，Go 1.25.12+。
 复现：
 
 ```bash

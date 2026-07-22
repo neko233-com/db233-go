@@ -13,7 +13,7 @@
 bash ./scripts/run-benchmark.sh
 ```
 
-环境：Go 1.25+、本地 MySQL `127.0.0.1:3306/db233_go`（可用 root/root）。连接从 `DB233_TEST_DSN` 或未跟踪的 `config.local.json` 读取，并强制限制为本机。
+环境：Go 1.25.12+、本地 MySQL `127.0.0.1:3306/db233_go`（可用 root/root）。连接从 `DB233_TEST_DSN` 或未跟踪的 `config.local.json` 读取，并强制限制为本机。
 
 ## 流水线（6 阶段）
 
