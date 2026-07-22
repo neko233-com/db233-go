@@ -19,6 +19,9 @@ coverage.html
 # Go workspace file
 go.work
 
+# Local mise toolchain override
+mise.local.toml
+
 # IDE files
 .vscode/
 .idea/
@@ -65,4 +68,3 @@ test_output.txt
 test_result.txt
 test_support.txt
 test_direct.txt
-

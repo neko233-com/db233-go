@@ -52,6 +52,16 @@ type DbApi interface {
 	ExecuteWithConnection(fn func(*sql.Conn) error) error
 }
 
+// StrictQueryer 描述 all-or-error 的严格 ORM 查询能力，不改变 DbApi 的兼容契约。
+type StrictQueryer interface {
+	ExecuteQueryStrictContext(
+		ctx context.Context,
+		query string,
+		paramsArray [][]any,
+		returnType any,
+	) ([]any, error)
+}
+
 // Db 是数据库操作核心类型，封装了数据源、数据库分组、容错管理器等信息。
 // Db 对象负责执行 SQL、管理容错逻辑与辅助方法。
 type Db struct {
@@ -481,6 +491,20 @@ func (db *Db) ExecuteQueryContext(ctx context.Context, query string, paramsArray
 	return results
 }
 
+// ExecuteQueryStrictContext 使用指定 context 执行严格 ORM 查询。
+// 任一参数组的 Query、映射、行遍历或关闭失败都会返回 nil 和可检查的错误链。
+func (db *Db) ExecuteQueryStrictContext(
+	ctx context.Context,
+	query string,
+	paramsArray [][]any,
+	returnType any,
+) ([]any, error) {
+	if db == nil {
+		return nil, NewValidationException("Db 不能为 nil")
+	}
+	return executeQueryStrictContextWithRunner(ctx, strictDBRowsQueryer{db: db}, query, paramsArray, returnType)
+}
+
 // isPrimitiveType 检测是否为基础类型（int, int64, float64, string, bool 等）
 func (db *Db) isPrimitiveType(returnType any) bool {
 	if returnType == nil {
@@ -727,6 +751,44 @@ func ExecuteQueryTyped[T any](db *Db, ctx context.Context, query string, params 
 	}
 	return out, nil
 }
+
+// ExecuteQueryTypedStrict 执行严格泛型查询，SQL 与映射错误均通过 error 返回。
+func ExecuteQueryTypedStrict[T any](db *Db, ctx context.Context, query string, params ...any) ([]T, error) {
+	if db == nil {
+		return nil, NewValidationException("Db 不能为 nil")
+	}
+	targetType := reflect.TypeOf((*T)(nil)).Elem()
+	entityType := targetType
+	if entityType.Kind() == reflect.Ptr {
+		entityType = entityType.Elem()
+	}
+	if entityType.Kind() != reflect.Struct {
+		return nil, NewValidationException(fmt.Sprintf("严格泛型查询目标必须是 struct 或 *struct，实际类型: %s", targetType))
+	}
+	prototype := reflect.New(entityType).Interface()
+	results, err := db.ExecuteQueryStrictContext(ctx, query, [][]any{params}, prototype)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]T, 0, len(results))
+	for index, result := range results {
+		switch value := result.(type) {
+		case T:
+			out = append(out, value)
+		case *T:
+			if value == nil {
+				return nil, NewQueryException(fmt.Sprintf("严格查询结果为 nil: index=%d", index))
+			}
+			out = append(out, *value)
+		default:
+			return nil, NewQueryException(fmt.Sprintf("严格查询结果无法转换为目标类型: index=%d, type=%T", index, result))
+		}
+	}
+	return out, nil
+}
+
+var _ StrictQueryer = (*Db)(nil)
 
 // ExecuteQueryByStatement 使用 SqlStatement 执行查询并返回映射结果。
 // 返回 []map[string]any 格式的原始查询结果，不进行 ORM 映射。

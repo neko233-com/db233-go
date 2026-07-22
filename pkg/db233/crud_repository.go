@@ -989,142 +989,33 @@ func (r *BaseCrudRepository) saveBatchUpsertOnce(validEntities []IDbEntity) erro
 
 	LogDebug("开始批量 UPSERT: 实体数量=%d", len(validEntities))
 
-	firstEntity := validEntities[0]
-	tableName := r.getTableName(firstEntity)
-	if tableName == "" {
-		return NewValidationException("无法获取表名，请确保实体实现了 TableName() 方法并返回非空字符串")
+	statement, err := r.buildBatchUpsertStatement(validEntities)
+	if err != nil {
+		return err
 	}
+	LogDebug("执行批量 UPSERT: 表=%s, 记录数=%d, 字段数=%d", statement.tableName, len(validEntities), len(statement.columns))
 
-	for _, entity := range validEntities {
-		entity.SerializeBeforeSaveDb()
-	}
-
-	firstFields := r.getFields(firstEntity)
-	if len(firstFields) == 0 {
-		return NewValidationException(fmt.Sprintf("实体 %T 没有可映射的字段，请检查字段是否包含 db 标签", firstEntity))
-	}
-
-	cm := GetCrudManagerInstance()
-	uidColumn := cm.GetPrimaryKeyColumnName(firstEntity)
-	if uidColumn == "" {
-		uidColumn = "id"
-	}
-	isAutoIncrement := r.isAutoIncrementPrimaryKey(firstEntity, uidColumn)
-
-	columns := make([]string, 0, len(firstFields))
-	for name, value := range firstFields {
-		if name == uidColumn && isAutoIncrement && r.isZeroValue(value) {
-			continue
-		}
-		columns = append(columns, name)
-	}
-	if len(columns) == 0 {
-		return NewValidationException(fmt.Sprintf("表 %s 没有可插入的字段", tableName))
-	}
-
-	hasPrimaryKey := false
-	for _, col := range columns {
-		if col == uidColumn {
-			hasPrimaryKey = true
-			break
-		}
-	}
-	if !hasPrimaryKey && isAutoIncrement {
-		return r.saveBatchInsertOnce(validEntities)
-	}
-	if !hasPrimaryKey {
-		return NewValidationException(fmt.Sprintf("批量 UPSERT 要求主键 %s 有有效值", uidColumn))
-	}
-
-	for _, entity := range validEntities {
-		pkValue := cm.GetPrimaryKeyValue(entity)
-		if r.isZeroValue(pkValue) {
-			return NewValidationException(fmt.Sprintf("批量 UPSERT 要求所有实体主键 %s 非零值", uidColumn))
-		}
-	}
-
-	rowPlaceholder := "(" + joinQuestionMarks(len(columns)) + ")"
-	placeholders := make([]string, 0, len(validEntities))
-	allValues := make([]any, 0, len(validEntities)*len(columns))
-
-	var fieldScratch map[string]any
-	var batchScratch *batchUpsertScratch
-	if EnableAllocPoolEnabled() {
-		batchScratch = acquireBatchUpsertScratch()
-		defer releaseBatchUpsertScratch(batchScratch)
-		fieldScratch = batchScratch.fieldMap
-	} else {
-		fieldScratch = acquireFieldMap()
-		defer releaseFieldMap(fieldScratch)
-	}
-
-	for _, entity := range validEntities {
-		clear(fieldScratch)
-		r.getFieldsInto(entity, fieldScratch)
-		var rowValues []any
-		if batchScratch != nil {
-			batchScratch.rowValues = batchScratch.rowValues[:0]
-			rowValues = batchScratch.rowValues
-		} else {
-			rowValues = make([]any, 0, len(columns))
-		}
-		for _, col := range columns {
-			value, exists := fieldScratch[col]
-			if !exists {
-				value = r.getDefaultValueIfEmpty(nil, col)
-			} else {
-				value = r.getDefaultValueIfEmpty(value, col)
-			}
-			rowValues = append(rowValues, value)
-		}
-		placeholders = append(placeholders, rowPlaceholder)
-		allValues = append(allValues, rowValues...)
-	}
-
-	var sql string
-	if EnableAllocPoolEnabled() {
-		updateParts := make([]string, 0, len(columns))
-		for _, col := range columns {
-			if col != uidColumn {
-				updateParts = append(updateParts, col+" = VALUES("+col+")")
-			}
-		}
-		sql = appendBatchUpsertSQL(tableName, columns, placeholders, updateParts)
-	} else {
-		updateParts := make([]string, 0)
-		for _, col := range columns {
-			if col != uidColumn {
-				updateParts = append(updateParts, col+" = VALUES("+col+")")
-			}
-		}
-		if len(updateParts) > 0 {
-			sql = "INSERT INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " +
-				StringUtilsInstance.Join(placeholders, ",") + " ON DUPLICATE KEY UPDATE " + StringUtilsInstance.Join(updateParts, ", ")
-		} else {
-			sql = "INSERT IGNORE INTO " + tableName + " (" + StringUtilsInstance.Join(columns, ",") + ") VALUES " +
-				StringUtilsInstance.Join(placeholders, ",")
-		}
-	}
-
-	LogDebug("执行批量 UPSERT: 表=%s, 记录数=%d, 字段数=%d", tableName, len(validEntities), len(columns))
-
-	result, err := r.db.execContext(context.Background(), sql, allValues...)
+	result, err := r.executeBatchUpsertStatement(context.Background(), r.db.execContext, statement)
 	if err != nil {
 		if isConnectionError(err) {
-			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", tableName, err)
-			firstUidValue := cm.GetPrimaryKeyValue(firstEntity)
-			r.recordFailedOperation("SaveBatchUpsert", tableName, sql, allValues, firstUidValue)
+			LogWarn("数据库连接已关闭或不可用: 表=%s, 错误=%v", statement.tableName, err)
+			firstUidValue := GetCrudManagerInstance().GetPrimaryKeyValue(validEntities[0])
+			r.recordFailedOperation("SaveBatchUpsert", statement.tableName, statement.query, statement.args, firstUidValue)
 			if r.db.FaultTolerantMgr != nil {
 				r.db.FaultTolerantMgr.CheckAndReconnect()
 			}
 			return NewQueryExceptionWithCause(err, "数据库连接已关闭或不可用，请检查网络连接")
 		}
-		LogError("批量 UPSERT 失败: 表=%s, 错误=%v, SQL=%s", tableName, err, sql)
-		return NewQueryExceptionWithCause(err, fmt.Sprintf("批量 UPSERT 到表 %s 失败", tableName))
+		LogError("批量 UPSERT 失败: 表=%s, 错误=%v, SQL=%s", statement.tableName, err, statement.query)
+		return NewQueryExceptionWithCause(err, fmt.Sprintf("批量 UPSERT 到表 %s 失败", statement.tableName))
+	}
+	// legacy 路径保持 LastInsertId 失败不影响已成功写入的既有语义。
+	if assignIDs, idErr := r.batchAutoIncrementAction(statement, result); idErr == nil && assignIDs != nil {
+		assignIDs()
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	LogDebug("批量 UPSERT 完成: 表=%s, 影响行数=%d, 记录数=%d", tableName, rowsAffected, len(validEntities))
+	LogDebug("批量 UPSERT 完成: 表=%s, 影响行数=%d, 记录数=%d", statement.tableName, rowsAffected, len(validEntities))
 	return nil
 }
 

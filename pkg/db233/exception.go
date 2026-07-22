@@ -58,6 +58,11 @@ func (e *Db233Exception) Error() string {
 	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
 }
 
+// Unwrap 返回底层原因，使 errors.Is/errors.As 能穿透 db233 的错误分类。
+func (e *Db233Exception) Unwrap() error {
+	return e.Cause
+}
+
 // 格式化友好的错误信息
 func (e *Db233Exception) formatFriendlyError(errorMsg string) string {
 	// 解析常见的 MySQL 错误，提供更友好的提示
