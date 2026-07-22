@@ -5,7 +5,6 @@ package db233
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -18,9 +17,9 @@ func TestSecureAtomicExportUsesCurrentIdentityOnlyDACL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantSID := currentProcessSIDForSecureExport(t)
-	assertSecureExportCurrentIdentityOnlyDACL(t, dir, wantSID)
-	assertSecureExportCurrentIdentityOnlyDACL(t, path, wantSID)
+	wantSID := currentProcessSIDForPermissionTest(t)
+	assertCurrentIdentityOnlyDACL(t, dir, wantSID)
+	assertCurrentIdentityOnlyDACL(t, path, wantSID)
 }
 
 func TestSecureAtomicExportReplacesExistingBroadDACLWithPrivateDACL(t *testing.T) {
@@ -59,45 +58,6 @@ func TestSecureAtomicExportReplacesExistingBroadDACLWithPrivateDACL(t *testing.T
 	if string(content) != "new-private-content" {
 		t.Fatalf("覆盖内容=%q", content)
 	}
-	assertSecureExportCurrentIdentityOnlyDACL(t, path, currentProcessSIDForSecureExport(t))
+	assertCurrentIdentityOnlyDACL(t, path, currentProcessSIDForPermissionTest(t))
 	assertNoSecureAtomicTemps(t, dir)
-}
-
-func currentProcessSIDForSecureExport(t *testing.T) string {
-	t.Helper()
-	var token windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := token.Close(); err != nil {
-			t.Errorf("关闭当前进程 token: %v", err)
-		}
-	})
-	user, err := token.GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return user.User.Sid.String()
-}
-
-func assertSecureExportCurrentIdentityOnlyDACL(t *testing.T, path, wantSID string) {
-	t.Helper()
-	descriptor, err := windows.GetNamedSecurityInfo(
-		path,
-		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sddl := descriptor.String()
-	if !strings.Contains(sddl, wantSID) || strings.Count(sddl, "(A;") != 1 {
-		t.Fatalf("安全导出 DACL 非当前身份专用: %s", sddl)
-	}
-	for _, broad := range []string{"S-1-1-0", "S-1-5-11", "S-1-5-32-545", ";WD)", ";AU)", ";BU)"} {
-		if strings.Contains(sddl, broad) {
-			t.Fatalf("安全导出 DACL 含宽泛主体 %s: %s", broad, sddl)
-		}
-	}
 }
