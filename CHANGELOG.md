@@ -2,6 +2,35 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.0.10] - 2026-07-22
+
+**严格错误传播与事务能力** — 为正确性关键 Entity 读取和跨分块原子写入补齐 fail-closed 契约。
+
+### Added
+
+- `StrictQueryer`、`ExecuteQueryStrictContext` 与 `ExecuteQueryTypedStrict`：Query、Columns、Scan、字段转换、`rows.Err()` 和 Close 失败统一返回 error，禁止交付部分结果。
+- `StrictEntityRepository` / `StrictCrudRepository`：提供 context-aware 严格 Entity 读取，并在整批成功后调用加载钩子。
+- `BeginContext`、`ExecuteInTransactionContext`、`WithTransactionContext`：继承调用方 context，保留标准错误链。
+- `TransactionCrudRepository`：串行地在同一 `sql.Tx` 上执行严格读取、Save、分组分块 UPSERT 与条件删除；auto-increment 主键在 Commit 成功后回填，回滚到保存点会丢弃其后的待回填动作。
+- 不依赖真实 MySQL 的 scripted driver 回归测试与 ORM mapping microbenchmark。
+
+### Fixed
+
+- 修复 `Begin` 返回后立即取消事务 context、导致事务被自动回滚的问题。
+- Commit/Rollback 无论成功失败都会清理 manager 本地状态；终态错误会保留 cancel/deadline cause。
+- callback error 与 rollback error 通过 `errors.Join` 同时保留；callback panic 会先尝试回滚，再原样 re-panic。
+- `Db233Exception` 新增 `Unwrap()`，支持 `errors.Is/As` 检查底层 context、驱动和事务错误。
+- auto-increment `SaveBatchUpsert` 的 `SerializeBeforeSaveDb()` 每个 Entity 只调用一次。
+- Entity 序列化/反序列化 hook 在事务非重入锁外执行，避免 hook 重入同一 manager 或 Repository 时自死锁；SQL 执行仍保持串行。
+
+### Compatibility
+
+- 不修改 schema、主键、字段或持久化格式，现有数据无需重置。
+- 旧 `DbApi`、`CrudRepository`、`ExecuteQuery*`、`Begin` 和 `WithTransaction` 保持编译兼容；严格语义由新窄接口显式启用。
+- 事务 Repository 不使用 WAL、WriteBuffer 或 DB Statement 缓存；目标表须使用事务引擎，Unit of Work 仅允许事务性 DML。
+- legacy `TransactionManager.Query*` 为保持 `*sql.Rows` 返回类型，只串行保护 Rows 创建阶段；Rows 关闭前不得与同一 manager 的其他事务操作并发混用。
+- 本版本门禁不连接真实 MySQL；MySQL/InnoDB、DDL 隐式提交、驱动错误码和连接池 cancel 后复用行为仍属于未验证边界。
+
 ## [v1.0.7] - 2026-06-03
 
 **测试连接固定本地 MySQL** — 普通集成测试不再优先读取 `config.local.json`，避免误连远程数据库。

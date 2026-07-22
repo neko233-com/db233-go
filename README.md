@@ -6,13 +6,13 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.0.7 · Go 1.25+ |
+| **版本** | v1.0.10 · Go 1.25+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.7
+go get github.com/neko233-com/db233-go@v1.0.10
 ```
 
 **发版压测**：`./scripts/run-benchmark.ps1`（[BENCHMARK.md](docs/BENCHMARK.md)）  
@@ -282,6 +282,65 @@ name := db.QueryNamedToString("SELECT name FROM users WHERE id={userId}",
 ids := db.QueryNamedToInt64Slice("SELECT id FROM users WHERE status={status}", 
     map[string]any{"status": "active"})
 ```
+
+### 严格 Entity 查询与事务 Repository
+
+正确性关键读取应显式使用 `StrictCrudRepository`。它采用 all-or-error 语义：Query、Scan、字段转换、结果遍历或 Rows 关闭任一失败时都返回非 `nil` error，不会把空集或部分结果伪装为成功；成功加载的 Entity 会调用一次 `DeserializeAfterLoadDb()`。
+
+```go
+ctx := context.Background()
+repo := db233.NewStrictCrudRepository(db)
+
+user, err := repo.FindByIdContext(ctx, userID, &User{})
+if err != nil {
+    return err // 数据库或映射失败
+}
+if user == nil {
+    return ErrUserNotFound // 查询成功，但没有记录
+}
+```
+
+需要跨删除、分块 UPSERT 和严格回读保持原子性时，先手工开启事务，再从 manager 获取绑定当前 `*sql.Tx` 的窄 Repository：
+
+```go
+tm := db233.NewTransactionManager(db)
+if err := tm.BeginContext(ctx); err != nil {
+    return err
+}
+defer func() {
+    if tm.IsActive() {
+        _ = tm.Rollback()
+    }
+}()
+
+txRepo, err := tm.CrudRepository()
+if err != nil {
+    return err
+}
+if _, err := txRepo.DeleteByConditionContext(
+    ctx,
+    "season_id = ?",
+    []any{seasonID},
+    &PvpPlan{},
+); err != nil {
+    return err
+}
+if err := txRepo.SaveBatchUpsertContext(ctx, plans); err != nil {
+    return err
+}
+loaded, err := txRepo.FindByConditionContext(ctx, "season_id = ?", []any{seasonID}, &PvpPlan{})
+if err != nil {
+    return err
+}
+if err := validatePlans(loaded); err != nil {
+    return err
+}
+if err := tm.Commit(); err != nil {
+    return err // 业务侧按自身规则处理 commit-unknown
+}
+```
+
+事务 Repository 只执行同步、串行的事务性 DML，不接入 WAL、WriteBuffer 或 DB 级 Prepared Statement 缓存。目标表必须使用 InnoDB 等事务引擎，同一 Unit of Work 内不得混入会隐式提交的 DDL。Commit/Rollback 后，已取得的 Repository 句柄永久失效。事务内 auto-increment 主键只在 Commit 成功后回填 Entity；回滚到保存点会同步丢弃保存点后的待回填 ID，Commit 返回 error 时仍须按 commit-unknown 规则回读并协调内存状态。若直接使用 `TransactionManager.Query`/`QueryContext`，在返回的 `Rows.Close` 前不得与同一 manager 的 Repository、Exec、保存点或 Commit/Rollback 并发混用。
 
 ---
 
@@ -785,7 +844,7 @@ func main() {
 ### 升级依赖
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.2
+go get github.com/neko233-com/db233-go@v1.0.10
 ```
 
 ### 配置文件 `config/db233-performance.json`
@@ -1102,7 +1161,7 @@ db233-go 是面向 **有状态游戏逻辑服** 的 Go ORM：登录后玩家数�
 <summary><strong>如何安装与初始化游戏服？</strong></summary>
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.0.2
+go get github.com/neko233-com/db233-go@v1.0.10
 cp config.local.json.example config.local.json   # 本地凭据，勿提交 Git
 ```
 
@@ -1218,6 +1277,12 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)。
 
+### v1.0.10 (2026-07-22) — 严格错误传播与事务能力
+
+- 新增 Strict Query、Strict Entity Repository 和事务绑定 Repository
+- 修复事务 context 生命周期、终态 reset、rollback error 与 panic 回滚语义
+- 保持旧 Query、CrudRepository、Begin 和 WithTransaction API 编译兼容
+
 ### v1.0.2 (2026-05-30) — 文档完善
 
 - 文档中心、FAQ、GORM 对比、项目概览
@@ -1257,4 +1322,4 @@ Apache License 2.0 - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**文档最后更新：** 2026-05-30 · v1.0.2 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)
+**文档最后更新：** 2026-07-22 · v1.0.10 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)

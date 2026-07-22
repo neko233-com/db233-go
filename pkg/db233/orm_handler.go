@@ -3,6 +3,7 @@ package db233
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -44,6 +45,65 @@ func (o *OrmHandler) OrmBatch(rows *sql.Rows, returnType any) []any {
 	return o.ormBatchLegacy(rows, structType, columns)
 }
 
+// ormBatchStrict 执行严格 ORM 映射，并独占 rows 的关闭责任。
+// 任一读取、映射或关闭错误都会使结果整体失败，禁止交付部分数据。
+func (o *OrmHandler) ormBatchStrict(rows *sql.Rows, returnType any) (results []any, err error) {
+	if rows == nil {
+		return nil, NewValidationException("查询结果集不能为 nil")
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			wrappedCloseErr := NewQueryExceptionWithCause(closeErr, "关闭查询结果集失败")
+			results = nil
+			if err == nil {
+				err = wrappedCloseErr
+			} else {
+				err = errors.Join(err, wrappedCloseErr)
+			}
+		}
+	}()
+
+	structType, typeErr := strictOrmStructType(returnType)
+	if typeErr != nil {
+		return nil, typeErr
+	}
+
+	columns, columnsErr := rows.Columns()
+	if columnsErr != nil {
+		return nil, NewQueryExceptionWithCause(columnsErr, "获取严格查询列信息失败")
+	}
+	if len(columns) == 0 {
+		return nil, NewQueryException("严格查询结果没有列信息")
+	}
+
+	settings := GetCrudPerformanceSettings().Snapshot()
+	if settings.EnableFastOrmScan {
+		planPrototype := reflect.New(structType).Interface()
+		plan, planErr := GetOrmScanPlanCache().GetStrictPlan(planPrototype, columns)
+		if planErr != nil {
+			return nil, NewQueryExceptionWithCause(planErr, "构建严格 ORM 扫描计划失败")
+		}
+		return o.ormBatchFastStrict(rows, plan)
+	}
+
+	return o.ormBatchLegacyStrict(rows, structType, columns)
+}
+
+func strictOrmStructType(returnType any) (reflect.Type, error) {
+	if returnType == nil {
+		return nil, NewValidationException("严格查询返回类型不能为 nil")
+	}
+
+	structType := reflect.TypeOf(returnType)
+	if structType.Kind() == reflect.Ptr {
+		structType = structType.Elem()
+	}
+	if structType.Kind() != reflect.Struct {
+		return nil, NewValidationException(fmt.Sprintf("严格查询返回类型必须是 struct 或 *struct，实际类型: %T", returnType))
+	}
+	return structType, nil
+}
+
 func (o *OrmHandler) ormBatchLegacy(rows *sql.Rows, structType reflect.Type, columns []string) []any {
 	var results []any
 	scratch := acquireScanScratch(len(columns))
@@ -83,6 +143,62 @@ func (o *OrmHandler) ormBatchLegacy(rows *sql.Rows, structType reflect.Type, col
 	}
 
 	return results
+}
+
+func (o *OrmHandler) ormBatchLegacyStrict(rows *sql.Rows, structType reflect.Type, columns []string) ([]any, error) {
+	results := make([]any, 0)
+	scratch := acquireScanScratch(len(columns))
+	defer releaseScanScratch(scratch)
+
+	rowIndex := 0
+	for rows.Next() {
+		newInstancePtr := reflect.New(structType)
+		newInstance := newInstancePtr.Elem()
+
+		dest := scratch.dest
+		for i := range dest {
+			dest[i] = scratch.discardPtr(i)
+		}
+
+		if scanErr := rows.Scan(dest...); scanErr != nil {
+			return nil, NewQueryExceptionWithCause(scanErr, fmt.Sprintf("严格 ORM 扫描失败: row=%d", rowIndex))
+		}
+
+		for i, column := range columns {
+			path, ok := findOrmFieldPathByColumnName(structType, column)
+			if !ok {
+				continue
+			}
+			field, fieldErr := strictFieldByIndexPath(newInstance, path)
+			if fieldErr != nil || !field.CanSet() {
+				if fieldErr == nil {
+					fieldErr = fmt.Errorf("字段不可设置")
+				}
+				return nil, NewQueryExceptionWithCause(
+					fieldErr,
+					fmt.Sprintf("严格 ORM 字段定位失败: row=%d, column=%s, path=%v", rowIndex, column, path),
+				)
+			}
+
+			rawSource := cloneStrictScanSourceIfNeeded(*scratch.discardPtr(i), field.Type())
+			source := reflect.ValueOf(rawSource)
+			converted, convertErr := o.convertValue(source, field.Type())
+			if convertErr != nil {
+				return nil, NewQueryExceptionWithCause(
+					convertErr,
+					fmt.Sprintf("严格 ORM 字段转换失败: row=%d, column=%s, target=%s", rowIndex, column, field.Type()),
+				)
+			}
+			field.Set(converted)
+		}
+
+		results = append(results, newInstancePtr.Interface())
+		rowIndex++
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, NewQueryExceptionWithCause(rowsErr, fmt.Sprintf("严格 ORM 行遍历失败: next_row=%d", rowIndex))
+	}
+	return results, nil
 }
 
 // findFieldByColumnName 根据列名查找字段，支持嵌入结构体递归查找。
@@ -188,11 +304,6 @@ func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Ty
 		return sourceVal.Convert(targetType), nil
 	}
 
-	// 特殊处理：[]uint8 (MySQL byte array) 转换
-	if sourceVal.Kind() == reflect.Slice && sourceVal.Type().Elem().Kind() == reflect.Uint8 {
-		return o.convertFromBytes(sourceVal.Interface().([]byte), targetType)
-	}
-
 	// 处理指针类型
 	if targetType.Kind() == reflect.Ptr {
 		// 创建指针指向的类型的值
@@ -204,6 +315,12 @@ func (o *OrmHandler) convertValue(sourceVal reflect.Value, targetType reflect.Ty
 		ptrVal := reflect.New(elemType)
 		ptrVal.Elem().Set(elemVal)
 		return ptrVal, nil
+	}
+
+	// 特殊处理：[]uint8 (MySQL byte array) 转换。
+	// 指针目标必须先递归到元素类型，才能正确处理 MySQL 常见的 []byte -> *T。
+	if sourceVal.Kind() == reflect.Slice && sourceVal.Type().Elem().Kind() == reflect.Uint8 {
+		return o.convertFromBytes(sourceVal.Interface().([]byte), targetType)
 	}
 
 	return reflect.Value{}, fmt.Errorf("无法转换类型: %s -> %s", sourceVal.Type(), targetType)
@@ -219,7 +336,7 @@ func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (ref
 
 	switch targetType.Kind() {
 	case reflect.String:
-		return reflect.ValueOf(str), nil
+		return reflect.ValueOf(str).Convert(targetType), nil
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i, err := strconv.ParseInt(str, 10, 64)
@@ -248,11 +365,11 @@ func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (ref
 			// 尝试数字转换：0 = false, 非0 = true
 			i, err2 := strconv.ParseInt(str, 10, 64)
 			if err2 == nil {
-				return reflect.ValueOf(i != 0), nil
+				return reflect.ValueOf(i != 0).Convert(targetType), nil
 			}
 			return reflect.Value{}, fmt.Errorf("转换为 bool 失败: %w", err)
 		}
-		return reflect.ValueOf(b), nil
+		return reflect.ValueOf(b).Convert(targetType), nil
 
 	case reflect.Struct:
 		// 特殊处理：time.Time
@@ -268,7 +385,7 @@ func (o *OrmHandler) convertFromBytes(data []byte, targetType reflect.Type) (ref
 	case reflect.Slice:
 		// 特殊处理：[]byte
 		if targetType.Elem().Kind() == reflect.Uint8 {
-			return reflect.ValueOf(data), nil
+			return reflect.ValueOf(data).Convert(targetType), nil
 		}
 		return o.unmarshalJSONValue(data, targetType)
 
