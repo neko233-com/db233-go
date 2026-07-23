@@ -1350,6 +1350,10 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 
 完整记录见 [ChangeLog.md](ChangeLog.md)。
 
+### v1.2.3 (2026-07-23) — 严格单表恢复版本
+
+- 当前表已绑定版本时，旧版无版本恢复条目也按不一致处理，禁止静默接管
+
 ### v1.2.2 (2026-07-23) — 单表结构版本与有界恢复
 
 - 自动维护每张 Entity 表的 `schema_version + schema_fingerprint`

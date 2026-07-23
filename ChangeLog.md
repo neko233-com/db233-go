@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.3] - 2026-07-23
+
+**严格单表恢复版本** — 当前 Entity 表已绑定版本时，无版本旧 WAL/失败操作也视为不一致，禁止升级后静默解释旧快照。
+
 ## [v1.2.2] - 2026-07-23
 
 **单表结构版本与有界恢复** — 自动维护每张 Entity 表的结构版本；WAL/失败队列版本不一致直接失败，默认 2 次后写入 durable dead-letter 并逐条 ERROR。

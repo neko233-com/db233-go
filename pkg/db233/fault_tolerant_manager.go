@@ -833,7 +833,7 @@ func (ftm *FaultTolerantManager) executeSaveOrUpdate(ctx context.Context, op *Fa
 		if ftm.db != nil {
 			currentSchemaVersion = ftm.db.EntitySchemaVersion(op.TableName)
 		}
-		if op.EntitySchemaVersion != 0 && op.EntitySchemaVersion != currentSchemaVersion {
+		if op.EntitySchemaVersion != currentSchemaVersion {
 			return NewValidationException(fmt.Sprintf(
 				"失败操作 Entity 表结构版本不一致: Table=%s, Recovery=%d, Current=%d",
 				safeValueForLog(op.TableName),

@@ -52,7 +52,12 @@ func TestLocalWriteJournalMovesTerminalFailuresToDeadLetter(t *testing.T) {
 }
 
 func TestLocalWriteJournalRejectsDifferentEntitySchemaVersion(t *testing.T) {
-	journal := NewLocalWriteJournal(t.TempDir(), nil)
+	db := NewDb(nil, 1, nil)
+	db.installEntitySchemaVersions([]EntitySchemaVersionRecord{{
+		TableName: "VersionedEntity",
+		Version:   2,
+	}})
+	journal := NewLocalWriteJournal(t.TempDir(), NewBaseCrudRepository(db))
 	entry := &JournalEntry{
 		TableName:           "VersionedEntity",
 		EntityTypeName:      "VersionedEntity",
@@ -61,5 +66,9 @@ func TestLocalWriteJournalRejectsDifferentEntitySchemaVersion(t *testing.T) {
 	}
 	if err := journal.validateReplaySchemaVersion(entry); err == nil {
 		t.Fatal("different per-entity schema version must be rejected")
+	}
+	entry.EntitySchemaVersion = 0
+	if err := journal.validateReplaySchemaVersion(entry); err == nil {
+		t.Fatal("legacy unversioned payload must be rejected after table version binding")
 	}
 }

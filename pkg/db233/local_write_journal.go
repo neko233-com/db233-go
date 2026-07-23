@@ -965,9 +965,6 @@ func (j *LocalWriteJournal) validateReplaySchemaVersion(entry *JournalEntry) err
 	if entry == nil {
 		return NewValidationException("WAL 条目不能为空")
 	}
-	if entry.EntitySchemaVersion == 0 {
-		return nil
-	}
 	current := j.currentEntitySchemaVersion(entry.TableName)
 	if current == entry.EntitySchemaVersion {
 		return nil

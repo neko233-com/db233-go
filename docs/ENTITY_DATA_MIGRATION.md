@@ -106,7 +106,7 @@ state, err := database.GetEntityMigrationState(ctx, "game")
 WAL 和失败操作会固化对应表版本。回放时版本必须与当前表完全一致；不一致视为失败，
 禁止 ORM 猜测业务数据转换。默认最多执行 2 次，达到上限后完整条目进入私有
 `dead-letter/`，并为每条记录输出独立 ERROR，供人工按主键补偿。旧版无版本恢复文件
-仅保留兼容接管语义。
+在当前表已绑定版本后也视为不一致，禁止静默接管。
 
 禁止 Auto DDL 的启动流程应在 `VerifySchema` 后调用：
 
