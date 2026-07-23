@@ -11,7 +11,7 @@ import (
 // Session、WriteBuffer、WAL 和失败队列快照；调用方随后可安全执行事务删除。
 type PrimaryKeyResetBarrier struct {
 	db                  *Db
-	primaryKey          string
+	primaryKeys         []string
 	previousUnavailable bool
 	mu                  sync.Mutex
 	finalized           bool
@@ -20,12 +20,30 @@ type PrimaryKeyResetBarrier struct {
 // BeginPrimaryKeyReset 开启单主键清理屏障。
 // 调用前业务必须停止该主键的新业务请求并取消业务层 debounce；返回后必须调用 Commit、Abort 或 FailClosed。
 func (db *Db) BeginPrimaryKeyReset(primaryKey any) (*PrimaryKeyResetBarrier, error) {
+	return db.BeginPrimaryKeysReset(primaryKey)
+}
+
+// BeginPrimaryKeysReset 开启多主键原子清理屏障。
+// 用于一个业务对象由多个物理主键持久化的场景；重复主键会自动去重。
+func (db *Db) BeginPrimaryKeysReset(primaryKeys ...any) (*PrimaryKeyResetBarrier, error) {
 	if db == nil {
 		return nil, NewValidationException("Db 不能为 nil")
 	}
-	key := fmt.Sprint(primaryKey)
-	if key == "" || key == "<nil>" {
-		return nil, NewValidationException("PrimaryKey 不能为空")
+	keys := make([]string, 0, len(primaryKeys))
+	seenKeys := make(map[string]struct{}, len(primaryKeys))
+	for _, primaryKey := range primaryKeys {
+		key := fmt.Sprint(primaryKey)
+		if key == "" || key == "<nil>" {
+			return nil, NewValidationException("PrimaryKey 不能为空")
+		}
+		if _, exists := seenKeys[key]; exists {
+			continue
+		}
+		seenKeys[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return nil, NewValidationException("PrimaryKeys 不能为空")
 	}
 
 	db.rotationMu.Lock()
@@ -47,7 +65,7 @@ func (db *Db) BeginPrimaryKeyReset(primaryKey any) (*PrimaryKeyResetBarrier, err
 
 	barrier := &PrimaryKeyResetBarrier{
 		db:                  db,
-		primaryKey:          key,
+		primaryKeys:         keys,
 		previousUnavailable: previousUnavailable,
 	}
 	fail := func(cause error) (*PrimaryKeyResetBarrier, error) {
@@ -59,8 +77,10 @@ func (db *Db) BeginPrimaryKeyReset(primaryKey any) (*PrimaryKeyResetBarrier, err
 	// unavailable 已发布，新 Session/managed write 会立即失败；先关闭目标 Session，
 	// 避免其 dirty 在清理完成后由旧指针再次进入写队列。
 	if sessionRepo != nil {
-		if err := sessionRepo.discardSessionForPrimaryKeyReset(key); err != nil {
-			return fail(fmt.Errorf("丢弃目标 Session: %w", err))
+		for _, key := range keys {
+			if err := sessionRepo.discardSessionForPrimaryKeyReset(key); err != nil {
+				return fail(fmt.Errorf("丢弃目标 Session: primaryKey=%s: %w", safeValueForLog(key), err))
+			}
 		}
 	}
 
@@ -71,25 +91,27 @@ func (db *Db) BeginPrimaryKeyReset(primaryKey any) (*PrimaryKeyResetBarrier, err
 	}
 	currentGeneration := db.databaseGeneration
 
-	if writeJournal != nil {
-		if err := writeJournal.discardPrimaryKeyUnderGenerationBarrier(key, currentGeneration); err != nil {
-			db.generationMu.Unlock()
-			return fail(fmt.Errorf("丢弃目标 WAL: %w", err))
+	for _, key := range keys {
+		if writeJournal != nil {
+			if err := writeJournal.discardPrimaryKeyUnderGenerationBarrier(key, currentGeneration); err != nil {
+				db.generationMu.Unlock()
+				return fail(fmt.Errorf("丢弃目标 WAL: primaryKey=%s: %w", safeValueForLog(key), err))
+			}
 		}
+		if faultTolerantManager != nil {
+			if err := faultTolerantManager.discardPrimaryKeyUnderGenerationBarrier(key, currentGeneration); err != nil {
+				db.generationMu.Unlock()
+				return fail(fmt.Errorf("丢弃目标失败操作: primaryKey=%s: %w", safeValueForLog(key), err))
+			}
+		}
+		bufferedRepositories.Range(func(candidate, _ any) bool {
+			repository, ok := candidate.(*BaseCrudRepository)
+			if ok && repository != nil {
+				repository.discardWriteBufferPrimaryKeyUnderGenerationBarrier(key)
+			}
+			return true
+		})
 	}
-	if faultTolerantManager != nil {
-		if err := faultTolerantManager.discardPrimaryKeyUnderGenerationBarrier(key, currentGeneration); err != nil {
-			db.generationMu.Unlock()
-			return fail(fmt.Errorf("丢弃目标失败操作: %w", err))
-		}
-	}
-	bufferedRepositories.Range(func(candidate, _ any) bool {
-		repository, ok := candidate.(*BaseCrudRepository)
-		if ok && repository != nil {
-			repository.discardWriteBufferPrimaryKeyUnderGenerationBarrier(key)
-		}
-		return true
-	})
 	return barrier, nil
 }
 

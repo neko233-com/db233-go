@@ -25,6 +25,7 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	if _, err := journal.AppendEntities("SaveBatchUpsert", []IDbEntity{
 		&flushTestEntity{PlayerID: "42", Name: "wal"},
 		&flushTestEntity{PlayerID: "43", Name: "keep"},
+		&flushTestEntity{PlayerID: "account-42", Name: "account"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,7 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	sessions.sessions.Store("42", session)
 	db.SessionRepo = sessions
 
-	barrier, err := db.BeginPrimaryKeyReset("42")
+	barrier, err := db.BeginPrimaryKeysReset("42", "account-42", "42")
 	if err != nil {
 		t.Fatal(err)
 	}

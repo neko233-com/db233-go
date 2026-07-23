@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.6] - 2026-07-23
+
+**多物理主键安全清理** — 新增 `BeginPrimaryKeysReset`；同一业务对象可在一个屏障内清理玩家 ID、账号 UID 等多个恢复键。
+
 ## [v1.2.5] - 2026-07-23
 
 **清理事务未知结果 fail-closed** — `PrimaryKeyResetBarrier.FailClosed` 在提交结果不确定时保持 managed write 全局阻断，防止旧状态重新写入。
