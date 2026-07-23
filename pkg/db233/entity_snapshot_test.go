@@ -46,6 +46,7 @@ func (*sessionSnapshotMutexEntity) DeserializeAfterLoadDb() {}
 type sessionSnapshotPrivateRuntimeEntity struct {
 	PlayerID string         `db:"playerId" primary_key:"true"`
 	runtime  map[string]any `db:"-"`
+	Ignored  map[string]any `db:"-" db233_snapshot:"skip"`
 }
 
 func (*sessionSnapshotPrivateRuntimeEntity) TableName() string {
@@ -165,6 +166,7 @@ func TestSnapshotEntitySkipsPrivateRuntimeField(t *testing.T) {
 	entity := &sessionSnapshotPrivateRuntimeEntity{
 		PlayerID: "private-runtime",
 		runtime:  map[string]any{"cache": make(chan struct{})},
+		Ignored:  map[string]any{"cache": make(chan struct{})},
 	}
 	snapshotValue, err := SnapshotEntity(entity)
 	if err != nil {
@@ -173,6 +175,9 @@ func TestSnapshotEntitySkipsPrivateRuntimeField(t *testing.T) {
 	snapshot := snapshotValue.(*sessionSnapshotPrivateRuntimeEntity)
 	if snapshot.runtime != nil {
 		t.Fatal("db:- private runtime field must not be copied into a write snapshot")
+	}
+	if snapshot.Ignored != nil {
+		t.Fatal("db233_snapshot:skip field must not be copied into a write snapshot")
 	}
 }
 
