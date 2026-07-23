@@ -3,6 +3,7 @@ package db233
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -89,7 +90,7 @@ func (db *Db) beginPrimaryKeyReset(
 		if target.PrimaryKey == "" || target.PrimaryKey == "<nil>" {
 			return nil, NewValidationException("Target PrimaryKey 不能为空")
 		}
-		targetIdentity := target.TableName + "\x00" + target.PrimaryKey
+		targetIdentity := strings.ToLower(target.TableName) + "\x00" + target.PrimaryKey
 		if _, exists := seenTargets[targetIdentity]; exists {
 			continue
 		}
@@ -240,7 +241,7 @@ func (wb *WriteBuffer) discardPrimaryKeyUnderGenerationBarrier(targetTableName, 
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 	for tableName, entities := range wb.pending {
-		if targetTableName != "" && tableName != targetTableName {
+		if targetTableName != "" && !strings.EqualFold(tableName, targetTableName) {
 			continue
 		}
 		if _, exists := entities[primaryKey]; !exists {
@@ -286,7 +287,7 @@ func (j *LocalWriteJournal) discardPrimaryKeyUnderGenerationBarrier(tableName, p
 	for _, entry := range j.stateLocked().pendingCache {
 		if entry != nil &&
 			entry.PrimaryKey == primaryKey &&
-			(tableName == "" || entry.TableName == tableName) {
+			(tableName == "" || strings.EqualFold(entry.TableName, tableName)) {
 			ids = append(ids, entry.ID)
 		}
 	}
@@ -320,7 +321,7 @@ func (ftm *FaultTolerantManager) discardPrimaryKeyUnderGenerationBarrier(tableNa
 	for _, operation := range previous {
 		if operation != nil &&
 			fmt.Sprint(operation.PrimaryKey) == primaryKey &&
-			(tableName == "" || operation.TableName == tableName) {
+			(tableName == "" || strings.EqualFold(operation.TableName, tableName)) {
 			continue
 		}
 		remaining = append(remaining, operation)

@@ -69,7 +69,7 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	sessions.sessions.Store("42", session)
 	db.SessionRepo = sessions
 
-	playerTarget, err := NewPrimaryKeyResetTarget("flush_test_entity", "42")
+	playerTarget, err := NewPrimaryKeyResetTarget("FLUSH_TEST_ENTITY", "42")
 	if err != nil {
 		t.Fatal(err)
 	}

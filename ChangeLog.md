@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.8] - 2026-07-23
+
+**MySQL 表名归一化清理** — 精确恢复清理按 MySQL 表名大小写等价规则匹配，兼容 `lower_case_table_names` 环境。
+
 ## [v1.2.7] - 2026-07-23
 
 **表级精确恢复清理** — 新增 `BeginPrimaryKeyTargetsReset`，按 `table + primary key` 清理恢复状态，避免不同表主键同值时误丢 WAL。
