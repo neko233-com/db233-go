@@ -13,7 +13,7 @@
 | 在线每次读都 hit DB（GORM `First`） | `OpenSession` + `session.Get`，命中 L1 |
 | 循环 `Save` / `Update` RTT 爆炸 | `UpdateBatchUpsert` 单条 SQL 多行 |
 | 登录串行查 30+ 张表 | `FindByIdConcurrent` 并发多表 |
-| 高峰写丢数据 | `LocalWriteJournal`（WAL）+ 无限重试 |
+| 高峰写失败 | `LocalWriteJournal`（WAL）+ 默认 2 次重试 + durable dead-letter |
 | ORM 反射 + map 中转 GC 高 | `FastOrmScan` 直扫字段 + `EnableAllocPool` |
 | 冷启动首包慢 | `WarmGameDb` 预热连接池 / Stmt / 元数据 |
 

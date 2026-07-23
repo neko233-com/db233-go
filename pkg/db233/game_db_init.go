@@ -30,6 +30,10 @@ type GameDbOptions struct {
 	// EnableWriteBuffer 是否启用写缓冲（默认 true）。
 	EnableWriteBuffer bool
 
+	// RecoveryMaxAttempts 是 WAL/失败操作进入死信前的最大执行次数。
+	// 0 使用生产默认值 2；负数非法。
+	RecoveryMaxAttempts int
+
 	// EntityTypes 需注册到类型表的所有玩家实体（WAL 回放、预热与 Session）。
 	// 建表/迁移应在 InitGameDb 前显式调用 Db.AutoMigrateSchema，并检查返回值。
 	EntityTypes []IDbEntity
@@ -52,9 +56,10 @@ type GameDbOptions struct {
 // DefaultGameDbOptions 默认游戏服 DB 选项。
 func DefaultGameDbOptions() GameDbOptions {
 	return GameDbOptions{
-		EnableLocalJournal: true,
-		EnableWriteBuffer:  true,
-		EnableEntityCache:  true,
+		EnableLocalJournal:  true,
+		EnableWriteBuffer:   true,
+		EnableEntityCache:   true,
+		RecoveryMaxAttempts: defaultRecoveryMaxAttempts,
 	}
 }
 
@@ -66,6 +71,10 @@ func InitGameDb(db *Db, dbConfig *DbConnectionConfig, opts GameDbOptions) (sessi
 	}
 	if opts.WarmupTimeout < 0 {
 		return nil, NewValidationException("WarmupTimeout 不能为负数")
+	}
+	recoveryMaxAttempts, err := normalizeRecoveryMaxAttempts(opts.RecoveryMaxAttempts)
+	if err != nil {
+		return nil, err
 	}
 	// Init 会修改进程级性能配置与实体注册表。全程串行才能保证失败回滚
 	// 不覆盖另一个 Db 正在提交的全局状态。
@@ -182,7 +191,7 @@ func InitGameDb(db *Db, dbConfig *DbConnectionConfig, opts GameDbOptions) (sessi
 
 	if dbConfig != nil {
 		manager = NewFaultTolerantManager(db, dbConfig)
-		manager.SetNeverDropFailedOps(true)
+		manager.SetRecoveryPolicy(recoveryMaxAttempts)
 		if opts.LocalJournalPath != "" {
 			if err := manager.SetPersistPathStrict(opts.LocalJournalPath); err != nil {
 				return nil, err
@@ -199,6 +208,7 @@ func InitGameDb(db *Db, dbConfig *DbConnectionConfig, opts GameDbOptions) (sessi
 			journalPath = settings.LocalJournalPath
 		}
 		journal = NewLocalWriteJournal(journalPath, repo)
+		journal.SetRecoveryPolicy(recoveryMaxAttempts)
 		if err := journal.ConfigureDatabaseGeneration(opts.DatabaseGeneration); err != nil {
 			return nil, fmt.Errorf("配置 WAL DatabaseGeneration: %w", err)
 		}

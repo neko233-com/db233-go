@@ -970,6 +970,11 @@ log.Printf("10s flush SQL/s=%.2f entities/s=%.2f",
 
 恢复语义是 **at-least-once**，不是跨数据库的 exactly-once。任意 `ExecuteUpdate` 在“服务端已提交、客户端收到连接错误”时可能被重复执行；这类 SQL 必须自行满足幂等性，或携带数据库唯一约束保护的业务幂等键。任何写 API 返回错误时，即使数据已进入 WAL/失败队列，业务层也不得向上游确认成功。
 
+WAL/失败队列默认最多执行 2 次。达到上限后不会丢弃：完整恢复条目写入私有
+`dead-letter/`，每条输出独立 ERROR，正常恢复队列停止无限重试。Entity 生命周期还会
+维护 `db233_entity_schema_versions`；恢复条目固化单表结构版本，版本不一致直接失败，
+禁止 ORM 猜测业务字段转换。
+
 ### SQL 日志隐私
 
 默认只记录 SQL 动词；不记录 SQL 文本、长度、可字典猜测的稳定哈希、绑定参数或驱动错误原文。包级 `Log*` 运行时日志还会把所有裸字符串参数变为仅含类型的摘要，防止表名、列名、路径、配置键或玩家标识意外外泄。临时诊断可调用 `db233.SetLogFullSQL(true)`，完整 SQL 会以安全引用形式输出（控制字符会转义），参数仍不记录。完整 SQL 可能包含调用方自行拼入的字面量，只能在受控环境短时开启，诊断结束后必须恢复为 `false`。公开日志或 HTTP 错误使用 `db233.SafeErrorSummary(err)`；应用若通过 `GetLogger()` 主动记录业务字符串，应自行承担脱敏责任。
@@ -1344,6 +1349,12 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 ## 更新日志
 
 完整记录见 [ChangeLog.md](ChangeLog.md)。
+
+### v1.2.2 (2026-07-23) — 单表结构版本与有界恢复
+
+- 自动维护每张 Entity 表的 `schema_version + schema_fingerprint`
+- WAL/失败队列按单表版本硬校验，默认最多执行 2 次
+- 终态失败写入 durable dead-letter，并逐条输出可人工追踪的 ERROR
 
 ### v1.1.0 (2026-07-22) — 生产一致性与生命周期加固
 

@@ -24,7 +24,7 @@
 1. **有状态游戏逻辑服** — 玩家在线期间读多写少，希望 **内存读、延迟落库**
 2. **登录要拉多表** — `FindByIdConcurrent` 比循环 GORM `First` 少 RTT
 3. **entitysave / 定时存档** — `UpdateBatchUpsert` 代替循环 Update
-4. **云 RDS 抖动** — WAL + FaultTolerant 无限重试
+4. **云 RDS 抖动** — WAL + FaultTolerant 有界重试 + durable dead-letter
 5. **压测证明 GORM 单次读 / 批量写瓶颈** — db233 FastOrmScan + 真批量
 
 ## 什么时候继续用 GORM？

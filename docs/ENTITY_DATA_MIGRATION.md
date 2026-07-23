@@ -96,3 +96,22 @@ state, err := database.GetEntityMigrationState(ctx, "game")
 `EntitySchemaLifecycleReport.Version` 也会返回迁移完成后的同一份版本快照。尚无迁移记录时返回零版本。
 
 业务工程应在自己的 `db_version_migration/` 中维护版本实体和 V1、V2、V3... 声明。db233 只提供通用引擎与权威审计表，避免业务每新增一个版本都要重新发布 ORM。
+
+## 单表结构版本与 WAL
+
+生命周期最终校验成功后，db233 会把每张 Entity 表的结构指纹写入
+`db233_entity_schema_versions`。首次记录版本为 1；字段、类型、主键或索引定义变化时，
+该表版本自动加 1，未变化表保持原版本。
+
+WAL 和失败操作会固化对应表版本。回放时版本必须与当前表完全一致；不一致视为失败，
+禁止 ORM 猜测业务数据转换。默认最多执行 2 次，达到上限后完整条目进入私有
+`dead-letter/`，并为每条记录输出独立 ERROR，供人工按主键补偿。旧版无版本恢复文件
+仅保留兼容接管语义。
+
+禁止 Auto DDL 的启动流程应在 `VerifySchema` 后调用：
+
+```go
+_, err := db.VerifyAndLoadEntitySchemaVersions(ctx, namespace, entities)
+```
+
+缺少版本记录或结构指纹不一致都会 fail-fast。

@@ -51,6 +51,8 @@ type JournalEntry struct {
 	LastError      string    `json:"lastError,omitempty"`
 	// DatabaseGeneration 防止清库后回放旧数据库代次的数据。
 	DatabaseGeneration string `json:"databaseGeneration,omitempty"`
+	// EntitySchemaVersion 防止升级后用新 Entity 结构静默解释旧快照。
+	EntitySchemaVersion int64 `json:"entitySchemaVersion,omitempty"`
 }
 
 type preparedJournalEntity struct {
@@ -63,6 +65,11 @@ type preparedJournalEntity struct {
 type journalReplayItem struct {
 	entry  *JournalEntry
 	entity IDbEntity
+}
+
+type journalReplayFailure struct {
+	entry *JournalEntry
+	cause error
 }
 
 // journalLogRecord 是 pending.ndjson 的版本化追加记录。Delete 只对 EntryID
@@ -93,7 +100,7 @@ type localWriteJournalState struct {
 	tornTailCount      uint64
 }
 
-// LocalWriteJournal 本地预写日志：先落盘再写库，成功后删除；失败则无限重试。
+// LocalWriteJournal 本地预写日志：先落盘再写库，成功后删除；达到上限后转入死信。
 //
 // WAL 提供 at-least-once，而非分布式 exactly-once。Save/Update/UPSERT 应使用稳定
 // 业务主键；任意 ExecuteUpdate 必须由调用方设计为幂等 SQL 或携带业务幂等键。
@@ -103,24 +110,25 @@ type LocalWriteJournal struct {
 	replayMu    sync.Mutex
 	lifecycleMu sync.Mutex
 
-	stopCh             chan struct{}
-	doneCh             chan struct{}
-	intervalChanged    chan struct{}
-	repo               *BaseCrudRepository
-	interval           time.Duration
-	started            bool
-	stopped            bool
-	stopOnce           sync.Once
-	doneOnce           sync.Once
-	operationWG        sync.WaitGroup
-	stopErr            error
-	lastReplayErr      error
-	pathLock           *flock.Flock
-	pathLockPath       string
-	state              *localWriteJournalState
-	rewriteCount       atomic.Uint64
-	databaseGeneration string
-	generationErr      error
+	stopCh              chan struct{}
+	doneCh              chan struct{}
+	intervalChanged     chan struct{}
+	repo                *BaseCrudRepository
+	interval            time.Duration
+	started             bool
+	stopped             bool
+	stopOnce            sync.Once
+	doneOnce            sync.Once
+	operationWG         sync.WaitGroup
+	stopErr             error
+	lastReplayErr       error
+	pathLock            *flock.Flock
+	pathLockPath        string
+	state               *localWriteJournalState
+	rewriteCount        atomic.Uint64
+	databaseGeneration  string
+	generationErr       error
+	recoveryMaxAttempts int
 }
 
 // NewLocalWriteJournal 创建本地 WAL。
@@ -132,14 +140,35 @@ func NewLocalWriteJournal(dir string, repo *BaseCrudRepository) *LocalWriteJourn
 		dir = absolutePath
 	}
 	return &LocalWriteJournal{
-		dir:             dir,
-		stopCh:          make(chan struct{}),
-		doneCh:          make(chan struct{}),
-		intervalChanged: make(chan struct{}, 1),
-		repo:            repo,
-		interval:        5 * time.Second,
-		state:           &localWriteJournalState{},
+		dir:                 dir,
+		stopCh:              make(chan struct{}),
+		doneCh:              make(chan struct{}),
+		intervalChanged:     make(chan struct{}, 1),
+		repo:                repo,
+		interval:            5 * time.Second,
+		recoveryMaxAttempts: defaultRecoveryMaxAttempts,
+		state:               &localWriteJournalState{},
 	}
+}
+
+// SetRecoveryPolicy 配置 WAL 有界重试。
+// 必须在 StartStrict 前调用；0 次数使用默认值 2。
+func (j *LocalWriteJournal) SetRecoveryPolicy(maxAttempts int) {
+	if j == nil {
+		return
+	}
+	normalized, err := normalizeRecoveryMaxAttempts(maxAttempts)
+	if err != nil {
+		LogError("忽略无效 WAL 恢复策略: %s", safeErrorForLog(err))
+		return
+	}
+	j.lifecycleMu.Lock()
+	defer j.lifecycleMu.Unlock()
+	if j.started {
+		LogError("WAL 启动后禁止修改恢复策略")
+		return
+	}
+	j.recoveryMaxAttempts = normalized
 }
 
 // ConfigureDatabaseGeneration 在启动回放前绑定数据库代次。
@@ -514,6 +543,7 @@ func (j *LocalWriteJournal) appendEntitiesInternalUnderGenerationLease(
 			replacement.RetryCount = 0
 			replacement.LastError = ""
 			replacement.DatabaseGeneration = j.databaseGeneration
+			replacement.EntitySchemaVersion = j.currentEntitySchemaVersion(entity.tableName)
 			result = append(result, replacement)
 			updates = append(updates, replacement)
 			records = append(records, journalLogRecord{
@@ -532,14 +562,15 @@ func (j *LocalWriteJournal) appendEntitiesInternalUnderGenerationLease(
 			}
 		}
 		entry := &JournalEntry{
-			ID:                 journalEntryID(now, batchNonce, index),
-			Operation:          operation,
-			TableName:          entity.tableName,
-			PrimaryKey:         entity.primaryKey,
-			EntityTypeName:     entity.entityTypeName,
-			EntityJSON:         append([]byte(nil), entity.entityJSON...),
-			CreatedAt:          now,
-			DatabaseGeneration: j.databaseGeneration,
+			ID:                  journalEntryID(now, batchNonce, index),
+			Operation:           operation,
+			TableName:           entity.tableName,
+			PrimaryKey:          entity.primaryKey,
+			EntityTypeName:      entity.entityTypeName,
+			EntityJSON:          append([]byte(nil), entity.entityJSON...),
+			CreatedAt:           now,
+			DatabaseGeneration:  j.databaseGeneration,
+			EntitySchemaVersion: j.currentEntitySchemaVersion(entity.tableName),
 		}
 		result = append(result, entry)
 		updates = append(updates, entry)
@@ -848,21 +879,17 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 
 	replayErrors := make([]error, 0, 8)
 	suppressedErrors := 0
+	replayFailures := make([]journalReplayFailure, 0, 8)
 	for _, entry := range entries {
+		if versionErr := j.validateReplaySchemaVersion(entry); versionErr != nil {
+			failed++
+			replayFailures = append(replayFailures, journalReplayFailure{entry: entry, cause: versionErr})
+			continue
+		}
 		entity, err := DeserializeEntity(entry.EntityTypeName, entry.EntityJSON)
 		if err != nil {
-			if len(replayErrors) < 16 {
-				LogError("WAL 反序列化失败: id=%s, err=%s", safeValueForLog(entry.ID), safeErrorForLog(err))
-			}
 			failed++
-			replayErrors = appendBoundedRecoveryError(
-				replayErrors,
-				NewQueryExceptionWithCause(
-					err,
-					fmt.Sprintf("反序列化 WAL 条目失败: ID=%s", safeValueForLog(entry.ID)),
-				),
-				&suppressedErrors,
-			)
+			replayFailures = append(replayFailures, journalReplayFailure{entry: entry, cause: err})
 			continue
 		}
 		tableName := j.repo.getTableName(entity)
@@ -873,7 +900,7 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 				safeValueForLog(tableName),
 			))
 			failed++
-			replayErrors = appendBoundedRecoveryError(replayErrors, mismatchErr, &suppressedErrors)
+			replayFailures = append(replayFailures, journalReplayFailure{entry: entry, cause: mismatchErr})
 			continue
 		}
 		if _, exists := grouped[tableName]; !exists {
@@ -903,22 +930,10 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 				entities[index] = item.entity
 			}
 			if err := j.repo.saveBatchUpsertOncePreparedUnderGenerationLease(entities, lockedGeneration); err != nil {
-				if len(replayErrors) < 16 {
-					LogWarn("WAL 回放失败: 表=%s, 数量=%d, err=%s", safeValueForLog(tableName), len(chunk), safeErrorForLog(err))
-				}
 				failed += len(chunk)
-				replayErrors = appendBoundedRecoveryError(
-					replayErrors,
-					NewQueryExceptionWithCause(
-						err,
-						fmt.Sprintf(
-							"回放 WAL 分块失败: Table=%s, Chunk=%d",
-							safeValueForLog(tableName),
-							start/chunkSize,
-						),
-					),
-					&suppressedErrors,
-				)
+				for _, item := range chunk {
+					replayFailures = append(replayFailures, journalReplayFailure{entry: item.entry, cause: err})
+				}
 				continue
 			}
 			for _, item := range chunk {
@@ -928,9 +943,13 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 		}
 	}
 
-	if len(succeededIDs) > 0 {
-		if err := j.removeEntriesWithLifecycleLease(succeededIDs, lockedGeneration); err != nil {
-			replayErrors = appendBoundedRecoveryError(replayErrors, fmt.Errorf("数据库写入成功但 WAL 清理失败: %w", err), &suppressedErrors)
+	if len(succeededIDs) > 0 || len(replayFailures) > 0 {
+		nonTerminalErrors, failurePersistErr := j.persistReplayResultsWithLifecycleLease(succeededIDs, replayFailures, lockedGeneration)
+		for _, nonTerminalErr := range nonTerminalErrors {
+			replayErrors = appendBoundedRecoveryError(replayErrors, nonTerminalErr, &suppressedErrors)
+		}
+		if failurePersistErr != nil {
+			replayErrors = appendBoundedRecoveryError(replayErrors, failurePersistErr, &suppressedErrors)
 		}
 	}
 	if success > 0 {
@@ -940,6 +959,174 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 		replayErrors = append(replayErrors, fmt.Errorf("另有 %d 个 WAL 回放错误已省略", suppressedErrors))
 	}
 	return success, failed, errors.Join(replayErrors...)
+}
+
+func (j *LocalWriteJournal) validateReplaySchemaVersion(entry *JournalEntry) error {
+	if entry == nil {
+		return NewValidationException("WAL 条目不能为空")
+	}
+	if entry.EntitySchemaVersion == 0 {
+		return nil
+	}
+	current := j.currentEntitySchemaVersion(entry.TableName)
+	if current == entry.EntitySchemaVersion {
+		return nil
+	}
+	return NewValidationException(fmt.Sprintf(
+		"WAL Entity 表结构版本不一致: Table=%s, WAL=%d, Current=%d",
+		safeValueForLog(entry.TableName),
+		entry.EntitySchemaVersion,
+		current,
+	))
+}
+
+func (j *LocalWriteJournal) currentEntitySchemaVersion(tableName string) int64 {
+	if j == nil || j.repo == nil || j.repo.db == nil {
+		return 0
+	}
+	return j.repo.db.EntitySchemaVersion(tableName)
+}
+
+// persistReplayResultsWithLifecycleLease 用一次 fsync 清理成功项并持久化失败次数；
+// 达到上限时先写死信，再从 WAL 删除。
+// 死信写入失败时保留原 WAL，保证恢复证据不会因清理顺序丢失。
+func (j *LocalWriteJournal) persistReplayResultsWithLifecycleLease(
+	succeededIDs []string,
+	failures []journalReplayFailure,
+	expectedGeneration string,
+) ([]error, error) {
+	j.journalMu.Lock()
+	defer j.journalMu.Unlock()
+	if err := j.ensureGenerationLocked(); err != nil {
+		return nil, err
+	}
+	if j.repo != nil && j.repo.db != nil && j.databaseGeneration != expectedGeneration {
+		return nil, fmt.Errorf("%w: WAL=%s, Db=%s", ErrDatabaseGenerationChanged, safeValueForLog(j.databaseGeneration), safeValueForLog(expectedGeneration))
+	}
+	if err := j.ensurePendingCacheLoadedLocked(); err != nil {
+		return nil, err
+	}
+
+	state := j.stateLocked()
+	records := make([]journalLogRecord, 0, len(succeededIDs)+len(failures))
+	nonTerminalErrors := make([]error, 0, len(failures))
+	terminalLogs := make([]string, 0, len(failures))
+	seen := make(map[string]struct{}, len(succeededIDs)+len(failures))
+	for _, id := range succeededIDs {
+		key, exists := state.keyByEntryID[id]
+		if !exists {
+			continue
+		}
+		current := state.pendingCache[key]
+		if current == nil || current.ID != id {
+			continue
+		}
+		seen[id] = struct{}{}
+		records = append(records, journalLogRecord{
+			FormatVersion:      journalLogFormatVersion,
+			Kind:               journalLogKindDelete,
+			DatabaseGeneration: j.databaseGeneration,
+			EntryID:            id,
+		})
+	}
+	for _, failure := range failures {
+		if failure.entry == nil || failure.entry.ID == "" {
+			continue
+		}
+		if _, duplicate := seen[failure.entry.ID]; duplicate {
+			continue
+		}
+		seen[failure.entry.ID] = struct{}{}
+		key, exists := state.keyByEntryID[failure.entry.ID]
+		if !exists {
+			continue
+		}
+		current := state.pendingCache[key]
+		if current == nil || current.ID != failure.entry.ID {
+			continue
+		}
+		updated := cloneJournalEntry(current)
+		updated.RetryCount++
+		updated.LastError = safeErrorSummary(failure.cause)
+
+		if updated.RetryCount >= j.recoveryMaxAttempts {
+			path, err := persistRecoveryDeadLetter(j.dir, recoveryDeadLetter{
+				Component:           "wal",
+				EntryID:             updated.ID,
+				TableName:           updated.TableName,
+				PrimaryKey:          updated.PrimaryKey,
+				EntityTypeName:      updated.EntityTypeName,
+				Operation:           updated.Operation,
+				RetryCount:          updated.RetryCount,
+				LastError:           updated.LastError,
+				EntitySchemaVersion: updated.EntitySchemaVersion,
+				CreatedAt:           updated.CreatedAt,
+				TerminalAt:          time.Now(),
+				Payload:             updated,
+			})
+			if err != nil {
+				nonTerminalErrors = append(nonTerminalErrors, fmt.Errorf("WAL 死信持久化失败: ID=%s: %w", safeValueForLog(updated.ID), err))
+				records = append(records, journalLogRecord{
+					FormatVersion:      journalLogFormatVersion,
+					Kind:               journalLogKindUpsert,
+					DatabaseGeneration: j.databaseGeneration,
+					Entry:              updated,
+				})
+				continue
+			}
+			records = append(records, journalLogRecord{
+				FormatVersion:      journalLogFormatVersion,
+				Kind:               journalLogKindDelete,
+				DatabaseGeneration: j.databaseGeneration,
+				EntryID:            updated.ID,
+			})
+			terminalLogs = append(terminalLogs, filepath.Base(path))
+			continue
+		}
+
+		records = append(records, journalLogRecord{
+			FormatVersion:      journalLogFormatVersion,
+			Kind:               journalLogKindUpsert,
+			DatabaseGeneration: j.databaseGeneration,
+			Entry:              updated,
+		})
+		nonTerminalErrors = append(nonTerminalErrors, NewQueryExceptionWithCause(
+			failure.cause,
+			fmt.Sprintf(
+				"WAL 回放失败: ID=%s, Attempt=%d/%d",
+				safeValueForLog(updated.ID),
+				updated.RetryCount,
+				j.recoveryMaxAttempts,
+			),
+		))
+	}
+	if len(records) == 0 {
+		return nonTerminalErrors, nil
+	}
+	if err := j.appendLogRecordsLocked(records); err != nil {
+		j.invalidatePendingCacheLocked()
+		return nonTerminalErrors, err
+	}
+	for _, record := range records {
+		if record.Kind == journalLogKindDelete {
+			j.applyDeleteLocked(record.EntryID)
+		} else {
+			j.applyUpsertLocked(record.Entry)
+		}
+	}
+	j.rewriteCount.Add(1)
+	if len(state.pendingCache) == 0 {
+		if err := removeRecoveryFile(j.journalFile()); err != nil {
+			j.invalidatePendingCacheLocked()
+			return nonTerminalErrors, fmt.Errorf("WAL 结果已持久化但空日志清理失败: %w", err)
+		}
+		state.logRecords = 0
+		state.logBytes = 0
+	}
+	for _, path := range terminalLogs {
+		LogError("WAL 条目重试达到上限，已转入死信，需人工处理: DeadLetterRef=%s", path)
+	}
+	return nonTerminalErrors, nil
 }
 
 func (j *LocalWriteJournal) replayLoop() {

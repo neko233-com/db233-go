@@ -21,12 +21,13 @@ type EntitySchemaLifecycleOptions struct {
 
 // EntitySchemaLifecycleReport 汇总一次完整 Entity 生命周期编排。
 type EntitySchemaLifecycleReport struct {
-	DryRun      bool                      `json:"dryRun"`
-	PreSchema   SchemaMigrationReport     `json:"preSchema"`
-	Data        EntityDataMigrationReport `json:"data"`
-	Finalize    *SchemaMigrationReport    `json:"finalize,omitempty"`
-	FinalSchema SchemaVerificationReport  `json:"finalSchema"`
-	Version     EntityMigrationState      `json:"version"`
+	DryRun        bool                        `json:"dryRun"`
+	PreSchema     SchemaMigrationReport       `json:"preSchema"`
+	Data          EntityDataMigrationReport   `json:"data"`
+	Finalize      *SchemaMigrationReport      `json:"finalize,omitempty"`
+	FinalSchema   SchemaVerificationReport    `json:"finalSchema"`
+	Version       EntityMigrationState        `json:"version"`
+	TableVersions []EntitySchemaVersionRecord `json:"tableVersions"`
 }
 
 // AutoMigrateEntityLifecycle 自动执行 Entity schema 与业务数据迁移的生产编排。
@@ -132,6 +133,12 @@ func (db *Db) AutoMigrateEntityLifecycle(
 	})
 	if err != nil {
 		return report, fmt.Errorf("Entity FinalSchema 校验失败: %w", err)
+	}
+	if !config.DryRun {
+		report.TableVersions, err = syncEntitySchemaVersions(ctx, lockConn, dataConfig.namespace, db, entities)
+		if err != nil {
+			return report, fmt.Errorf("同步 Entity 单表结构版本失败: %w", err)
+		}
 	}
 	exists, err := entityMigrationTableExists(ctx, lockConn)
 	if err != nil {

@@ -26,19 +26,20 @@ var (
 
 // FailedOperation keeps a failed write for retry.
 type FailedOperation struct {
-	ID                 string         `json:"id"`
-	Operation          string         `json:"operation"` // "Save", "Update", "Delete", "SaveBatchUpsert", "ExecuteUpdate"
-	SQL                string         `json:"sql"`
-	Params             []any          `json:"params"`
-	EntityData         map[string]any `json:"entity_data,omitempty"`
-	EntityTypeName     string         `json:"entityTypeName,omitempty"`
-	EntityJSON         []byte         `json:"entityJSON,omitempty"`
-	TableName          string         `json:"table_name"`
-	PrimaryKey         any            `json:"primary_key,omitempty"`
-	Timestamp          time.Time      `json:"timestamp"`
-	RetryCount         int            `json:"retry_count"`
-	LastError          string         `json:"last_error,omitempty"`
-	DatabaseGeneration string         `json:"database_generation,omitempty"`
+	ID                  string         `json:"id"`
+	Operation           string         `json:"operation"` // "Save", "Update", "Delete", "SaveBatchUpsert", "ExecuteUpdate"
+	SQL                 string         `json:"sql"`
+	Params              []any          `json:"params"`
+	EntityData          map[string]any `json:"entity_data,omitempty"`
+	EntityTypeName      string         `json:"entityTypeName,omitempty"`
+	EntityJSON          []byte         `json:"entityJSON,omitempty"`
+	TableName           string         `json:"table_name"`
+	PrimaryKey          any            `json:"primary_key,omitempty"`
+	Timestamp           time.Time      `json:"timestamp"`
+	RetryCount          int            `json:"retry_count"`
+	LastError           string         `json:"last_error,omitempty"`
+	DatabaseGeneration  string         `json:"database_generation,omitempty"`
+	EntitySchemaVersion int64          `json:"entity_schema_version,omitempty"`
 }
 
 // FaultTolerantManager provides health probing and at-least-once retry.
@@ -108,15 +109,31 @@ func NewFaultTolerantManager(db *Db, dbConfig *DbConnectionConfig) *FaultToleran
 		reconnectInterval:    5 * time.Second,
 		healthCheckInterval:  30 * time.Second,
 		healthCheckTimeout:   5 * time.Second,
-		maxRetryAttempts:     0, // 0 = 无限重试，游戏数据绝不丢弃
+		maxRetryAttempts:     defaultRecoveryMaxAttempts,
 		retryInterval:        10 * time.Second,
-		neverDropFailedOps:   true,
+		neverDropFailedOps:   false,
 		stopChan:             make(chan struct{}),
 		lifecycleCtx:         lifecycleCtx,
 		cancelLifecycle:      cancelLifecycle,
 	}
 
 	return ftm
+}
+
+// SetRecoveryPolicy 配置失败操作有界重试。
+func (ftm *FaultTolerantManager) SetRecoveryPolicy(maxAttempts int) {
+	if ftm == nil {
+		return
+	}
+	normalized, err := normalizeRecoveryMaxAttempts(maxAttempts)
+	if err != nil {
+		LogError("忽略无效失败操作恢复策略: %s", safeErrorForLog(err))
+		return
+	}
+	ftm.failedOpsMutex.Lock()
+	defer ftm.failedOpsMutex.Unlock()
+	ftm.maxRetryAttempts = normalized
+	ftm.neverDropFailedOps = false
 }
 
 // SetNeverDropFailedOps 设置是否永不丢弃失败操作（游戏服默认 true）。
@@ -541,6 +558,9 @@ func (ftm *FaultTolerantManager) recordFailedOperationUnderGenerationLease(op *F
 	cloned.Timestamp = now
 	cloned.RetryCount = 0
 	cloned.DatabaseGeneration = ftm.databaseGeneration
+	if ftm.db != nil {
+		cloned.EntitySchemaVersion = ftm.db.EntitySchemaVersion(cloned.TableName)
+	}
 	if cloned.LastError != "" {
 		// LastError 是诊断元数据，不是恢复载荷。公共 API 传入的原始文本可能
 		// 包含 SQL 参数或控制字符，只持久化不可逆摘要。
@@ -716,16 +736,10 @@ func (ftm *FaultTolerantManager) retryFailedOperationsContextWithGeneration(
 			continue
 		}
 		if !ftm.neverDropFailedOps && ftm.maxRetryAttempts > 0 && op.RetryCount >= ftm.maxRetryAttempts {
-			LogError(
-				"操作重试次数已达上限，放弃: ID=%s, Operation=%s",
-				safeValueForLog(op.ID),
-				safeValueForLog(op.Operation),
-			)
-			retryErrors = appendBoundedRecoveryError(
-				retryErrors,
-				NewQueryException(fmt.Sprintf("失败操作已达到重试上限: ID=%s", safeValueForLog(op.ID))),
-				&suppressedErrors,
-			)
+			if err := ftm.moveFailedOperationToDeadLetterLocked(op); err != nil {
+				remainingOps = append(remainingOps, op)
+				retryErrors = appendBoundedRecoveryError(retryErrors, err, &suppressedErrors)
+			}
 			continue
 		}
 
@@ -741,6 +755,13 @@ func (ftm *FaultTolerantManager) retryFailedOperationsContextWithGeneration(
 			continue
 		}
 		op.LastError = safeErrorSummary(executeErr)
+		if !ftm.neverDropFailedOps && ftm.maxRetryAttempts > 0 && op.RetryCount >= ftm.maxRetryAttempts {
+			if err := ftm.moveFailedOperationToDeadLetterLocked(op); err != nil {
+				remainingOps = append(remainingOps, op)
+				retryErrors = appendBoundedRecoveryError(retryErrors, err, &suppressedErrors)
+			}
+			continue
+		}
 		remainingOps = append(remainingOps, op)
 		retryErrors = appendBoundedRecoveryError(
 			retryErrors,
@@ -808,6 +829,18 @@ func (ftm *FaultTolerantManager) executeSaveOrUpdate(ctx context.Context, op *Fa
 	var entityReplayErr error
 	// 优先用实体 JSON 回放（比 SQL 参数更可靠）。Db.Close 会等待本次重试完成。
 	if len(op.EntityJSON) > 0 && op.EntityTypeName != "" {
+		currentSchemaVersion := int64(0)
+		if ftm.db != nil {
+			currentSchemaVersion = ftm.db.EntitySchemaVersion(op.TableName)
+		}
+		if op.EntitySchemaVersion != 0 && op.EntitySchemaVersion != currentSchemaVersion {
+			return NewValidationException(fmt.Sprintf(
+				"失败操作 Entity 表结构版本不一致: Table=%s, Recovery=%d, Current=%d",
+				safeValueForLog(op.TableName),
+				op.EntitySchemaVersion,
+				currentSchemaVersion,
+			))
+		}
 		entity, err := DeserializeEntity(op.EntityTypeName, op.EntityJSON)
 		if err != nil {
 			entityReplayErr = err
@@ -878,6 +911,38 @@ func (ftm *FaultTolerantManager) executeUpdate(ctx context.Context, op *FailedOp
 
 func (ftm *FaultTolerantManager) failedOperationsFileLocked() string {
 	return filepath.Join(ftm.persistPath, "failed_operations.json")
+}
+
+// moveFailedOperationToDeadLetterLocked 先持久化完整恢复证据，再允许调用方移出重试队列。
+// 调用方必须持有 failedOpsMutex。
+func (ftm *FaultTolerantManager) moveFailedOperationToDeadLetterLocked(op *FailedOperation) error {
+	if op == nil {
+		return NewValidationException("失败操作不能为空")
+	}
+	path, err := persistRecoveryDeadLetter(ftm.persistPath, recoveryDeadLetter{
+		Component:           "failed-op",
+		EntryID:             op.ID,
+		TableName:           op.TableName,
+		PrimaryKey:          op.PrimaryKey,
+		EntityTypeName:      op.EntityTypeName,
+		Operation:           op.Operation,
+		RetryCount:          op.RetryCount,
+		LastError:           op.LastError,
+		EntitySchemaVersion: op.EntitySchemaVersion,
+		CreatedAt:           op.Timestamp,
+		TerminalAt:          time.Now(),
+		Payload:             op,
+	})
+	if err != nil {
+		return fmt.Errorf("失败操作死信持久化失败: ID=%s: %w", safeValueForLog(op.ID), err)
+	}
+	LogError(
+		"失败操作重试达到上限，已转入死信，需人工处理: ID=%s, Operation=%s, DeadLetterRef=%s",
+		safeValueForLog(op.ID),
+		safeValueForLog(op.Operation),
+		filepath.Base(path),
+	)
+	return nil
 }
 
 func (ftm *FaultTolerantManager) ensureRecoveryInitialized() error {

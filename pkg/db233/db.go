@@ -88,6 +88,7 @@ type Db struct {
 	generationErr         error
 	generationUnavailable atomic.Bool
 	flushWriteMetrics     flushWriteMetricsCollector
+	entitySchemaVersions  *entitySchemaVersionState
 	closeOnce             sync.Once
 	closeErr              error
 }
@@ -473,6 +474,7 @@ func NewDb(dataSource *sql.DB, dbId int, dbGroup *DbGroup) *Db {
 		DbGroup:              dbGroup,
 		DatabaseType:         EnumDatabaseTypeMySQL, // 默认 MySQL
 		bufferedRepositories: &sync.Map{},
+		entitySchemaVersions: &entitySchemaVersionState{},
 	}
 }
 
@@ -487,6 +489,7 @@ func NewDbWithType(dataSource *sql.DB, dbId int, dbGroup *DbGroup, dbType EnumDa
 		DbGroup:              dbGroup,
 		DatabaseType:         dbType,
 		bufferedRepositories: &sync.Map{},
+		entitySchemaVersions: &entitySchemaVersionState{},
 	}
 }
 
