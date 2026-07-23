@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.7] - 2026-07-23
+
+**表级精确恢复清理** — 新增 `BeginPrimaryKeyTargetsReset`，按 `table + primary key` 清理恢复状态，避免不同表主键同值时误丢 WAL。
+
 ## [v1.2.6] - 2026-07-23
 
 **多物理主键安全清理** — 新增 `BeginPrimaryKeysReset`；同一业务对象可在一个屏障内清理玩家 ID、账号 UID 等多个恢复键。

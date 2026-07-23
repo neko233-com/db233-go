@@ -14,6 +14,8 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	repo := NewBaseCrudRepository(db)
 	GetCrudManagerInstance().AutoInitEntity(&flushTestEntity{})
 	GetEntityTypeRegistry().Register(&flushTestEntity{})
+	GetCrudManagerInstance().AutoInitEntity(&flushTestEntityB{})
+	GetEntityTypeRegistry().Register(&flushTestEntityB{})
 
 	journal := NewLocalWriteJournal(filepath.Join(t.TempDir(), "wal"), repo)
 	if err := journal.ConfigureDatabaseGeneration("epoch"); err != nil {
@@ -26,6 +28,11 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 		&flushTestEntity{PlayerID: "42", Name: "wal"},
 		&flushTestEntity{PlayerID: "43", Name: "keep"},
 		&flushTestEntity{PlayerID: "account-42", Name: "account"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.AppendEntities("SaveBatchUpsert", []IDbEntity{
+		&flushTestEntityB{PlayerID: "42", Gold: 42},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +56,7 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	t.Cleanup(func() { _ = manager.StopStrict() })
 	if err := manager.RecordFailedOperationStrict(&FailedOperation{
 		Operation:  "Save",
-		TableName:  "flush_entities",
+		TableName:  "flush_test_entity",
 		PrimaryKey: "42",
 	}); err != nil {
 		t.Fatal(err)
@@ -62,7 +69,18 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	sessions.sessions.Store("42", session)
 	db.SessionRepo = sessions
 
-	barrier, err := db.BeginPrimaryKeysReset("42", "account-42", "42")
+	playerTarget, err := NewPrimaryKeyResetTarget("flush_test_entity", "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountTarget, err := NewPrimaryKeyResetTarget("flush_test_entity", "account-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	barrier, err := db.BeginPrimaryKeyTargetsReset(
+		[]any{"42"},
+		[]PrimaryKeyResetTarget{playerTarget, accountTarget, playerTarget},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +90,8 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	journal.journalMu.Lock()
 	count := len(journal.stateLocked().pendingCache)
 	journal.journalMu.Unlock()
-	if count != 1 {
-		t.Fatalf("WAL pending=%d, want only non-target", count)
+	if count != 2 {
+		t.Fatalf("WAL pending=%d, want non-target rows including same key in another table", count)
 	}
 	writeBuffer.mu.Lock()
 	bufferSize := writeBuffer.size

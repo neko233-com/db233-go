@@ -11,10 +11,27 @@ import (
 // Session、WriteBuffer、WAL 和失败队列快照；调用方随后可安全执行事务删除。
 type PrimaryKeyResetBarrier struct {
 	db                  *Db
-	primaryKeys         []string
 	previousUnavailable bool
 	mu                  sync.Mutex
 	finalized           bool
+}
+
+// PrimaryKeyResetTarget 描述需要从 managed recovery 状态中精确丢弃的表和主键。
+type PrimaryKeyResetTarget struct {
+	TableName  string
+	PrimaryKey string
+}
+
+// NewPrimaryKeyResetTarget 创建表级精确清理目标。
+func NewPrimaryKeyResetTarget(tableName string, primaryKey any) (PrimaryKeyResetTarget, error) {
+	key := fmt.Sprint(primaryKey)
+	if tableName == "" {
+		return PrimaryKeyResetTarget{}, NewValidationException("TableName 不能为空")
+	}
+	if key == "" || key == "<nil>" {
+		return PrimaryKeyResetTarget{}, NewValidationException("PrimaryKey 不能为空")
+	}
+	return PrimaryKeyResetTarget{TableName: tableName, PrimaryKey: key}, nil
 }
 
 // BeginPrimaryKeyReset 开启单主键清理屏障。
@@ -24,14 +41,38 @@ func (db *Db) BeginPrimaryKeyReset(primaryKey any) (*PrimaryKeyResetBarrier, err
 }
 
 // BeginPrimaryKeysReset 开启多主键原子清理屏障。
-// 用于一个业务对象由多个物理主键持久化的场景；重复主键会自动去重。
+// 兼容无法提供表名的调用方，会跨所有表丢弃同值主键；新代码应优先使用 BeginPrimaryKeyTargetsReset。
 func (db *Db) BeginPrimaryKeysReset(primaryKeys ...any) (*PrimaryKeyResetBarrier, error) {
+	targets := make([]PrimaryKeyResetTarget, 0, len(primaryKeys))
+	for _, primaryKey := range primaryKeys {
+		key := fmt.Sprint(primaryKey)
+		if key == "" || key == "<nil>" {
+			return nil, NewValidationException("PrimaryKey 不能为空")
+		}
+		targets = append(targets, PrimaryKeyResetTarget{PrimaryKey: key})
+	}
+	return db.beginPrimaryKeyReset(primaryKeys, targets)
+}
+
+// BeginPrimaryKeyTargetsReset 开启表名+主键精确清理屏障。
+// sessionKeys 用于丢弃业务 Session；targets 仅删除对应表的 WriteBuffer、WAL 和失败队列记录。
+func (db *Db) BeginPrimaryKeyTargetsReset(
+	sessionKeys []any,
+	targets []PrimaryKeyResetTarget,
+) (*PrimaryKeyResetBarrier, error) {
+	return db.beginPrimaryKeyReset(sessionKeys, targets)
+}
+
+func (db *Db) beginPrimaryKeyReset(
+	sessionKeys []any,
+	targets []PrimaryKeyResetTarget,
+) (*PrimaryKeyResetBarrier, error) {
 	if db == nil {
 		return nil, NewValidationException("Db 不能为 nil")
 	}
-	keys := make([]string, 0, len(primaryKeys))
-	seenKeys := make(map[string]struct{}, len(primaryKeys))
-	for _, primaryKey := range primaryKeys {
+	keys := make([]string, 0, len(sessionKeys))
+	seenKeys := make(map[string]struct{}, len(sessionKeys))
+	for _, primaryKey := range sessionKeys {
 		key := fmt.Sprint(primaryKey)
 		if key == "" || key == "<nil>" {
 			return nil, NewValidationException("PrimaryKey 不能为空")
@@ -42,8 +83,21 @@ func (db *Db) BeginPrimaryKeysReset(primaryKeys ...any) (*PrimaryKeyResetBarrier
 		seenKeys[key] = struct{}{}
 		keys = append(keys, key)
 	}
-	if len(keys) == 0 {
-		return nil, NewValidationException("PrimaryKeys 不能为空")
+	normalizedTargets := make([]PrimaryKeyResetTarget, 0, len(targets))
+	seenTargets := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target.PrimaryKey == "" || target.PrimaryKey == "<nil>" {
+			return nil, NewValidationException("Target PrimaryKey 不能为空")
+		}
+		targetIdentity := target.TableName + "\x00" + target.PrimaryKey
+		if _, exists := seenTargets[targetIdentity]; exists {
+			continue
+		}
+		seenTargets[targetIdentity] = struct{}{}
+		normalizedTargets = append(normalizedTargets, target)
+	}
+	if len(keys) == 0 && len(normalizedTargets) == 0 {
+		return nil, NewValidationException("SessionKeys 和 Targets 不能同时为空")
 	}
 
 	db.rotationMu.Lock()
@@ -65,7 +119,6 @@ func (db *Db) BeginPrimaryKeysReset(primaryKeys ...any) (*PrimaryKeyResetBarrier
 
 	barrier := &PrimaryKeyResetBarrier{
 		db:                  db,
-		primaryKeys:         keys,
 		previousUnavailable: previousUnavailable,
 	}
 	fail := func(cause error) (*PrimaryKeyResetBarrier, error) {
@@ -91,23 +144,25 @@ func (db *Db) BeginPrimaryKeysReset(primaryKeys ...any) (*PrimaryKeyResetBarrier
 	}
 	currentGeneration := db.databaseGeneration
 
-	for _, key := range keys {
+	for _, target := range normalizedTargets {
 		if writeJournal != nil {
-			if err := writeJournal.discardPrimaryKeyUnderGenerationBarrier(key, currentGeneration); err != nil {
+			if err := writeJournal.discardPrimaryKeyUnderGenerationBarrier(target.TableName, target.PrimaryKey, currentGeneration); err != nil {
 				db.generationMu.Unlock()
-				return fail(fmt.Errorf("丢弃目标 WAL: primaryKey=%s: %w", safeValueForLog(key), err))
+				return fail(fmt.Errorf("丢弃目标 WAL: table=%s, primaryKey=%s: %w",
+					safeValueForLog(target.TableName), safeValueForLog(target.PrimaryKey), err))
 			}
 		}
 		if faultTolerantManager != nil {
-			if err := faultTolerantManager.discardPrimaryKeyUnderGenerationBarrier(key, currentGeneration); err != nil {
+			if err := faultTolerantManager.discardPrimaryKeyUnderGenerationBarrier(target.TableName, target.PrimaryKey, currentGeneration); err != nil {
 				db.generationMu.Unlock()
-				return fail(fmt.Errorf("丢弃目标失败操作: primaryKey=%s: %w", safeValueForLog(key), err))
+				return fail(fmt.Errorf("丢弃目标失败操作: table=%s, primaryKey=%s: %w",
+					safeValueForLog(target.TableName), safeValueForLog(target.PrimaryKey), err))
 			}
 		}
 		bufferedRepositories.Range(func(candidate, _ any) bool {
 			repository, ok := candidate.(*BaseCrudRepository)
 			if ok && repository != nil {
-				repository.discardWriteBufferPrimaryKeyUnderGenerationBarrier(key)
+				repository.discardWriteBufferPrimaryKeyUnderGenerationBarrier(target.TableName, target.PrimaryKey)
 			}
 			return true
 		})
@@ -164,7 +219,7 @@ func (barrier *PrimaryKeyResetBarrier) finish() error {
 	return nil
 }
 
-func (r *BaseCrudRepository) discardWriteBufferPrimaryKeyUnderGenerationBarrier(primaryKey string) {
+func (r *BaseCrudRepository) discardWriteBufferPrimaryKeyUnderGenerationBarrier(tableName, primaryKey string) {
 	if r == nil {
 		return
 	}
@@ -172,11 +227,11 @@ func (r *BaseCrudRepository) discardWriteBufferPrimaryKeyUnderGenerationBarrier(
 	writeBuffer := r.writeBuffer
 	r.wbMu.Unlock()
 	if writeBuffer != nil {
-		writeBuffer.discardPrimaryKeyUnderGenerationBarrier(primaryKey)
+		writeBuffer.discardPrimaryKeyUnderGenerationBarrier(tableName, primaryKey)
 	}
 }
 
-func (wb *WriteBuffer) discardPrimaryKeyUnderGenerationBarrier(primaryKey string) {
+func (wb *WriteBuffer) discardPrimaryKeyUnderGenerationBarrier(targetTableName, primaryKey string) {
 	if wb == nil {
 		return
 	}
@@ -185,6 +240,9 @@ func (wb *WriteBuffer) discardPrimaryKeyUnderGenerationBarrier(primaryKey string
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 	for tableName, entities := range wb.pending {
+		if targetTableName != "" && tableName != targetTableName {
+			continue
+		}
 		if _, exists := entities[primaryKey]; !exists {
 			continue
 		}
@@ -200,7 +258,7 @@ func (wb *WriteBuffer) discardPrimaryKeyUnderGenerationBarrier(primaryKey string
 	}
 }
 
-func (j *LocalWriteJournal) discardPrimaryKeyUnderGenerationBarrier(primaryKey, expectedGeneration string) error {
+func (j *LocalWriteJournal) discardPrimaryKeyUnderGenerationBarrier(tableName, primaryKey, expectedGeneration string) error {
 	if j == nil {
 		return nil
 	}
@@ -226,7 +284,9 @@ func (j *LocalWriteJournal) discardPrimaryKeyUnderGenerationBarrier(primaryKey, 
 	}
 	ids := make([]string, 0)
 	for _, entry := range j.stateLocked().pendingCache {
-		if entry != nil && entry.PrimaryKey == primaryKey {
+		if entry != nil &&
+			entry.PrimaryKey == primaryKey &&
+			(tableName == "" || entry.TableName == tableName) {
 			ids = append(ids, entry.ID)
 		}
 	}
@@ -234,7 +294,7 @@ func (j *LocalWriteJournal) discardPrimaryKeyUnderGenerationBarrier(primaryKey, 
 	return j.removeEntriesWithLifecycleLease(ids, expectedGeneration)
 }
 
-func (ftm *FaultTolerantManager) discardPrimaryKeyUnderGenerationBarrier(primaryKey, expectedGeneration string) error {
+func (ftm *FaultTolerantManager) discardPrimaryKeyUnderGenerationBarrier(tableName, primaryKey, expectedGeneration string) error {
 	if ftm == nil {
 		return nil
 	}
@@ -258,7 +318,9 @@ func (ftm *FaultTolerantManager) discardPrimaryKeyUnderGenerationBarrier(primary
 	previous := ftm.failedOps
 	remaining := make([]*FailedOperation, 0, len(previous))
 	for _, operation := range previous {
-		if operation != nil && fmt.Sprint(operation.PrimaryKey) == primaryKey {
+		if operation != nil &&
+			fmt.Sprint(operation.PrimaryKey) == primaryKey &&
+			(tableName == "" || operation.TableName == tableName) {
 			continue
 		}
 		remaining = append(remaining, operation)
