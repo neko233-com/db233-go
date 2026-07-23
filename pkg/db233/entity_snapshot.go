@@ -208,6 +208,12 @@ func (state *entitySnapshotState) clone(value reflect.Value, depth int) (reflect
 			fieldType := value.Type().Field(index)
 			fieldValue := value.Field(index)
 			if fieldType.PkgPath != "" {
+				// 非导出且明确标记为 db:"-" 的字段是实体私有运行态，
+				// 不参与后续 SQL 映射；保留零值可避免把互斥锁、缓存 map
+				// 或自引用对象带入异步写入快照。
+				if fieldType.Tag.Get("db") == "-" {
+					continue
+				}
 				if unsafeEntitySnapshotRuntimeType(fieldValue.Type()) {
 					continue
 				}

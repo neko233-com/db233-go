@@ -43,6 +43,17 @@ func (*sessionSnapshotMutexEntity) TableName() string       { return "session_sn
 func (*sessionSnapshotMutexEntity) SerializeBeforeSaveDb()  {}
 func (*sessionSnapshotMutexEntity) DeserializeAfterLoadDb() {}
 
+type sessionSnapshotPrivateRuntimeEntity struct {
+	PlayerID string         `db:"playerId" primary_key:"true"`
+	runtime  map[string]any `db:"-"`
+}
+
+func (*sessionSnapshotPrivateRuntimeEntity) TableName() string {
+	return "session_snapshot_private_runtime"
+}
+func (*sessionSnapshotPrivateRuntimeEntity) SerializeBeforeSaveDb()  {}
+func (*sessionSnapshotPrivateRuntimeEntity) DeserializeAfterLoadDb() {}
+
 type sessionSnapshotSameRootEntity struct {
 	PlayerID string `db:"playerId" primary_key:"true"`
 }
@@ -147,6 +158,21 @@ func TestSnapshotEntityDeepClonePreservesCyclesAndShapes(t *testing.T) {
 	}
 	if !snapshot.PanicHook {
 		t.Fatal("db:\"-\" 标量字段未保留")
+	}
+}
+
+func TestSnapshotEntitySkipsPrivateRuntimeField(t *testing.T) {
+	entity := &sessionSnapshotPrivateRuntimeEntity{
+		PlayerID: "private-runtime",
+		runtime:  map[string]any{"cache": make(chan struct{})},
+	}
+	snapshotValue, err := SnapshotEntity(entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := snapshotValue.(*sessionSnapshotPrivateRuntimeEntity)
+	if snapshot.runtime != nil {
+		t.Fatal("db:- private runtime field must not be copied into a write snapshot")
 	}
 }
 
