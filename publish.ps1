@@ -107,7 +107,7 @@ $version = (Get-Content version.txt -Raw).Trim()
 if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
     Fail 'version.txt 必须是 vX.Y.Z'
 }
-foreach ($releaseDocument in @('README.md', 'CHANGELOG.md')) {
+foreach ($releaseDocument in @('README.md', 'ChangeLog.md')) {
     if (-not (Select-String -LiteralPath $releaseDocument -SimpleMatch $version -Quiet)) {
         Fail "$releaseDocument 未包含版本 $version"
     }

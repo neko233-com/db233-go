@@ -16,7 +16,7 @@
 | 压测怎么跑、通过标准 | [BENCHMARK.md](./BENCHMARK.md) |
 | 优化建议落地对照 | [db233优化落地对照.md](./db233优化落地对照.md) |
 | 常见问题 | [FAQ.md](./FAQ.md) |
-| 发版说明 | [../CHANGELOG.md](../CHANGELOG.md) |
+| 发版说明 | [../ChangeLog.md](../ChangeLog.md) |
 
 ## 核心 API 速查
 

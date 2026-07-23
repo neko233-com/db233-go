@@ -62,5 +62,5 @@ bash ./scripts/run-benchmark.sh
 
 - [ ] `scripts/run-benchmark.ps1` 全绿
 - [ ] `version.txt` = `v1.1.0`
-- [ ] `CHANGELOG.md` 含 v1.1.0
+- [ ] `ChangeLog.md` 含 v1.1.0
 - [ ] `go test ./tests/ -short` CI 快速模式可过（跳过 MySQL 重测项）

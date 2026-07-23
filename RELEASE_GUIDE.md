@@ -5,7 +5,7 @@
 ## 1. 在 PR 中准备版本
 
 1. 按 SemVer 更新 `version.txt`，格式必须为 `vX.Y.Z`。
-2. 更新 `CHANGELOG.md` 和受影响文档。
+2. 更新 `ChangeLog.md` 和受影响文档。
 3. 运行本地门禁：
 
 ```powershell

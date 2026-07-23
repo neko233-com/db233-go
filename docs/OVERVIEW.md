@@ -51,7 +51,7 @@ bag := session.Get(&PlayerBagEntity{}).(*PlayerBagEntity) // 内存读，不查�
 
 ## 版本与许可
 
-- 当前稳定版：**v1.1.0**（见 [CHANGELOG.md](../CHANGELOG.md)）
+- 当前稳定版：**v1.1.0**（见 [ChangeLog.md](../ChangeLog.md)）
 - 许可：**Apache-2.0**
 
 ## 相关链接

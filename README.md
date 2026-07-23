@@ -1343,7 +1343,7 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 
 ## 更新日志
 
-完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+完整记录见 [ChangeLog.md](ChangeLog.md)。
 
 ### v1.1.0 (2026-07-22) — 生产一致性与生命周期加固
 
@@ -1366,7 +1366,7 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 ### v1.0.1 (2026-05-30) — 性能正式化
 
 - FastOrmScan、对象池、冷启动预热、发版 benchmark 门禁
-- 详见 [CHANGELOG.md](CHANGELOG.md)
+- 详见 [ChangeLog.md](ChangeLog.md)
 
 ### v1.0.0 (2026-05-30) — 生产就绪：游戏服 Session 缓存 + WAL + 连接池
 
