@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.5] - 2026-07-23
+
+**清理事务未知结果 fail-closed** — `PrimaryKeyResetBarrier.FailClosed` 在提交结果不确定时保持 managed write 全局阻断，防止旧状态重新写入。
+
 ## [v1.2.4] - 2026-07-23
 
 **单主键安全清理屏障** — 新增 `BeginPrimaryKeyReset`；在线清理玩家前丢弃对应 Session、WriteBuffer、WAL 和失败队列，防止事务删除后旧快照复活。

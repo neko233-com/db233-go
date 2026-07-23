@@ -18,7 +18,7 @@ type PrimaryKeyResetBarrier struct {
 }
 
 // BeginPrimaryKeyReset 开启单主键清理屏障。
-// 调用前业务必须停止该主键的新业务请求并取消业务层 debounce；返回后必须调用 Commit 或 Abort。
+// 调用前业务必须停止该主键的新业务请求并取消业务层 debounce；返回后必须调用 Commit、Abort 或 FailClosed。
 func (db *Db) BeginPrimaryKeyReset(primaryKey any) (*PrimaryKeyResetBarrier, error) {
 	if db == nil {
 		return nil, NewValidationException("Db 不能为 nil")
@@ -101,6 +101,29 @@ func (barrier *PrimaryKeyResetBarrier) Commit() error {
 // Abort 在业务删除事务回滚后解除屏障；已丢弃的旧内存快照不会恢复。
 func (barrier *PrimaryKeyResetBarrier) Abort() error {
 	return barrier.finish()
+}
+
+// FailClosed 在业务删除事务提交结果未知时结束屏障，但保持数据库 managed write 全局阻断。
+// 调用方必须停止服务并人工确认数据库状态；禁止在当前进程继续写库。
+func (barrier *PrimaryKeyResetBarrier) FailClosed(cause error) error {
+	if barrier == nil || barrier.db == nil {
+		return NewValidationException("PrimaryKeyResetBarrier 不能为空")
+	}
+	if cause == nil {
+		cause = NewQueryException("单主键清理事务结果未知")
+	}
+	barrier.mu.Lock()
+	defer barrier.mu.Unlock()
+	if barrier.finalized {
+		return NewValidationException("PrimaryKeyResetBarrier 已结束")
+	}
+	barrier.finalized = true
+	blockedErr := errors.Join(ErrDatabaseGenerationBlocked, cause)
+	barrier.db.generationErr = blockedErr
+	barrier.db.generationUnavailable.Store(true)
+	barrier.db.generationMu.Unlock()
+	barrier.db.rotationMu.Unlock()
+	return blockedErr
 }
 
 func (barrier *PrimaryKeyResetBarrier) finish() error {

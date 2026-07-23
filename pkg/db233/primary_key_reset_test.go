@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -87,5 +88,29 @@ func TestPrimaryKeyResetBarrierDiscardsAllManagedRecoveryState(t *testing.T) {
 	}
 	if db.isDatabaseGenerationUnavailable() {
 		t.Fatal("managed writes remained blocked after barrier commit")
+	}
+}
+
+func TestPrimaryKeyResetBarrierFailClosedBlocksManagedWrites(t *testing.T) {
+	db := NewDb(nil, 1, nil)
+	if err := db.configureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	barrier, err := db.BeginPrimaryKeyReset("42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitErr := errors.New("commit result unknown")
+	blockedErr := barrier.FailClosed(commitErr)
+	if !errors.Is(blockedErr, ErrDatabaseGenerationBlocked) || !errors.Is(blockedErr, commitErr) {
+		t.Fatalf("FailClosed error=%v", blockedErr)
+	}
+	if !db.isDatabaseGenerationUnavailable() {
+		t.Fatal("managed writes were not blocked")
+	}
+	repo := NewBaseCrudRepository(db)
+	writeBuffer := newWriteBufferForGeneration(repo, "epoch")
+	if _, err := writeBuffer.Enqueue(&flushTestEntity{PlayerID: "42", Name: "blocked"}); !errors.Is(err, ErrDatabaseGenerationBlocked) {
+		t.Fatalf("FailClosed 后 Enqueue error=%v", err)
 	}
 }
