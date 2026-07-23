@@ -1350,6 +1350,11 @@ schema, plan, err := db233.ApplyTrackingSchemaFile(db, "configs/tracking-schema.
 
 完整记录见 [ChangeLog.md](ChangeLog.md)。
 
+### v1.2.4 (2026-07-23) — 单主键安全清理屏障
+
+- 新增 `BeginPrimaryKeyReset`，在线清理玩家前原子丢弃对应 Session、WriteBuffer、WAL 和失败队列
+- 与整库 `DatabaseGenerationTransition` 分层，避免清玩家后旧快照复活
+
 ### v1.2.3 (2026-07-23) — 严格单表恢复版本
 
 - 当前表已绑定版本时，旧版无版本恢复条目也按不一致处理，禁止静默接管

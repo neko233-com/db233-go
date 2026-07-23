@@ -1189,6 +1189,15 @@ func (sr *SessionRepository) CloseSession(playerID string) error {
 	return nil
 }
 
+// discardSessionForPrimaryKeyReset 丢弃目标 Session 且不刷写 dirty。
+// 仅允许 Db 在已发布全局 managed-write 屏障后调用。
+func (sr *SessionRepository) discardSessionForPrimaryKeyReset(playerID string) error {
+	if sr == nil {
+		return nil
+	}
+	return sr.removeSession(playerID, false)
+}
+
 func (sr *SessionRepository) removeSession(playerID string, flushFirst bool) error {
 	var operation *sessionOperation
 	var session *PlayerSession

@@ -24,6 +24,10 @@ sessionRepo, err := db233.InitGameDb(db, dbConfig, opts)
 
 首次从旧版本升级前应先优雅停服并排空旧 WAL/失败队列。没有 generation 元数据的遗留恢复文件无法证明属于当前数据库，会被隔离而不会自动回放。
 
+完整删库/重建后，业务必须生成新 `DatabaseGeneration`。旧 generation 的 WAL 和失败队列会被隔离，禁止回放。只删除业务表却保留原 generation 元数据无法与“业务表本来为空”可靠区分，属于禁止的运维操作。
+
+在线清理单个玩家等同一主键数据时，使用 `Db.BeginPrimaryKeyReset(primaryKey)`。该屏障会暂时拒绝 managed write，等待已准入写入结束，并丢弃目标主键的 Session、WriteBuffer、WAL 和失败队列；业务删除事务提交后调用 `Commit`，回滚后调用 `Abort`。业务层 debounce 必须在开启屏障前取消。
+
 ## 运行中安全清库
 
 清库前应先关闭登录入口并暂停业务写入，以缩短屏障等待时间。`BeginDatabaseGenerationTransition` 会原子地拒绝新的 db233 managed write，并严格排空已准入的 Session、WriteBuffer、WAL 与失败重试；调用方不需要在屏障外自行 Flush。

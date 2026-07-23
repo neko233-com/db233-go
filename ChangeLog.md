@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.4] - 2026-07-23
+
+**单主键安全清理屏障** — 新增 `BeginPrimaryKeyReset`；在线清理玩家前丢弃对应 Session、WriteBuffer、WAL 和失败队列，防止事务删除后旧快照复活。
+
 ## [v1.2.3] - 2026-07-23
 
 **严格单表恢复版本** — 当前 Entity 表已绑定版本时，无版本旧 WAL/失败操作也视为不一致，禁止升级后静默解释旧快照。
