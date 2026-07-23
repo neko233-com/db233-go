@@ -171,6 +171,10 @@ func TestEntitySchemaLifecycleProductionMySQL(t *testing.T) {
 	prePermissions := db233.DefaultSchemaMigrationPermissions()
 	finalizePermissions := db233.DefaultSchemaMigrationPermissions()
 	finalizePermissions.DeleteColumn = true
+	finalizePermissions.AllowedDeleteColumns = []db233.SchemaMigrationTarget{{
+		Table:  entityLifecycleIntegrationTable,
+		Object: "old_name",
+	}}
 	report, err := database.AutoMigrateEntityLifecycle(ctx, []any{&entityLifecycleV2{}},
 		&db233.EntitySchemaLifecycleOptions{
 			Namespace:            entityLifecycleIntegrationNamespace,

@@ -117,6 +117,10 @@ func TestSchemaMigrationProductionMySQL(t *testing.T) {
 	}
 	permissions := db233.DefaultSchemaMigrationPermissions()
 	permissions.UpdateColumn = true
+	permissions.AllowedUpdateColumns = []db233.SchemaMigrationTarget{{
+		Table:  schemaMigrationIntegrationTable,
+		Object: "name",
+	}}
 	repaired, err := database.AutoMigrateSchema(ctx, []any{&schemaMigrationEntityV2{}}, &db233.SchemaMigrationOptions{
 		Permissions: &permissions,
 	})

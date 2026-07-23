@@ -61,6 +61,18 @@ report, err := database.AutoMigrateEntityLifecycle(ctx, entities,
 
 生产不应默认设置 `FinalizePermissions.DeleteColumn/DeleteIndex`。删除动作应作为明确的收缩版本发布，并在旧程序不再运行、迁移校验已通过后启用。
 
+改列、删列、替换索引和删索引必须同时开启分类权限并精确点名目标：
+
+```go
+finalize := db233.DefaultSchemaMigrationPermissions()
+finalize.DeleteColumn = true
+finalize.AllowedDeleteColumns = []db233.SchemaMigrationTarget{{
+    Table: "PlayerEntity", Object: "legacyScore",
+}}
+```
+
+只设置 `DeleteColumn=true` 不会删除任何列。新增表、列、索引仍使用安全默认自动完成。
+
 ## 原子性、并发与失败
 
 - MySQL advisory lock 保证同一数据库、同一 Namespace 只有一个实例迁移。

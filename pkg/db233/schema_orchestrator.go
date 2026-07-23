@@ -28,13 +28,24 @@ var ErrSchemaVerificationFailed = errors.New("db233: schema verification failed"
 // 零值拒绝全部变更；SchemaMigrationOptions.Permissions 为 nil 时使用
 // DefaultSchemaMigrationPermissions（只允许安全的增量操作）。
 type SchemaMigrationPermissions struct {
-	CreateTable  bool `json:"createTable"`
-	CreateColumn bool `json:"createColumn"`
-	CreateIndex  bool `json:"createIndex"`
-	UpdateColumn bool `json:"updateColumn"`
-	DeleteColumn bool `json:"deleteColumn"`
-	ReplaceIndex bool `json:"replaceIndex"`
-	DeleteIndex  bool `json:"deleteIndex"`
+	CreateTable           bool                    `json:"createTable"`
+	CreateColumn          bool                    `json:"createColumn"`
+	CreateIndex           bool                    `json:"createIndex"`
+	UpdateColumn          bool                    `json:"updateColumn"`
+	DeleteColumn          bool                    `json:"deleteColumn"`
+	ReplaceIndex          bool                    `json:"replaceIndex"`
+	DeleteIndex           bool                    `json:"deleteIndex"`
+	AllowedUpdateColumns  []SchemaMigrationTarget `json:"allowedUpdateColumns,omitempty"`
+	AllowedDeleteColumns  []SchemaMigrationTarget `json:"allowedDeleteColumns,omitempty"`
+	AllowedReplaceIndexes []SchemaMigrationTarget `json:"allowedReplaceIndexes,omitempty"`
+	AllowedDeleteIndexes  []SchemaMigrationTarget `json:"allowedDeleteIndexes,omitempty"`
+}
+
+// SchemaMigrationTarget 精确授权一张表中的一个列或索引。
+// 表名和对象名不区分大小写；破坏性权限即使开启，也必须同时命中目标清单。
+type SchemaMigrationTarget struct {
+	Table  string `json:"table"`
+	Object string `json:"object"`
 }
 
 // DefaultSchemaMigrationPermissions 返回生产安全默认值：只建表、增列和增索引。
@@ -882,6 +893,21 @@ func buildSchemaMigrationPlan(
 				}
 				continue
 			}
+			if !schemaMigrationTargetAllowed(permissions.AllowedUpdateColumns, spec.tableName, name) {
+				tableReport.BlockedIssues = append(tableReport.BlockedIssues,
+					blockedSchemaIssue(
+						schemaColumnUpdateIssue(
+							verification.Issues,
+							name,
+							typeMismatch,
+							nullMismatch,
+							autoIncrementMismatch,
+						),
+						"allowedUpdateColumns",
+					),
+				)
+				continue
+			}
 			statement, err := strategy.GenerateModifyColumnSQL(spec.tableName, field, name)
 			if err != nil {
 				return nil, NewConfigurationExceptionWithCause(err, fmt.Sprintf(
@@ -926,6 +952,12 @@ func buildSchemaMigrationPlan(
 				)
 				continue
 			}
+			if !schemaMigrationTargetAllowed(permissions.AllowedReplaceIndexes, spec.tableName, expected.IndexName) {
+				tableReport.BlockedIssues = append(tableReport.BlockedIssues,
+					blockedSchemaIssue(issue, "allowedReplaceIndexes"),
+				)
+				continue
+			}
 			dropStatement, err := strategy.GenerateDropIndexSQL(spec.tableName, expected.IndexName)
 			if err != nil {
 				return nil, NewConfigurationExceptionWithCause(err, fmt.Sprintf(
@@ -962,6 +994,12 @@ func buildSchemaMigrationPlan(
 				)
 				continue
 			}
+			if !schemaMigrationTargetAllowed(permissions.AllowedDeleteIndexes, spec.tableName, name) {
+				tableReport.BlockedIssues = append(tableReport.BlockedIssues,
+					blockedSchemaIssue(issue, "allowedDeleteIndexes"),
+				)
+				continue
+			}
 			statement, err := strategy.GenerateDropIndexSQL(spec.tableName, name)
 			if err != nil {
 				return nil, NewConfigurationExceptionWithCause(err, fmt.Sprintf(
@@ -993,13 +1031,19 @@ func buildSchemaMigrationPlan(
 				)
 				continue
 			}
+			if !schemaMigrationTargetAllowed(permissions.AllowedDeleteColumns, spec.tableName, name) {
+				tableReport.BlockedIssues = append(tableReport.BlockedIssues,
+					blockedSchemaIssue(issue, "allowedDeleteColumns"),
+				)
+				continue
+			}
 			if actualColumns[key].IsPrimary {
 				tableReport.BlockedIssues = append(tableReport.BlockedIssues,
 					blockedSchemaIssue(issue, "primaryKeyChange"),
 				)
 				continue
 			}
-			if dependency := schemaUndroppedIndexDependency(name, actualIndexes, spec.indexes, permissions); dependency != "" {
+			if dependency := schemaUndroppedIndexDependency(spec.tableName, name, actualIndexes, spec.indexes, permissions); dependency != "" {
 				issue.Actual = strings.TrimSpace(issue.Actual + ", index=" + dependency)
 				tableReport.BlockedIssues = append(tableReport.BlockedIssues,
 					blockedSchemaIssue(issue, "deleteColumnDependency"),
@@ -1086,6 +1130,7 @@ func sortedSchemaIndexKeys(indexes map[string]*IndexMetaData) []string {
 }
 
 func schemaUndroppedIndexDependency(
+	tableName string,
 	columnName string,
 	actualIndexes map[string]*IndexMetaData,
 	expectedIndexes map[string]*IndexMetaData,
@@ -1103,17 +1148,53 @@ func schemaUndroppedIndexDependency(
 		}
 		expected, declared := expectedIndexes[key]
 		if !declared {
-			if permissions.DeleteIndex {
+			if permissions.DeleteIndex &&
+				schemaMigrationTargetAllowed(permissions.AllowedDeleteIndexes, tableName, actual.IndexName) {
 				continue
 			}
 			return actual.IndexName
 		}
-		if !schemaIndexesEqual(actual, expected) && permissions.ReplaceIndex {
+		if !schemaIndexesEqual(actual, expected) &&
+			permissions.ReplaceIndex &&
+			schemaMigrationTargetAllowed(permissions.AllowedReplaceIndexes, tableName, actual.IndexName) {
 			continue
 		}
 		return actual.IndexName
 	}
 	return ""
+}
+
+func schemaMigrationTargetAllowed(
+	targets []SchemaMigrationTarget,
+	tableName string,
+	objectName string,
+) bool {
+	for _, target := range targets {
+		if strings.EqualFold(strings.TrimSpace(target.Table), strings.TrimSpace(tableName)) &&
+			strings.EqualFold(strings.TrimSpace(target.Object), strings.TrimSpace(objectName)) {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaColumnUpdateIssue(
+	issues []SchemaIssue,
+	columnName string,
+	typeMismatch bool,
+	nullMismatch bool,
+	autoIncrementMismatch bool,
+) SchemaIssue {
+	if typeMismatch {
+		return findSchemaIssue(issues, SchemaIssueColumnType, columnName)
+	}
+	if nullMismatch {
+		return findSchemaIssue(issues, SchemaIssueColumnNullability, columnName)
+	}
+	if autoIncrementMismatch {
+		return findSchemaIssue(issues, SchemaIssueColumnAutoIncrement, columnName)
+	}
+	return SchemaIssue{Object: columnName}
 }
 
 func schemaIndexContainsColumn(index *IndexMetaData, columnName string) bool {

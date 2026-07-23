@@ -310,6 +310,10 @@ func TestSchemaOrchestratorAutoIncrementVerificationAndPlan(t *testing.T) {
 	}
 	permissions := DefaultSchemaMigrationPermissions()
 	permissions.UpdateColumn = true
+	permissions.AllowedUpdateColumns = []SchemaMigrationTarget{{
+		Table:  "schema_auto_increment",
+		Object: "id",
+	}}
 	report, err := db.AutoMigrateSchema(context.Background(), []any{&schemaOrchestratorAutoIncrementEntity{}}, &SchemaMigrationOptions{
 		MaxConcurrency: 1,
 		DryRun:         true,
@@ -325,6 +329,17 @@ func TestSchemaOrchestratorAutoIncrementVerificationAndPlan(t *testing.T) {
 	statement := report.Tables[0].Actions[0].Statement
 	if !strings.Contains(statement, "AUTO_INCREMENT") || !strings.Contains(statement, "NOT NULL") {
 		t.Fatalf("modify DDL lost independent tags: %s", statement)
+	}
+}
+
+func TestSchemaMigrationTargetRequiresExactTableAndObject(t *testing.T) {
+	targets := []SchemaMigrationTarget{{Table: "PlayerEntity", Object: "legacyScore"}}
+	if !schemaMigrationTargetAllowed(targets, "playerentity", "LEGACYSCORE") {
+		t.Fatal("精确目标匹配应忽略大小写")
+	}
+	if schemaMigrationTargetAllowed(targets, "PlayerEntity", "otherColumn") ||
+		schemaMigrationTargetAllowed(nil, "PlayerEntity", "legacyScore") {
+		t.Fatal("未点名的破坏性目标不应获得授权")
 	}
 }
 
