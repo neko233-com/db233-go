@@ -30,6 +30,7 @@
 | 本地凭据（勿提交 Git） | `config.local.json` / `config.local.yaml` |
 | 数据库代次屏障 | `DatabaseGeneration` / `BeginDatabaseGenerationTransition` |
 | 统一建表与迁移 | [SCHEMA_MIGRATION.md](SCHEMA_MIGRATION.md) |
+| Entity 版本化数据升级 | [ENTITY_DATA_MIGRATION.md](ENTITY_DATA_MIGRATION.md) |
 | 性能 JSON | `config/db233-performance.*.example.json` |
 | 私密原子监控导出 | `MonitoringReportGenerator.ExportReport` / `MetricsCollector.ExportToFile` |
 

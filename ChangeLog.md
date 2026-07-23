@@ -2,6 +2,16 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.0] - 2026-07-23
+
+**Entity 生产升级生命周期** — 在自动建表基础上增加不可变的 Go 数据迁移、迁移后校验、显式收缩和数据库版本查询。
+
+- 新增 `AutoMigrateEntityLifecycle`，统一编排 PreSchema、DataMigration、FinalizeSchema 和最终验证。
+- 新增 `EntityDataMigration`，每个 `Up + Verify + 审计记录` 在同一事务提交。
+- 使用 MySQL advisory lock 防止多个实例并发迁移；未知历史版本和已应用定义变更默认 fail-fast。
+- 新增 `GetEntityMigrationState`，提供全局版本、各 Entity 版本、应用数量和最后迁移时间。
+- 数据迁移回调拒绝 DDL/事务控制；删列、删索引必须通过显式 Finalize 权限。
+
 ## [v1.1.0] - 2026-07-22
 
 **生产一致性与生命周期加固** — 完善严格错误传播和事务能力，并用数据库代次屏障阻止清库后的旧 Session、缓冲与恢复队列重新写回历史数据。

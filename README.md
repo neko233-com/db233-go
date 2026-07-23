@@ -1252,7 +1252,7 @@ if err != nil {
 _ = report
 ```
 
-启动前可先用 `DryRun` 审阅计划，或调用 `VerifySchema` 做纯只读检查。完整权限、报告与 MySQL DDL 边界见 [统一 Schema 建表与迁移](docs/SCHEMA_MIGRATION.md)。
+启动前可先用 `DryRun` 审阅计划，或调用 `VerifySchema` 做纯只读检查。完整权限、报告与 MySQL DDL 边界见 [统一 Schema 建表与迁移](docs/SCHEMA_MIGRATION.md)。需要在增列和删旧列之间执行版本化 Go 数据升级时，使用 [Entity 版本化数据迁移](docs/ENTITY_DATA_MIGRATION.md)。
 
 ## 埋点描述文件自动建表
 
