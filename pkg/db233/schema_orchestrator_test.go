@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"strings"
@@ -124,6 +125,24 @@ func schemaIndexesStep(rows ...[]driver.Value) scriptedStep {
 	}
 }
 
+func schemaBatchColumnsStep(rows ...[]driver.Value) scriptedStep {
+	return scriptedStep{
+		kind:          "query",
+		queryContains: "information_schema.COLUMNS",
+		columns:       []string{"TABLE_NAME", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "COLUMN_DEFAULT", "EXTRA"},
+		rows:          rows,
+	}
+}
+
+func schemaBatchIndexesStep(rows ...[]driver.Value) scriptedStep {
+	return scriptedStep{
+		kind:          "query",
+		queryContains: "information_schema.STATISTICS",
+		columns:       []string{"TABLE_NAME", "INDEX_NAME", "COLUMN_NAME", "NON_UNIQUE"},
+		rows:          rows,
+	}
+}
+
 func schemaEntityColumns() [][]driver.Value {
 	return [][]driver.Value{
 		{"id", "varchar(255)", "NO", "PRI", nil, ""},
@@ -161,6 +180,65 @@ func TestSchemaOrchestratorDryRunPlansSafeChanges(t *testing.T) {
 	}
 	if !reflect.DeepEqual(report.Before, report.After) {
 		t.Fatalf("dry-run after must equal before: before=%+v after=%+v", report.Before, report.After)
+	}
+}
+
+func TestSchemaOrchestratorBatchesMySQLMetadataForManyTables(t *testing.T) {
+	const tableCount = schemaMetadataBatchThreshold + 1
+	tableNames := make([]string, tableCount)
+	columnRows := make([][]driver.Value, 0, (tableCount-1)*2)
+	indexRows := make([][]driver.Value, 0, tableCount-1)
+	for index := 0; index < tableCount; index++ {
+		tableName := fmt.Sprintf("schema_batch_%02d", index)
+		tableNames[index] = tableName
+		if index == tableCount-1 {
+			continue // 缺表应从列清单识别，不再单独查 TABLES。
+		}
+		metadataTableName := tableName
+		if index == 0 {
+			metadataTableName = strings.ToUpper(tableName)
+		}
+		columnRows = append(columnRows,
+			[]driver.Value{metadataTableName, "id", "bigint", "NO", "PRI", nil, "auto_increment"},
+			[]driver.Value{metadataTableName, "name", "varchar(128)", "YES", "", nil, ""},
+		)
+		indexRows = append(indexRows, []driver.Value{metadataTableName, "idx_name", "name", int64(1)})
+	}
+	state := newScriptedDBState(
+		schemaBatchColumnsStep(columnRows...),
+		schemaBatchIndexesStep(indexRows...),
+	)
+	db := newStrictTestDb(t, state)
+	strategy, err := contextSchemaStrategy(db)
+	if err != nil {
+		t.Fatalf("get MySQL schema strategy: %v", err)
+	}
+	specs := make([]schemaEntitySpec, len(tableNames))
+	for index, tableName := range tableNames {
+		specs[index].tableName = tableName
+	}
+
+	observed, err := observeSchemaTables(context.Background(), db, strategy, specs, 1)
+	if err != nil {
+		t.Fatalf("observe batched schema: %v", err)
+	}
+	if len(observed) != tableCount {
+		t.Fatalf("unexpected observation count: %d", len(observed))
+	}
+	for index := 0; index < tableCount-1; index++ {
+		if !observed[index].exists || len(observed[index].columns) != 2 || len(observed[index].indexes) != 1 {
+			t.Fatalf("table metadata was not grouped correctly: index=%d value=%+v", index, observed[index])
+		}
+	}
+	if observed[tableCount-1].exists {
+		t.Fatalf("missing table was reported as present: %+v", observed[tableCount-1])
+	}
+	calls := state.snapshotCalls()
+	if len(calls) != 2 || state.countCalls("query") != 2 {
+		t.Fatalf("metadata must use two batched queries, got %d calls: %+v", len(calls), calls)
+	}
+	if len(calls[0].args) != tableCount || len(calls[1].args) != tableCount {
+		t.Fatalf("table names were not bound as query arguments: %+v", calls)
 	}
 }
 

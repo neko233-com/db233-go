@@ -18,6 +18,10 @@ const (
 	DefaultSchemaConcurrency = 4
 	// MaxSchemaConcurrency 防止错误配置一次创建过多数据库连接。
 	MaxSchemaConcurrency = 32
+	// schemaMetadataBatchThreshold 避免少量表承担批量查询的固定开销。
+	schemaMetadataBatchThreshold = 8
+	// schemaMetadataBatchSize 限制单条 INFORMATION_SCHEMA 查询的参数和结果规模。
+	schemaMetadataBatchSize = 400
 )
 
 // ErrSchemaVerificationFailed 表示 metadata 已成功读取，但实际 schema 未满足
@@ -162,6 +166,10 @@ type IContextTableCreationStrategy interface {
 	TableExistsContext(context.Context, *Db, string) (bool, error)
 	GetTableColumnsContext(context.Context, *Db, string) (map[string]ColumnInfo, error)
 	GetExistingIndexesContext(context.Context, *Db, string) (map[string]*IndexMetaData, error)
+}
+
+type schemaBatchObserver interface {
+	ObserveSchemaTablesContext(context.Context, *Db, []string) ([]schemaObservedTable, error)
 }
 
 type schemaEntitySpec struct {
@@ -684,6 +692,15 @@ func observeSchemaTables(
 	if len(specs) == 0 {
 		return observed, nil
 	}
+	if len(specs) >= schemaMetadataBatchThreshold {
+		if batch, ok := strategy.(schemaBatchObserver); ok {
+			tableNames := make([]string, len(specs))
+			for index := range specs {
+				tableNames[index] = specs[index].tableName
+			}
+			return batch.ObserveSchemaTablesContext(ctx, db, tableNames)
+		}
+	}
 	workerCount := maxConcurrency
 	if workerCount > len(specs) {
 		workerCount = len(specs)
@@ -737,6 +754,201 @@ func observeSchemaTables(
 		observationErrors = append(observationErrors, ctxErr)
 	}
 	return observed, errors.Join(observationErrors...)
+}
+
+type mysqlSchemaTableBatch struct {
+	schemaName string
+	tableNames []string
+	positions  map[string][]int
+}
+
+// ObserveSchemaTablesContext 将 MySQL 的完整列和索引元数据按 schema 分批读取。
+// 列清单同时确定表是否存在，因此每批最多两次往返，且缺表仍 fail-closed。
+func (s *MySQLStrategy) ObserveSchemaTablesContext(
+	ctx context.Context,
+	db *Db,
+	tableNames []string,
+) ([]schemaObservedTable, error) {
+	observed := make([]schemaObservedTable, len(tableNames))
+	if err := validateMySQLSchemaContext(ctx, db, s); err != nil {
+		return nil, err
+	}
+	if len(tableNames) == 0 {
+		return observed, nil
+	}
+
+	groups := make([]*mysqlSchemaTableBatch, 0)
+	groupBySchema := make(map[string]*mysqlSchemaTableBatch)
+	for position, tableName := range tableNames {
+		schemaName, unqualifiedTable, err := splitMySQLSchemaTable(tableName)
+		if err != nil {
+			return nil, err
+		}
+		tableKey := strings.ToLower(unqualifiedTable)
+		group := groupBySchema[schemaName]
+		if group == nil {
+			group = &mysqlSchemaTableBatch{
+				schemaName: schemaName,
+				positions:  make(map[string][]int),
+			}
+			groupBySchema[schemaName] = group
+			groups = append(groups, group)
+		}
+		if _, exists := group.positions[tableKey]; !exists {
+			group.tableNames = append(group.tableNames, unqualifiedTable)
+		}
+		group.positions[tableKey] = append(group.positions[tableKey], position)
+	}
+
+	for _, group := range groups {
+		for start := 0; start < len(group.tableNames); start += schemaMetadataBatchSize {
+			end := start + schemaMetadataBatchSize
+			if end > len(group.tableNames) {
+				end = len(group.tableNames)
+			}
+			chunk := group.tableNames[start:end]
+			columnsByTable := make(map[string]map[string]ColumnInfo, len(chunk))
+			columnQuery, columnArgs := buildMySQLSchemaBatchQuery(`
+				SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA
+				FROM information_schema.COLUMNS
+				WHERE `, group.schemaName, chunk)
+			columnQuery += " ORDER BY TABLE_NAME, ORDINAL_POSITION"
+			if err := queryMySQLSchemaBatchRows(ctx, db, columnQuery, columnArgs, "读取 MySQL 表列信息", func(rows *sql.Rows) error {
+				for rows.Next() {
+					var tableName, columnName, columnType, nullable, columnKey, extra string
+					var defaultValue sql.NullString
+					if err := rows.Scan(&tableName, &columnName, &columnType, &nullable, &columnKey, &defaultValue, &extra); err != nil {
+						return NewQueryExceptionWithCause(joinErrorWithContext(err, ctx), "扫描 MySQL 批量表列信息失败")
+					}
+					tableKey := strings.ToLower(tableName)
+					columns := columnsByTable[tableKey]
+					if columns == nil {
+						columns = make(map[string]ColumnInfo)
+						columnsByTable[tableKey] = columns
+					}
+					column := ColumnInfo{
+						Name:            columnName,
+						Type:            columnType,
+						IsNullable:      strings.EqualFold(nullable, "YES"),
+						IsPrimary:       strings.EqualFold(columnKey, "PRI"),
+						Extra:           extra,
+						IsAutoIncrement: strings.Contains(strings.ToLower(extra), "auto_increment"),
+					}
+					if defaultValue.Valid {
+						column.Default = defaultValue.String
+					}
+					columns[columnName] = column
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+
+			indexesByTable := make(map[string]map[string]*IndexMetaData, len(columnsByTable))
+			if len(columnsByTable) > 0 {
+				indexQuery, indexArgs := buildMySQLSchemaBatchQuery(`
+					SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME, NON_UNIQUE
+					FROM information_schema.STATISTICS
+					WHERE INDEX_NAME != 'PRIMARY' AND `, group.schemaName, chunk)
+				indexQuery += " ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX"
+				if err := queryMySQLSchemaBatchRows(ctx, db, indexQuery, indexArgs, "读取 MySQL 表索引信息", func(rows *sql.Rows) error {
+					for rows.Next() {
+						var tableName, indexName, columnName string
+						var nonUnique int
+						if err := rows.Scan(&tableName, &indexName, &columnName, &nonUnique); err != nil {
+							return NewQueryExceptionWithCause(joinErrorWithContext(err, ctx), "扫描 MySQL 批量表索引信息失败")
+						}
+						tableKey := strings.ToLower(tableName)
+						indexes := indexesByTable[tableKey]
+						if indexes == nil {
+							indexes = make(map[string]*IndexMetaData)
+							indexesByTable[tableKey] = indexes
+						}
+						unique := nonUnique == 0
+						index := indexes[indexName]
+						if index == nil {
+							index = &IndexMetaData{IndexName: indexName, IsUnique: unique}
+							indexes[indexName] = index
+						} else if index.IsUnique != unique {
+							return NewQueryException(fmt.Sprintf(
+								"MySQL 索引 metadata 不一致: table=%s, index=%s",
+								tableName, indexName,
+							))
+						}
+						index.Columns = append(index.Columns, columnName)
+					}
+					return nil
+				}); err != nil {
+					return nil, err
+				}
+			}
+
+			for _, tableName := range chunk {
+				tableKey := strings.ToLower(tableName)
+				positions := group.positions[tableKey]
+				columns := columnsByTable[tableKey]
+				if columns == nil {
+					columns = make(map[string]ColumnInfo)
+				}
+				indexes := indexesByTable[tableKey]
+				if indexes == nil {
+					indexes = make(map[string]*IndexMetaData)
+				}
+				value := schemaObservedTable{exists: len(columns) > 0, columns: columns, indexes: indexes}
+				for _, position := range positions {
+					observed[position] = value
+				}
+			}
+		}
+	}
+	return observed, nil
+}
+
+func buildMySQLSchemaBatchQuery(prefix, schemaName string, tableNames []string) (string, []any) {
+	query := prefix
+	args := make([]any, 0, len(tableNames)+1)
+	if schemaName == "" {
+		query += "TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ("
+	} else {
+		query += "TABLE_SCHEMA = ? AND TABLE_NAME IN ("
+		args = append(args, schemaName)
+	}
+	for index, tableName := range tableNames {
+		if index > 0 {
+			query += ","
+		}
+		query += "?"
+		args = append(args, tableName)
+	}
+	query += ")"
+	return query, args
+}
+
+func queryMySQLSchemaBatchRows(
+	ctx context.Context,
+	db *Db,
+	query string,
+	args []any,
+	operation string,
+	consume func(*sql.Rows) error,
+) (resultErr error) {
+	rows, err := db.DataSource.QueryContext(ctx, query, args...)
+	if err != nil {
+		return NewQueryExceptionWithCause(joinErrorWithContext(err, ctx), operation+"失败")
+	}
+	consumeErr := consume(rows)
+	rowsErr := rows.Err()
+	closeErr := rows.Close()
+	if consumeErr != nil {
+		resultErr = consumeErr
+	}
+	if rowsErr != nil {
+		resultErr = errors.Join(resultErr, NewQueryExceptionWithCause(joinErrorWithContext(rowsErr, ctx), operation+"遍历失败"))
+	}
+	if closeErr != nil {
+		resultErr = errors.Join(resultErr, NewQueryExceptionWithCause(joinErrorWithContext(closeErr, ctx), operation+"结果集关闭失败"))
+	}
+	return resultErr
 }
 
 func observeSchemaTable(

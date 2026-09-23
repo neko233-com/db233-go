@@ -6,13 +6,13 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.1.0 · Go 1.25.12+ |
+| **版本** | v1.2.9 · Go 1.25.12+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.1.0
+go get github.com/neko233-com/db233-go@v1.2.9
 ```
 
 **发版压测**：`./scripts/run-benchmark.ps1`（[BENCHMARK.md](docs/BENCHMARK.md)）  
@@ -846,7 +846,7 @@ func main() {
 ### 升级依赖
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.1.0
+go get github.com/neko233-com/db233-go@v1.2.9
 ```
 
 ### 配置文件 `config/db233-performance.json`
@@ -1214,7 +1214,7 @@ db233-go 是面向 **有状态游戏逻辑服** 的 Go ORM：登录后玩家数�
 <summary><strong>如何安装与初始化游戏服？</strong></summary>
 
 ```bash
-go get github.com/neko233-com/db233-go@v1.1.0
+go get github.com/neko233-com/db233-go@v1.2.9
 install -m 600 config.local.json.example config.local.json   # Unix 本地凭据，勿提交 Git
 ```
 
@@ -1417,4 +1417,4 @@ Apache License 2.0 - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**文档最后更新：** 2026-07-22 · v1.1.0 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)
+**文档最后更新：** 2026-09-23 · v1.2.9 · [文档中心](docs/README.md) · [FAQ](docs/FAQ.md)

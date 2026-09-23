@@ -2,6 +2,10 @@
 
 All notable changes to **db233-go** are documented here.
 
+## [v1.2.9] - 2026-09-23
+
+**MySQL schema 校验批量读取** — 多表校验按 schema 分批读取列和索引元数据，减少 `information_schema` 往返；少量表与非 MySQL 策略仍使用原有逐表路径。缺表及元数据读取错误继续使校验失败，不跳过 schema 核对。
+
 ## [v1.2.8] - 2026-07-23
 
 **MySQL 表名归一化清理** — 精确恢复清理按 MySQL 表名大小写等价规则匹配，兼容 `lower_case_table_names` 环境。
