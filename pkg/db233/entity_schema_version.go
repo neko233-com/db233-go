@@ -94,9 +94,8 @@ func (db *Db) VerifyAndLoadEntitySchemaVersions(
 	if err != nil {
 		return nil, NewQueryExceptionWithCause(joinErrorWithContext(err, ctx), "获取 Entity schema version 连接失败")
 	}
-	defer conn.Close()
-	records, err := readEntitySchemaVersions(ctx, conn, namespace)
-	if err != nil {
+	records, readErr := readEntitySchemaVersions(ctx, conn, namespace)
+	if err := errorsJoinClose(readErr, conn.Close(), "关闭 Entity schema version 连接失败"); err != nil {
 		return nil, err
 	}
 	byTable := make(map[string]EntitySchemaVersionRecord, len(records))
