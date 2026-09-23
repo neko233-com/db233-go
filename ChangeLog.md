@@ -4,7 +4,7 @@ All notable changes to **db233-go** are documented here.
 
 ## [v1.2.9] - 2026-09-23
 
-**MySQL schema 校验批量读取** — 多表校验按 schema 分批读取列和索引元数据，减少 `information_schema` 往返；少量表与非 MySQL 策略仍使用原有逐表路径。缺表及元数据读取错误继续使校验失败，不跳过 schema 核对。
+**MySQL schema 校验批量读取** — 多表校验按 schema 分批读取列和索引元数据，减少 `information_schema` 往返；少量表与非 MySQL 策略仍使用原有逐表路径。缺表及元数据读取错误继续使校验失败，不跳过 schema 核对。最低 Go 补丁版本升至 1.25.13，以修复标准库漏洞。
 
 ## [v1.2.8] - 2026-07-23
 

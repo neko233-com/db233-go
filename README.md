@@ -6,7 +6,7 @@
 
 | | |
 |:--|:--|
-| **版本** | v1.2.9 · Go 1.25.12+ |
+| **版本** | v1.2.9 · Go 1.25.13+ |
 | **数据库** | MySQL（主），PostgreSQL（连接层） |
 | **典型场景** | MMORPG 逻辑服、单库单写、登录多表加载、entitysave 批量存档 |
 | **文档** | [docs/README.md](docs/README.md) · [FAQ](docs/FAQ.md) · [对比 GORM](docs/COMPARE-ORM.md) · [是什么](docs/OVERVIEW.md) |
