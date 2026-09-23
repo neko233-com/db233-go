@@ -1,6 +1,6 @@
 module github.com/neko233-com/db233-go/benchmarks
 
-go 1.25.12
+go 1.25.13
 
 require (
 	github.com/go-sql-driver/mysql v1.10.0
