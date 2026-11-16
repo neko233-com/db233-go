@@ -10,6 +10,16 @@ import (
 
 const defaultRecoveryMaxAttempts = 2
 
+// 暂时性故障不应耗尽死信次数；恢复服务后由现有后台回放重新尝试。
+func isTemporaryRecoveryError(err error) bool {
+	switch safeErrorClass(err) {
+	case "canceled", "deadline_exceeded", "connection", "lock_timeout", "deadlock", "too_many_connections":
+		return true
+	default:
+		return false
+	}
+}
+
 type recoveryDeadLetter struct {
 	Component           string    `json:"component"`
 	EntryID             string    `json:"entryId"`

@@ -41,6 +41,91 @@ func TestLocalWriteJournalReloadsPersistedRetry(t *testing.T) {
 	}
 }
 
+func TestLocalWriteJournalRetainsTemporaryFailuresUntilRecovery(t *testing.T) {
+	transient := &mysql.MySQLError{Number: 1205, Message: "lock wait timeout"}
+	state := newScriptedDBState(
+		scriptedStep{kind: "exec", execErr: transient},
+		scriptedStep{kind: "exec", execErr: transient},
+		scriptedStep{kind: "exec", execErr: transient},
+		scriptedStep{kind: "exec"},
+	)
+	db := newStrictTestDb(t, state)
+	if err := db.configureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	GetCrudManagerInstance().AutoInitEntity(&flushTestEntity{})
+	GetEntityTypeRegistry().Register(&flushTestEntity{})
+	dir := t.TempDir()
+	journal := NewLocalWriteJournal(dir, NewBaseCrudRepository(db))
+	journal.SetRecoveryPolicy(2)
+	if err := journal.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.AppendEntities("SaveBatchUpsert", []IDbEntity{&flushTestEntity{PlayerID: "transient", Name: "value"}}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, failed, err := journal.ReplayAllStrict(); failed != 1 || !errors.Is(err, transient) {
+			t.Fatalf("attempt=%d failed=%d err=%v", attempt, failed, err)
+		}
+	}
+	_ = journal.StopStrict()
+	journal = NewLocalWriteJournal(dir, NewBaseCrudRepository(db))
+	if err := journal.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatalf("reload of transient retries failed: %v", err)
+	}
+	t.Cleanup(func() { _ = journal.StopStrict() })
+	if count, err := journal.PendingCount(); err != nil || count != 1 {
+		t.Fatalf("pending=%d err=%v", count, err)
+	}
+	if succeeded, failed, err := journal.ReplayAllStrict(); succeeded != 1 || failed != 0 || err != nil {
+		t.Fatalf("recovery succeeded=%d failed=%d err=%v", succeeded, failed, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "dead-letter")); !os.IsNotExist(err) {
+		t.Fatalf("temporary failure unexpectedly created a dead letter: %v", err)
+	}
+}
+
+func TestFailedOperationsRetainTemporaryFailuresUntilRecovery(t *testing.T) {
+	transient := &mysql.MySQLError{Number: 1213, Message: "deadlock"}
+	state := newScriptedDBState(
+		scriptedStep{kind: "exec", execErr: transient},
+		scriptedStep{kind: "exec", execErr: transient},
+		scriptedStep{kind: "exec", execErr: transient},
+		scriptedStep{kind: "exec"},
+	)
+	db := newStrictTestDb(t, state)
+	if err := db.configureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	manager := NewFaultTolerantManager(db, nil)
+	if err := manager.SetPersistPathStrict(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.StopStrict() })
+	if err := manager.RecordFailedOperationStrict(&FailedOperation{Operation: "ExecuteUpdate", SQL: "UPDATE entity SET value=?", Params: []any{"value"}}); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := manager.RetryFailedOperationsNowStrict(); !errors.Is(err, transient) {
+			t.Fatalf("attempt=%d err=%v", attempt, err)
+		}
+	}
+	if len(manager.failedOps) != 1 || manager.failedOps[0].RetryCount != 0 {
+		t.Fatalf("temporary failure consumed retry budget: %+v", manager.failedOps)
+	}
+	if err := manager.RetryFailedOperationsNowStrict(); err != nil || len(manager.failedOps) != 0 {
+		t.Fatalf("recovery err=%v pending=%d", err, len(manager.failedOps))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "dead-letter")); !os.IsNotExist(err) {
+		t.Fatalf("temporary failure unexpectedly created a dead letter: %v", err)
+	}
+}
+
 func TestJournalRetryUpdateRejectsChangedPayloadOrRegression(t *testing.T) {
 	previous := &JournalEntry{ID: "one", Operation: "Save", TableName: "test", PrimaryKey: "1", EntityJSON: []byte(`{"value":1}`), RetryCount: 1}
 	current := *previous
@@ -54,9 +139,9 @@ func TestJournalRetryUpdateRejectsChangedPayloadOrRegression(t *testing.T) {
 		t.Fatal("changed payload accepted as retry")
 	}
 	current.EntityJSON = bytes.Clone(previous.EntityJSON)
-	current.RetryCount = 1
+	current.RetryCount = 0
 	if isJournalRetryUpdate(previous, &current) {
-		t.Fatal("non-increasing retry accepted")
+		t.Fatal("decreasing retry accepted")
 	}
 }
 

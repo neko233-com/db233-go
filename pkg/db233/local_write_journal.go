@@ -1068,10 +1068,12 @@ func (j *LocalWriteJournal) persistReplayResultsWithLifecycleLease(
 			continue
 		}
 		updated := cloneJournalEntry(current)
-		updated.RetryCount++
+		if !isTemporaryRecoveryError(failure.cause) {
+			updated.RetryCount++
+		}
 		updated.LastError = safeErrorSummary(failure.cause)
 
-		if updated.RetryCount >= j.recoveryMaxAttempts {
+		if updated.RetryCount >= j.recoveryMaxAttempts && !isTemporaryRecoveryError(failure.cause) {
 			path, err := persistRecoveryDeadLetter(j.dir, recoveryDeadLetter{
 				Component:           "wal",
 				EntryID:             updated.ID,
@@ -1348,7 +1350,7 @@ func (j *LocalWriteJournal) readAllEntriesLocked() ([]*JournalEntry, error) {
 }
 
 // 重试状态更新沿用条目 ID；业务载荷或身份变化必须使用新 ID。
-// 只允许当前有效条目的严格递增重试，避免已删除或被覆盖的旧快照复活。
+// 只允许当前有效条目保持或递增重试次数，避免已删除或被覆盖的旧快照复活。
 func isJournalRetryUpdate(previous, current *JournalEntry) bool {
 	return previous != nil && current != nil && previous.ID == current.ID &&
 		previous.Operation == current.Operation && previous.TableName == current.TableName &&
@@ -1356,7 +1358,7 @@ func isJournalRetryUpdate(previous, current *JournalEntry) bool {
 		bytes.Equal(previous.EntityJSON, current.EntityJSON) && previous.SQL == current.SQL &&
 		reflect.DeepEqual(previous.Params, current.Params) && previous.CreatedAt.Equal(current.CreatedAt) &&
 		previous.DatabaseGeneration == current.DatabaseGeneration &&
-		previous.EntitySchemaVersion == current.EntitySchemaVersion && current.RetryCount > previous.RetryCount
+		previous.EntitySchemaVersion == current.EntitySchemaVersion && current.RetryCount >= previous.RetryCount
 }
 
 func (j *LocalWriteJournal) rewriteEntriesLocked(entries []*JournalEntry) (resultErr error) {

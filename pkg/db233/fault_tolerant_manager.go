@@ -735,15 +735,6 @@ func (ftm *FaultTolerantManager) retryFailedOperationsContextWithGeneration(
 			retryErrors = appendBoundedRecoveryError(retryErrors, errors.New("失败操作队列包含 nil"), &suppressedErrors)
 			continue
 		}
-		if !ftm.neverDropFailedOps && ftm.maxRetryAttempts > 0 && op.RetryCount >= ftm.maxRetryAttempts {
-			if err := ftm.moveFailedOperationToDeadLetterLocked(op); err != nil {
-				remainingOps = append(remainingOps, op)
-				retryErrors = appendBoundedRecoveryError(retryErrors, err, &suppressedErrors)
-			}
-			continue
-		}
-
-		op.RetryCount++
 		executeErr := ftm.executeFailedOperation(ctx, op, lockedGeneration)
 		if executeErr == nil {
 			LogInfo(
@@ -754,8 +745,11 @@ func (ftm *FaultTolerantManager) retryFailedOperationsContextWithGeneration(
 			)
 			continue
 		}
+		if !isTemporaryRecoveryError(executeErr) {
+			op.RetryCount++
+		}
 		op.LastError = safeErrorSummary(executeErr)
-		if !ftm.neverDropFailedOps && ftm.maxRetryAttempts > 0 && op.RetryCount >= ftm.maxRetryAttempts {
+		if !ftm.neverDropFailedOps && ftm.maxRetryAttempts > 0 && op.RetryCount >= ftm.maxRetryAttempts && !isTemporaryRecoveryError(executeErr) {
 			if err := ftm.moveFailedOperationToDeadLetterLocked(op); err != nil {
 				remainingOps = append(remainingOps, op)
 				retryErrors = appendBoundedRecoveryError(retryErrors, err, &suppressedErrors)

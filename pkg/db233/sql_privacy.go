@@ -155,6 +155,8 @@ func safeErrorClass(err error) (class string) {
 	var mysqlErr *mysql.MySQLError
 	if errors.As(err, &mysqlErr) {
 		switch mysqlErr.Number {
+		case 1040:
+			return "too_many_connections"
 		case 1048:
 			return "null_constraint"
 		case 1062:
