@@ -1,6 +1,7 @@
 package db233
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,56 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 )
+
+func TestLocalWriteJournalReloadsPersistedRetry(t *testing.T) {
+	replayErr := errors.New("temporary database failure")
+	state := newScriptedDBState(scriptedStep{kind: "exec", execErr: replayErr})
+	db := newStrictTestDb(t, state)
+	if err := db.configureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	GetCrudManagerInstance().AutoInitEntity(&flushTestEntity{})
+	GetEntityTypeRegistry().Register(&flushTestEntity{})
+	dir := t.TempDir()
+	journal := NewLocalWriteJournal(dir, NewBaseCrudRepository(db))
+	if err := journal.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.AppendEntities("SaveBatchUpsert", []IDbEntity{&flushTestEntity{PlayerID: "retry", Name: "value"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, failed, err := journal.ReplayAllStrict(); failed != 1 || !errors.Is(err, replayErr) {
+		t.Fatalf("first replay failed=%d err=%v", failed, err)
+	}
+	_ = journal.StopStrict()
+	reopened := NewLocalWriteJournal(dir, NewBaseCrudRepository(db))
+	if err := reopened.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatalf("reload of retry record failed: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.StopStrict() })
+	if count, err := reopened.PendingCount(); err != nil || count != 1 {
+		t.Fatalf("pending after reopen=%d err=%v", count, err)
+	}
+}
+
+func TestJournalRetryUpdateRejectsChangedPayloadOrRegression(t *testing.T) {
+	previous := &JournalEntry{ID: "one", Operation: "Save", TableName: "test", PrimaryKey: "1", EntityJSON: []byte(`{"value":1}`), RetryCount: 1}
+	current := *previous
+	current.EntityJSON = bytes.Clone(previous.EntityJSON)
+	current.RetryCount = 2
+	if !isJournalRetryUpdate(previous, &current) {
+		t.Fatal("valid retry update rejected")
+	}
+	current.EntityJSON = []byte(`{"value":2}`)
+	if isJournalRetryUpdate(previous, &current) {
+		t.Fatal("changed payload accepted as retry")
+	}
+	current.EntityJSON = bytes.Clone(previous.EntityJSON)
+	current.RetryCount = 1
+	if isJournalRetryUpdate(previous, &current) {
+		t.Fatal("non-increasing retry accepted")
+	}
+}
 
 func TestLocalWriteJournalIsolatesMySQLValueError(t *testing.T) {
 	valueErr := &mysql.MySQLError{Number: 1406, Message: "value too long"}
