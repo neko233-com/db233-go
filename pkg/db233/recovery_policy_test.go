@@ -5,7 +5,80 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
+
+func TestLocalWriteJournalIsolatesMySQLValueError(t *testing.T) {
+	valueErr := &mysql.MySQLError{Number: 1406, Message: "value too long"}
+	state := newScriptedDBState(
+		scriptedStep{kind: "exec", execErr: valueErr},
+		scriptedStep{kind: "exec"},
+		scriptedStep{kind: "exec", execErr: valueErr},
+	)
+	db := newStrictTestDb(t, state)
+	if err := db.configureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	GetCrudManagerInstance().AutoInitEntity(&flushTestEntity{})
+	GetEntityTypeRegistry().Register(&flushTestEntity{})
+	journal := NewLocalWriteJournal(t.TempDir(), NewBaseCrudRepository(db))
+	if err := journal.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.StopStrict() })
+	if _, err := journal.AppendEntities("SaveBatchUpsert", []IDbEntity{
+		&flushTestEntity{PlayerID: "a-good", Name: "good"},
+		&flushTestEntity{PlayerID: "b-bad", Name: "bad"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	succeeded, failed, err := journal.ReplayAllStrict()
+	if succeeded != 1 || failed != 1 || !errors.Is(err, valueErr) {
+		t.Fatalf("replay succeeded=%d failed=%d error=%v", succeeded, failed, err)
+	}
+	if count, err := journal.PendingCount(); err != nil || count != 1 {
+		t.Fatalf("pending=%d err=%v", count, err)
+	}
+}
+
+func TestLocalWriteJournalDoesNotSplitAmbiguousDatabaseFailure(t *testing.T) {
+	replayErr := errors.New("connection lost")
+	state := newScriptedDBState(scriptedStep{kind: "exec", execErr: replayErr})
+	db := newStrictTestDb(t, state)
+	if err := db.configureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	GetCrudManagerInstance().AutoInitEntity(&flushTestEntity{})
+	GetEntityTypeRegistry().Register(&flushTestEntity{})
+	journal := NewLocalWriteJournal(t.TempDir(), NewBaseCrudRepository(db))
+	if err := journal.ConfigureDatabaseGeneration("epoch"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.StopStrict() })
+	if _, err := journal.AppendEntities("SaveBatchUpsert", []IDbEntity{
+		&flushTestEntity{PlayerID: "a", Name: "first"},
+		&flushTestEntity{PlayerID: "b", Name: "second"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	succeeded, failed, err := journal.ReplayAllStrict()
+	if succeeded != 0 || failed != 2 || !errors.Is(err, replayErr) {
+		t.Fatalf("replay succeeded=%d failed=%d error=%v", succeeded, failed, err)
+	}
+	if count, err := journal.PendingCount(); err != nil || count != 2 {
+		t.Fatalf("pending=%d err=%v", count, err)
+	}
+	execCount := 0
+	for _, call := range state.calls {
+		if call.kind == "exec" {
+			execCount++
+		}
+	}
+	if execCount != 1 {
+		t.Fatalf("ambiguous error retried in %d database writes", execCount)
+	}
+}
 
 func TestLocalWriteJournalMovesTerminalFailuresToDeadLetter(t *testing.T) {
 	replayErr := errors.New("persistent replay failure")

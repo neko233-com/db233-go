@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	mysql "github.com/go-sql-driver/mysql"
 	"github.com/gofrs/flock"
 )
 
@@ -925,23 +926,11 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 				end = len(items)
 			}
 			chunk := items[start:end]
-			entities := make([]IDbEntity, len(chunk))
-			for index, item := range chunk {
-				entities[index] = item.entity
-			}
-			if err := j.repo.saveBatchUpsertOncePreparedUnderGenerationLease(entities, lockedGeneration); err != nil {
-				failed += len(chunk)
-				for _, item := range chunk {
-					replayFailures = append(replayFailures, journalReplayFailure{entry: item.entry, cause: err})
-				}
-				continue
-			}
-			for _, item := range chunk {
-				succeededIDs = append(succeededIDs, item.entry.ID)
-				success++
-			}
+			j.replayPreparedChunk(chunk, lockedGeneration, &succeededIDs, &replayFailures)
 		}
 	}
+	success = len(succeededIDs)
+	failed = len(replayFailures)
 
 	if len(succeededIDs) > 0 || len(replayFailures) > 0 {
 		nonTerminalErrors, failurePersistErr := j.persistReplayResultsWithLifecycleLease(succeededIDs, replayFailures, lockedGeneration)
@@ -959,6 +948,41 @@ func (j *LocalWriteJournal) replayAllWithLifecycleLeaseStrict(lockedGeneration s
 		replayErrors = append(replayErrors, fmt.Errorf("另有 %d 个 WAL 回放错误已省略", suppressedErrors))
 	}
 	return success, failed, errors.Join(replayErrors...)
+}
+
+// replayPreparedChunk 仅在 MySQL 明确拒绝整条语句的值错误时二分，避免一条坏记录牵连其他玩家。
+// 对连接中断等结果不确定的错误不拆分，保留原批次并沿用 WAL 的重试语义。
+func (j *LocalWriteJournal) replayPreparedChunk(items []journalReplayItem, generation string, succeededIDs *[]string, failures *[]journalReplayFailure) {
+	entities := make([]IDbEntity, len(items))
+	for index, item := range items {
+		entities[index] = item.entity
+	}
+	err := j.repo.saveBatchUpsertOncePreparedUnderGenerationLease(entities, generation)
+	if err == nil {
+		for _, item := range items {
+			*succeededIDs = append(*succeededIDs, item.entry.ID)
+		}
+		return
+	}
+	var mysqlError *mysql.MySQLError
+	if len(items) > 1 && errors.As(err, &mysqlError) && isIsolatableMySQLValueError(mysqlError.Number) {
+		middle := len(items) / 2
+		j.replayPreparedChunk(items[:middle], generation, succeededIDs, failures)
+		j.replayPreparedChunk(items[middle:], generation, succeededIDs, failures)
+		return
+	}
+	for _, item := range items {
+		*failures = append(*failures, journalReplayFailure{entry: item.entry, cause: err})
+	}
+}
+
+func isIsolatableMySQLValueError(number uint16) bool {
+	switch number {
+	case 1048, 1264, 1366, 1406:
+		return true
+	default:
+		return false
+	}
 }
 
 func (j *LocalWriteJournal) validateReplaySchemaVersion(entry *JournalEntry) error {
