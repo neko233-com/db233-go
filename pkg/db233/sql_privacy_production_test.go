@@ -8,7 +8,17 @@ import (
 	"log"
 	"strings"
 	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
+
+func TestSQLPrivacy_MySQLValueErrorClassification(t *testing.T) {
+	err := NewQueryExceptionWithCause(&mysql.MySQLError{Number: 1406, Message: "private-device-value"}, "database write failed")
+	summary := SafeErrorSummary(err)
+	if !strings.Contains(summary, "ErrorClass=value_too_long") || strings.Contains(summary, "private-device-value") {
+		t.Fatalf("unsafe or unclassified summary: %q", summary)
+	}
+}
 
 func TestSQLPrivacy_RuntimeLogsAndErrorsAreRedactedByDefault(t *testing.T) {
 	previousLogger := defaultLogger

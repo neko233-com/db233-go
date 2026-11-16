@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 // runtimeLogFullSQL controls the package-level SQL logging policy. It is false
@@ -149,6 +151,25 @@ func safeErrorClass(err error) (class string) {
 		return "not_found"
 	case errors.Is(err, driver.ErrBadConn), isConnectionError(err):
 		return "connection"
+	}
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		switch mysqlErr.Number {
+		case 1048:
+			return "null_constraint"
+		case 1062:
+			return "duplicate_key"
+		case 1205:
+			return "lock_timeout"
+		case 1213:
+			return "deadlock"
+		case 1264:
+			return "value_out_of_range"
+		case 1366:
+			return "invalid_value"
+		case 1406:
+			return "value_too_long"
+		}
 	}
 	message := safeErrorText(err)
 	if strings.Contains(message, "Duplicate entry") {
